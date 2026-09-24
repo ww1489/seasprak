@@ -27,6 +27,8 @@
 
 职责自下而上是 model → agent → session；**import 自上而下是 session → agent → model**。Eino/schema 是底层依赖，不构成产品的上层对象。
 
+当前仓库已落地的目录与上表未来分层对应，但不等于下列能力已经交付：公开入口只有 `github.com/ww1489/seasprak/sdk`（`sdk/sdk.go` 单文件）。实现位于 `internal/sessions`、`internal/agent`、`internal/llm`，共享错误与限额在 `internal/errors`、`internal/config`。`cmd/agentd` 目前只输出帮助和版本，不启动 HTTP、不创建会话、不读取模型凭据。本章其余 HTTP 服务、默认文件/进程后端和完整宿主部署仍是未交付设计。
+
 ```mermaid
 flowchart TB
     SDK["SDK 创建入口<br/>CreateAgentSession"]
@@ -126,7 +128,7 @@ flowchart TB
 
 D02-部署图中的 Docker 只承接 shell；挂载和逻辑路径由受信配置确定。主服务不放到执行容器中。平台发布目标为 Windows、Linux、macOS；每个 OS/arch 和后端组合记录实际认证结果，不把交叉编译等同于沙箱认证。
 
-`cmd/agentd` 是最小服务启动程序，不扩展为 CLI/TUI 产品。默认回环监听，同源静态测试页；远程多用户、分布式调度、插件市场和完整 A2UI 不属于当前实现。
+`cmd/agentd` 是最小进程入口，不扩展为 CLI/TUI 产品。当前实现只处理 `--help` / `--version`，并声明服务尚未实现。默认回环监听和同源静态测试页属于后续 HTTP 服务，尚未交付；远程多用户、分布式调度、插件市场和完整 A2UI 不属于当前实现。
 
 <a id="lifecycle"></a>
 ## 6. 关闭与故障

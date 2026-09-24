@@ -6,20 +6,21 @@ Follow the global Karpathy rules for thinking before coding, minimal implementat
 
 - This project is a Go Agent SDK bound to an explicit workspace. The module is `github.com/ww1489/seasprak`, and the toolchain is Go 1.27.0.
 - Requirements are in `docs/pi-eino-prd/`; design, defaults, and acceptance criteria are in `docs/pi-eino-dev-plan/`. Judge delivered capabilities by current source code and this project's tests, not by documentation coverage or upstream tests as substitutes for product certification.
-- Before creating or refining a plan, starting or resuming development, or delegating implementation, you must read and follow the [Operational Development Planning and Execution Guidelines](docs/development-plan-guidelines.md). These are execution rules, not merely reference material.
+- Before creating or refining a plan, starting or resuming development, or delegating implementation, you must read and follow the [Operational Development Planning and Execution Guidelines](docs/DEVELOPMENT-PLAN-GUIDELINES.md). These are execution rules, not merely reference material.
 
 ## Architecture and Dependencies
 
-- Dependencies flow from `session → agent → model`. `model` must not import `agent`, `session`, or `internal/storage`; `agent` must not import `session` or `internal/storage`; `session/history` must not import `agent/eino` or `internal/storage`. Tests in `internal/architecture` enforce these boundaries.
-- Storage implementations depend on interfaces in `session/history`; the history layer must not depend on concrete storage implementations. Define execution ports in `agent` and Eino adapters in `agent/eino`. Ports use execution-layer types, not `AgentSession` or history-manager pointers.
+- The only public import path is `github.com/ww1489/seasprak/sdk`. `sdk/sdk.go` is the single production file; it exposes selected internal types by alias. `cmd/agentd` is a help/version process entry and must not import `sdk` or `internal` in this revision.
+- Dependencies flow from `internal/sessions → internal/agent → internal/llm`. `internal/llm` must not import `internal/agent` or `internal/sessions`; `internal/agent` must not import `internal/sessions`; `internal/sessions/state` must not import `internal/agent/eino` or concrete store backends. Shared errors live in `internal/errors`, engineering limits in `internal/config`. Tests in `internal/architecture` enforce these boundaries. Internal packages must not import `sdk` or `cmd`.
+- Storage implementations depend on interfaces in `internal/sessions/store`; `internal/sessions/state` must not depend on concrete storage implementations. Define execution ports in `internal/agent` and Eino adapters in `internal/agent/eino`. Ports use execution-layer types, not `AgentSession` or state-manager pointers.
 - Reuse Eino's Agentic execution path rather than writing another ReAct loop. Identify framework gaps with failing tests and fix the adapter without weakening permission, budget, or cancellation rules.
 - Pin dependency versions in `go.mod` / `go.sum`. Release builds must not contain `replace` directives pointing to local absolute paths.
 
 ## Sessions and Security
 
 - Require an explicit workspace; do not default to the process working directory. Opening a session preserves its original binding. Read-only browsing must not write, change the binding, or automatically resume execution.
-- Public errors use existing codes from `model`. Error details, source code, fixtures, documentation, logs, and test output must not contain secrets, tokens, or values from `.test_env`.
-- `.test_env` must be ignored by Git and used only for local `go test -tags live ./model/live` runs. It must not enter commits or CI.
+- Public errors use existing codes from `internal/errors`. Error details, source code, fixtures, documentation, logs, and test output must not contain secrets, tokens, or values from `.test_env`.
+- `.test_env` must be ignored by Git and used only for local `go test -tags live ./internal/llm` runs. It must not enter commits or CI.
 
 ## Testing and Cross-Platform Compatibility
 
@@ -37,7 +38,7 @@ Before completing implementation, committing, or opening a pull request, run the
 - Full test suites: `go test ./...` and `go test -race ./...`. For concurrency changes, first run race tests for the affected packages, then the full suite. There is no separate smoke-test entry point.
 - Security: `govulncheck ./...` (`golang.org/x/vuln/cmd/govulncheck`).
 - Diff hygiene: `git diff HEAD --check`. This does not cover untracked files; also check new files for secrets, conflict markers, and content that must not be committed.
-- Live models: if `.test_env` exists at the repository root, you must run `go test -tags live ./model/live` and satisfy its assertions before completing implementation. If the file is absent, report the skip. Do not create credentials or echo their values.
+- Live models: if `.test_env` exists at the repository root, you must run `go test -tags live ./internal/llm` and satisfy its assertions before completing implementation. If the file is absent, report the skip. Do not create credentials or echo their values.
 
 All checks above are mandatory. Address and report failures honestly; do not narrow the test scope and then claim the entire repository passes. If tools, external services, or platform runtime environments are unavailable, report the command, exit code (or that it was not run), relevant output, and unverified items, then ask the maintainer how to proceed. Skipped checks are not passes. List verification commands and results in the completion response.
 

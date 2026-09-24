@@ -8,6 +8,17 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+// ToolInfo builds the fixed integer-n test tool schema used by session tests.
+func ToolInfo(name, desc string) *schema.ToolInfo {
+	return &schema.ToolInfo{
+		Name: name,
+		Desc: desc,
+		ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{
+			"n": {Type: schema.Integer, Required: true},
+		}),
+	}
+}
+
 // Step is one scripted model response.
 type Step struct {
 	Text      string

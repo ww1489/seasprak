@@ -2,6 +2,30 @@
 
 绑定显式工作区的 Go Agent SDK。当前实现用于 P0–P1 的受控内存工具与假模型执行，不代表真实模型、审批恢复或沙箱已经交付。
 
+唯一公开导入路径是 `github.com/ww1489/seasprak/sdk`。
+
+```go
+import "github.com/ww1489/seasprak/sdk"
+
+s, err := sdk.CreateAgentSession(ctx, sdk.SessionOptions{
+    Workspace: ws, StateRoot: "memory", Profile: sdk.ProfileMemory, Model: model,
+})
+```
+
+## 目录
+
+```text
+sdk/sdk.go                 唯一公开入口
+cmd/agentd                 帮助/版本进程入口，无业务启动
+internal/sessions          会话装配、调度、状态与存储
+internal/agent             执行契约、预算、Eino 适配与工具
+internal/llm               模型接口与配置
+internal/errors            公共错误
+internal/config            工程限额
+```
+
+旧路径 `session/`、`agent/`、`model/`、`extensions/` 和根目录 `sdk.go` 已删除，请改用 `sdk` 与 `internal` 对应模块。
+
 ## 当前行为
 
 - 同一会话只执行一个顶层任务；忙时的独立输入排队。`follow_up` 在当前执行段结束后继续，`steering` 在模型轮次边界逐项消费。
@@ -26,4 +50,4 @@ go mod verify
 go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 ```
 
-普通测试使用假模型和临时目录，不调用真实模型。`model/live` 受 `live` 构建标签隔离；本轮修复没有执行它。`.test_env` 仅供本机测试，已忽略，不应复制到源码、测试夹具或日志。
+普通测试使用假模型和临时目录，不调用真实模型。`internal/llm` 中带 `live` 构建标签的测试与普通测试隔离；若仓库根存在 `.test_env`，完成实现前必须运行 `go test -tags live ./internal/llm`。`.test_env` 仅供本机测试，已忽略，不应复制到源码、测试夹具或日志。
