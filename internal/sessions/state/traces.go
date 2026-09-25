@@ -47,6 +47,7 @@ func (m *Manager) SetTraceState(ctx context.Context, id, state string, settled b
 	tr.State = state
 	if state == "running" {
 		tr.Started = true
+		tr.ExecutionStopped = false
 		tr.InvocationID = agent.MustID()
 	}
 	tr.Settled = terminal(state) && tr.Started

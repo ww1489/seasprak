@@ -137,6 +137,13 @@ func (e *Executor) Run(ctx context.Context, scope agent.ExecutionScope, callID, 
 		}
 		return out, err
 	}
+	if err := ctx.Err(); err != nil {
+		out := Outcome{Status: "cancelled", Content: err.Error(), SideEffect: "none"}
+		if _, saveErr := e.saveObservation(ctx, scope, frozen, out, true, true); saveErr != nil {
+			return out, errors.Join(err, saveErr)
+		}
+		return out, err
+	}
 	runCtx, cancel := context.WithTimeout(ctx, e.budg.Limits().ToolTimeout)
 	defer cancel()
 	content, executed, runErr := e.invoke(runCtx, def, raw)

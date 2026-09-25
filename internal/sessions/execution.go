@@ -45,8 +45,13 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 				if rt.active != frame {
 					return nil, product.NewError(product.CodeStateConflict, "execution is no longer active")
 				}
-				if err := rt.manager.Consume(ctx, items[0].InputID); err != nil {
-					return nil, err
+				// A steering-only segment leaves consumption to BeforeModel so
+				// each model boundary consumes exactly one steering input.
+				in := rt.manager.View().Inputs[items[0].InputID]
+				if in == nil || in.Kind != "steering" {
+					if err := rt.manager.Consume(ctx, items[0].InputID); err != nil {
+						return nil, err
+					}
 				}
 				return agent.ConvertToLLM(rt.manager.View().Messages)
 			})
@@ -241,7 +246,11 @@ func (rt *runtime) ShouldStop(ctx context.Context, scope agent.ExecutionScope) (
 		if rt.active.ctx.Err() != nil {
 			return "cancelled", nil
 		}
-		tr := rt.manager.View().Traces[scope.TraceID]
+		view := rt.manager.View()
+		if view.HasUnresolvedEffects() {
+			return product.CodeReconciliationRequired, nil
+		}
+		tr := view.Traces[scope.TraceID]
 		if tr.State != "running" {
 			return tr.State, nil
 		}

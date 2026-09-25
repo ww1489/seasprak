@@ -21,6 +21,9 @@ type TraceState struct {
 	Usage        agent.Usage       `json:"usage"`
 	HoldOnStop   []string          `json:"holdOnStop,omitempty"`
 	Error        string            `json:"error,omitempty"`
+
+	// ExecutionStopped is durable proof of an exited execution, not known effects.
+	ExecutionStopped bool `json:"executionStopped,omitempty"`
 }
 type InputState struct {
 	ID        string            `json:"id"`

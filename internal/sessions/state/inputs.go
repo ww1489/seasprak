@@ -70,6 +70,12 @@ func (m *Manager) classify(cmd agent.InputCommand, target agent.TargetAgent) (st
 		if target.Name != "main" {
 			return "", "", product.NewError(product.CodeUnsupportedCapability, "agent is not registered")
 		}
+		if m.view.HasUnresolvedEffects() {
+			return "", "", product.NewError(product.CodeReconciliationRequired, "unresolved tool effects block new work")
+		}
+		if active := m.view.Traces[m.view.ActiveTrace]; active != nil && active.State == "paused" {
+			return "", "", product.NewError(product.CodeReconciliationRequired, "interrupted execution blocks new work")
+		}
 		if cmd.Kind == "chat" && m.view.ActiveTrace != "" {
 			tr := m.view.Traces[m.view.ActiveTrace]
 			if tr.State != "running" {
@@ -86,11 +92,20 @@ func (m *Manager) classify(cmd agent.InputCommand, target agent.TargetAgent) (st
 		if tr == nil {
 			return "", "", product.NewError(product.CodeNotFound, "trace not found")
 		}
-		if terminal(tr.State) || tr.State == "cancelling" || (cmd.Kind == "steering" && tr.State != "running") {
+		if terminal(tr.State) || tr.State == "cancelling" {
 			return "", "", product.NewError(product.CodeStateConflict, "trace cannot accept directed input")
 		}
 		if cmd.TargetAgent != "" && cmd.TargetAgent != tr.Target.Name {
 			return "", "", product.NewError(product.CodeStateConflict, "target mismatch")
+		}
+		if m.view.HasUnresolvedEffects() {
+			return "", "", product.NewError(product.CodeReconciliationRequired, "unresolved tool effects block new work")
+		}
+		if active := m.view.Traces[m.view.ActiveTrace]; active != nil && active.State == "paused" {
+			return "", "", product.NewError(product.CodeReconciliationRequired, "interrupted execution blocks new work")
+		}
+		if cmd.Kind == "steering" && tr.State != "running" {
+			return "", "", product.NewError(product.CodeStateConflict, "trace cannot accept directed input")
 		}
 		return cmd.Kind, tr.ID, nil
 	}

@@ -7,6 +7,7 @@ import (
 	"context"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/ww1489/seasprak/internal/agent"
@@ -44,7 +45,31 @@ const (
 	DecisionDeny   = agent.DecisionDeny
 	DecisionCancel = agent.DecisionCancel
 	DecisionAsk    = agent.DecisionAsk
+
+	KindUser              = agent.KindUser
+	KindAssistant         = agent.KindAssistant
+	KindToolResult        = agent.KindToolResult
+	KindCustom            = agent.KindCustom
+	KindCommand           = agent.KindCommand
+	KindCompactionSummary = agent.KindCompactionSummary
+	KindBranchSummary     = agent.KindBranchSummary
+	KindOpaque            = agent.KindOpaque
+
+	StatusComplete   = agent.StatusComplete
+	StatusIncomplete = agent.StatusIncomplete
+
+	SourceHuman        = agent.SourceHuman
+	SourceDirectParent = agent.SourceDirectParent
+	SourceExtension    = agent.SourceExtension
+	SourceTool         = agent.SourceTool
+	SourceModel        = agent.SourceModel
+	SourceResource     = agent.SourceResource
+	SourceImported     = agent.SourceImported
 )
+
+// ErrControlledStop ends an execution at a boundary without a model failure.
+// Use errors.Is to recognize it in Eino runner events.
+var ErrControlledStop = einorun.ErrControlledStop
 
 type (
 	SessionOptions     = sessions.Options
@@ -54,6 +79,10 @@ type (
 	TraceState         = state.TraceState
 	InputState         = state.InputState
 	AgentMessage       = agent.AgentMessage
+	CustomMessage      = agent.CustomMessage
+	SummaryMessage     = agent.SummaryMessage
+	CommandMessage     = agent.CommandMessage
+	OpaqueMessage      = agent.OpaqueMessage
 	TurnRecord         = agent.TurnRecord
 	ToolRecord         = agent.ToolRecord
 	ToolObservation    = agent.ToolObservation
@@ -122,4 +151,25 @@ func NewExecutor(gen string, defs []ToolDefinition, sink ExecutionSink, auth Too
 
 func NewAgent(ctx context.Context, deps AgentDeps) (adk.TypedResumableAgent[*schema.AgenticMessage], error) {
 	return einorun.NewAgent(ctx, deps)
+}
+
+// NewPipelineTool adapts the controlled executor for AgentDeps.Tools.
+func NewPipelineTool(info *schema.ToolInfo, exec *Executor, scope ExecutionScope) tool.InvokableTool {
+	return einorun.NewPipelineTool(info, exec, scope)
+}
+
+// WithExecutionScope shares turn scope updates with tools and runner hooks.
+func WithExecutionScope(ctx context.Context, scope ExecutionScope) context.Context {
+	return einorun.WithExecutionScope(ctx, scope)
+}
+
+// ScopeFromContext returns the current execution scope, or fallback if absent.
+func ScopeFromContext(ctx context.Context, fallback ExecutionScope) ExecutionScope {
+	return einorun.ScopeFromContext(ctx, fallback)
+}
+
+// FinishAfterTools supplies adk.WithAfterToolCallsHook for standalone execution.
+// It finishes the tool turn and returns ErrControlledStop when the boundary stops.
+func FinishAfterTools(boundary BoundaryController, scope ExecutionScope) func(context.Context) error {
+	return einorun.FinishAfterTools(boundary, scope)
 }

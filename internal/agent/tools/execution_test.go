@@ -50,20 +50,30 @@ func (deny) Authorize(context.Context, agent.FrozenCall) (agent.Decision, error)
 }
 
 type recordSink struct {
-	facts  []agent.Fact
-	rec    agent.ToolRecord
-	found  bool
-	at     []int
-	budg   *agent.BudgetLedger
-	scopes []agent.ExecutionScope
+	facts        []agent.Fact
+	rec          agent.ToolRecord
+	found        bool
+	at           []int
+	budg         *agent.BudgetLedger
+	scopes       []agent.ExecutionScope
+	beforeCommit func(agent.Fact) error
+	afterCommit  func(agent.Fact)
 }
 
 func (s *recordSink) CommitFact(_ context.Context, scope agent.ExecutionScope, fact agent.Fact) error {
+	if s.beforeCommit != nil {
+		if err := s.beforeCommit(fact); err != nil {
+			return err
+		}
+	}
 	if s.budg != nil && fact.Kind == "tool_intent" {
 		s.at = append(s.at, s.budg.Snapshot().ToolExecutions)
 	}
 	s.scopes = append(s.scopes, scope)
 	s.facts = append(s.facts, fact)
+	if s.afterCommit != nil {
+		s.afterCommit(fact)
+	}
 	return nil
 }
 
