@@ -8,13 +8,23 @@ Reading this document is required by [AGENTS.md](../AGENTS.md). It supplements t
 
 Split tasks by independently verifiable behavior. Further divide multiple independent actions into numbered substeps. If the user requires the original plan to remain unchanged, add detail in separate execution notes without editing that plan or duplicating existing to-dos.
 
-## 2. Verify Before Planning Implementation
+## 2. Directory and Package Design
+
+Judge a layout by whether it is conventional, coherent, and named so the responsibility is obvious. A structure that is irregular, mixes unrelated jobs, or uses a name that does not say what the code does is not acceptable.
+
+- Keep the public SDK in one outer directory. While that SDK is still a single entry, the directory has one production Go file. Do not leave the public package at the repository root or split it into public subpackages.
+- Keep the process entry outside the implementation. Do not put business logic in the entry.
+- Keep implementation in internal packages. The outer shape separates entry from implementation; do not copy another project's internal product structure.
+- Group code that serves one business concern. Do not create a new package for each helper or each step of the same flow. Split into files inside the owning package first. Add a package only when the boundary is a real dependency that must stay separate.
+- When a split looks too fine, check the other directories for the same problem before adding more packages.
+
+## 3. Verify Before Planning Implementation
 
 - Check requirements, design, and current call paths to establish modification points, state ownership, commit points, existing tests, and task boundaries. Clearly label planned new files or interfaces rather than describing them as existing facts.
 - Prefer the standard library, existing dependencies, and project implementations. Verify actual versions and cancellation, waiting, retry, and callback semantics; do not infer guarantees from interface names. Explain why existing implementations are insufficient before building a new capability.
 - Turn unresolved critical decisions into investigation steps: where to look, which questions to answer, how to verify findings, and what criteria guide the choice. Confirm the conclusion before implementing dependent steps.
 
-## 3. Format for Each Small Step
+## 4. Format for Each Small Step
 
 Use the title "Step N: Specific Action" and the fields below. Explain any field that genuinely does not apply:
 
@@ -29,7 +39,7 @@ Use the title "Step N: Specific Action" and the fields below. Explain any field 
 
 Writing every line of code in advance is unnecessary, but the implementation method, state ownership, commit order, permission decisions, and failure semantics must not be left for the implementer to decide on the fly.
 
-## 4. Example of Step Granularity: Cancelling Execution
+## 5. Example of Step Granularity: Cancelling Execution
 
 This example illustrates decomposition only. For an actual task, verify the current implementation and fill in the fields above. It is not a new to-do list.
 
@@ -40,7 +50,7 @@ This example illustrates decomposition only. For an actual task, verify the curr
 5. Implementation method: after the exit result arrives, have the existing coordinator commit the terminal state, undelivered inputs, scheduling holds for the existing queue, and the unique terminal event together, then publish events through the current event path; do not introduce a second finalizer. Verify that repeated cancellation does not repeat finalization and that terminal tasks cannot resume running.
 6. Implementation method: extend the existing `internal/sessions` package tests and run the project verification commands; do not replace them with a one-off script. Complete normal, failure, and race assertions. Run `go test ./internal/sessions -count=1` and `go test -race ./internal/sessions -count=1`, followed by the full verification required by AGENTS.md.
 
-## 5. Delegation and Completion
+## 6. Delegation and Completion
 
 - Delegate numbered steps at the granularity above, including the prescribed implementation method, necessary context, verified facts, allowed and prohibited changes, shared interfaces, and task dependencies. The implementer must not depend on implicit context from the parent conversation, and must not invent an execution method that the step did not name. Establish shared contracts before implementing dependent work in parallel.
 - Require a report of each step's status, the method actually used, code and interface changes, verification commands and results, unresolved issues, and blockers. Report and obtain confirmation before exceeding scope, changing a critical contract, or switching methods.
