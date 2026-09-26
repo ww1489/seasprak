@@ -5,6 +5,9 @@ import "time"
 // ToolOutputChunkBytes is the maximum UTF-8 text size of one temporary output event.
 const ToolOutputChunkBytes = 50 << 10
 
+// ApprovalValidity is checked both at the decision and atomic claim boundaries.
+const ApprovalValidity = 24 * time.Hour
+
 // Limits holds the engineering protection defaults from the delivery plan.
 type Limits struct {
 	LogicalModelRequests   int

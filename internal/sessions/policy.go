@@ -150,14 +150,17 @@ func (rt *runtime) checkToolPolicyState(ctx context.Context, scope agent.Executi
 	if _, err := state.NormalizeExecutionPolicy(p); err != nil {
 		return agent.DecisionDeny, err
 	}
+	if p.SandboxMode == "read-only" && frozen.Effect != "read" && frozen.Effect != "none" {
+		return agent.DecisionDeny, product.NewError(product.CodePermissionDenied, "read-only policy denies declared side effects")
+	}
 	if frozen.RequestedGrantRef != "" {
 		if p.ApprovalPolicy == "never" {
 			return agent.DecisionDeny, product.NewError(product.CodePermissionDenied, "execution requires a disallowed approval")
 		}
-		return agent.DecisionAsk, product.NewError(product.CodeResourceUnavailable, "execution approval is not available")
-	}
-	if p.SandboxMode == "read-only" && frozen.Effect != "read" && frozen.Effect != "none" {
-		return agent.DecisionDeny, product.NewError(product.CodePermissionDenied, "read-only policy denies declared side effects")
+		decision, err := rt.toolApprovalDecision(v, frozen, claimed)
+		if err != nil || decision != agent.DecisionAllow {
+			return decision, err
+		}
 	}
 	switch frozen.BackendID {
 	case "trusted-run":

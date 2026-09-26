@@ -21,8 +21,9 @@ import (
 )
 
 type checkpointResult struct {
-	ref   agent.CheckpointBlobRef
-	valid bool
+	ref     agent.CheckpointBlobRef
+	valid   bool
+	targets map[string]string
 }
 
 func (rt *runtime) runSegment(frame *execution, inputID string) {
@@ -117,8 +118,17 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 			if frame.resume == nil || len(interrupted) != 1 || interrupted[0] != frame.resume.Input || len(unhandled) != 0 || len(newItems) != 0 {
 				return nil, incompatibleResume("resume input does not match the original checkpoint")
 			}
+			answers, err := rt.call(ctx, func(rt *runtime) (any, error) {
+				if rt.active != frame {
+					return nil, incompatibleResume("resumed execution was replaced")
+				}
+				return approvalResumeTargets(*frame.resume, rt.manager.View()), nil
+			})
+			if err != nil {
+				return nil, err
+			}
 			return &adk.GenResumeResult[agent.InputRef, *schema.AgenticMessage]{RunCtx: einorun.WithExecutionScope(ctx, scope), Consumed: interrupted,
-				ResumeParams: &adk.ResumeParams{}, RunOpts: []adk.AgentRunOption{adk.WithAfterToolCallsHook(einorun.FinishAfterTools(rt, scope))}}, nil
+				ResumeParams: &adk.ResumeParams{Targets: answers.(map[string]any)}, RunOpts: []adk.AgentRunOption{adk.WithAfterToolCallsHook(einorun.FinishAfterTools(rt, scope))}}, nil
 		},
 		PrepareAgent: func(context.Context, *adk.TurnLoop[agent.InputRef, *schema.AgenticMessage], []agent.InputRef) (adk.TypedAgent[*schema.AgenticMessage], error) {
 			return ag, nil
@@ -173,6 +183,29 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 	if pauseErr != nil {
 		return pauseErr
 	}
+	var business *adk.InterruptError
+	if errors.As(exit.ExitReason, &business) {
+		if eventErr != nil || !exit.CheckpointAttempted || exit.CheckpointErr != nil || len(exit.UnhandledItems) != 0 || len(exit.TakeLateItems()) != 0 || len(exit.InterruptedItems) != 1 || exit.InterruptedItems[0] != frame.input {
+			return errors.Join(eventErr, exit.CheckpointErr, incompatibleResume("approval did not reach a matching runner checkpoint"))
+		}
+		targets, err := rt.approvalTargets(frame, business.InterruptContexts)
+		if err != nil {
+			return err
+		}
+		ref, found := checkpoint.Ref(checkpointID)
+		if !found {
+			return product.NewError(product.CodeStorageUnavailable, "approval checkpoint blob is missing")
+		}
+		data, found, err := checkpoint.Get(context.Background(), checkpointID)
+		if err != nil || !found {
+			return errors.Join(err, product.NewError(product.CodeStorageUnavailable, "approval checkpoint cannot be read"))
+		}
+		if err := einorun.ValidatePausedCheckpoint(data, frame.input); err != nil {
+			return err
+		}
+		frame.checkpoint = &checkpointResult{ref: ref, valid: true, targets: targets}
+		return ctx.Err()
+	}
 	if pauseValue.(bool) {
 		result := &checkpointResult{}
 		frame.checkpoint = result
@@ -197,6 +230,16 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 		}
 		result.ref = ref
 		result.valid = true
+		pending, err := rt.approvalWaitPresent(frame)
+		if err != nil {
+			return err
+		}
+		if pending {
+			result.targets, err = rt.approvalTargets(frame, stopped.InterruptContexts)
+			if err != nil {
+				return err
+			}
+		}
 		return ctx.Err()
 	}
 	if exit.CheckpointErr != nil {
@@ -378,6 +421,9 @@ func (rt *runtime) CommitFact(ctx context.Context, scope agent.ExecutionScope, f
 			}
 			if fact.Budget == nil {
 				return product.NewError(product.CodeInvalidArgument, "tool intent requires atomic budget")
+			}
+			if committed.RequestedGrantRef != "" {
+				return rt.manager.ClaimApprovedTool(ctx, frozen, *fact.Budget, approvalIDForCall(rt.manager.View(), committed), rt.active.scope.ExecutionID, rt.approvalNow())
 			}
 			return rt.manager.ClaimTool(ctx, frozen, *fact.Budget)
 		case "tool_observation":

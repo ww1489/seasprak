@@ -13,6 +13,9 @@ import (
 )
 
 func applyCommit(v *View, c store.Commit) error {
+	if err := validateApprovalCommit(v, c); err != nil {
+		return err
+	}
 	for _, r := range c.ControlRecords {
 		if err := applyControl(v, r); err != nil {
 			return err
@@ -60,6 +63,8 @@ func applyControl(v *View, r store.Record) error {
 	switch r.Type {
 	case "execution_policy":
 		return applyExecutionPolicy(v, r)
+	case "approval_binding", "approval_decision", "approval_claim":
+		return applyApprovalRecord(v, r)
 	case "resumed_execution":
 		return applyResumedExecution(v, r)
 	case "model_attempt", "frozen_execution", "interaction", "approval", "checkpoint_ref":

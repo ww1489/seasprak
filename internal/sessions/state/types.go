@@ -69,6 +69,9 @@ type View struct {
 	FrozenExecutions   map[string]FrozenExecution
 	Interactions       map[string]Interaction
 	Approvals          map[string]Approval
+	ApprovalBindings   map[string]ApprovalBinding
+	ApprovalDecisions  map[string]ApprovalDecision
+	ApprovalClaims     map[string]ApprovalClaim
 	Checkpoints        map[string]CheckpointRef
 	ResumedExecutions  map[string]ResumedExecution
 	RepairRequired     bool

@@ -57,8 +57,11 @@ func (rt *runtime) validateResume(ctx context.Context, traceID string, view stat
 		}
 	}
 	configured, hasConfiguration := rt.opts.Model.(interface{ Configuration() llm.ModelConfig })
-	if !hasConfiguration || cp.ModelConfigVersion == "" || configured.Configuration().Version != cp.ModelConfigVersion || cp.ThinkingRef != "" || cp.ExtensionStateCommit != 0 || len(cp.InteractionIDs) != 0 {
+	if !hasConfiguration || cp.ModelConfigVersion == "" || configured.Configuration().Version != cp.ModelConfigVersion || cp.ThinkingRef != "" || cp.ExtensionStateCommit != 0 {
 		return fail("checkpoint model or extension state is unsupported")
+	}
+	if err := rt.validateApprovalResume(cp, view); err != nil {
+		return state.CheckpointRef{}, err
 	}
 	input := view.Inputs[cp.Input.InputID]
 	if input == nil || input.TraceID != traceID || input.State != "consumed" || cp.Input.TraceID != traceID || cp.Input.Kind != "prompt" {
@@ -167,6 +170,16 @@ func validateCheckpointProgress(cp state.CheckpointRef, stored store.StoredSessi
 			case "operation", "trace", "execution_policy", "idempotency", "generation_ref", "queue_hold":
 				// These are control-only changes. Current trace, policy, generation,
 				// stop proof and checkpoint identity were checked above.
+			case "approval_binding":
+				var binding state.ApprovalBinding
+				if commit.CommitSeq != cp.HistoryCommit+1 || json.Unmarshal(rec.Payload, &binding) != nil || binding.CheckpointID != cp.ID || binding.ID != cp.ID+":"+binding.InteractionID {
+					return incompatibleResume("approval target changed after checkpoint")
+				}
+			case "approval_decision":
+				var answer state.ApprovalDecision
+				if json.Unmarshal(rec.Payload, &answer) != nil || answer.BindingID != cp.ID+":"+answer.InteractionID {
+					return incompatibleResume("approval decision is for another checkpoint")
+				}
 			case "input":
 				var input state.InputState
 				if json.Unmarshal(rec.Payload, &input) != nil || input.State != "pending" {

@@ -20,17 +20,20 @@ type ResumeEligibility struct {
 }
 
 type Snapshot struct {
-	Revision       uint64
-	Resume         map[string]ResumeEligibility
-	SessionID      string
-	Cursor         uint64
-	ActiveTrace    string
-	Traces         map[string]*state.TraceState
-	Inputs         map[string]*state.InputState
-	Messages       []agent.AgentMessage
-	Turns          map[string]agent.TurnRecord
-	Calls          map[string]agent.ToolRecord
-	RepairRequired bool
+	Revision         uint64
+	Resume           map[string]ResumeEligibility
+	Interactions     map[string]state.Interaction
+	Approvals        map[string]state.Approval
+	FrozenExecutions map[string]agent.FrozenExecution
+	SessionID        string
+	Cursor           uint64
+	ActiveTrace      string
+	Traces           map[string]*state.TraceState
+	Inputs           map[string]*state.InputState
+	Messages         []agent.AgentMessage
+	Turns            map[string]agent.TurnRecord
+	Calls            map[string]agent.ToolRecord
+	RepairRequired   bool
 }
 type queuedEvent struct {
 	event agent.Event

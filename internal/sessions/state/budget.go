@@ -71,6 +71,13 @@ func (m *Manager) SaveTraceBudget(ctx context.Context, id string, usage agent.Us
 func (m *Manager) ClaimTool(ctx context.Context, frozen agent.FrozenCall, usage agent.Usage) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.claimTool(ctx, frozen, usage, nil)
+}
+
+func (m *Manager) claimTool(ctx context.Context, frozen agent.FrozenCall, usage agent.Usage, approval *ApprovalClaim) error {
+	if description := m.view.FrozenExecutions["execution:"+frozen.CallID]; description.RequestedGrantRef != "" && approval == nil {
+		return product.NewError(product.CodePermissionDenied, "tool claim requires a one-time approval")
+	}
 	call, ok := m.view.Calls[frozen.CallID]
 	if !ok || call.Call != frozen || call.Claimed || call.Observation != nil {
 		return product.NewError(product.CodeStateConflict, "tool call cannot be claimed")
@@ -90,7 +97,11 @@ func (m *Manager) ClaimTool(ctx context.Context, frozen agent.FrozenCall, usage 
 	next := *tr
 	next.Usage = usage
 	call.Claimed = true
-	_, err := m.commit(ctx, []store.Record{record("trace", tr.ID, next), record("tool_call", frozen.CallID, call)}, nil, []agent.Event{m.event("tool.state_changed", tr.ID, call.Scope.TurnID, call)})
+	controls := []store.Record{record("trace", tr.ID, next), record("tool_call", frozen.CallID, call)}
+	if approval != nil {
+		controls = append(controls, record("approval_claim", approval.ApprovalID, *approval))
+	}
+	_, err := m.commit(ctx, controls, nil, []agent.Event{m.event("tool.state_changed", tr.ID, call.Scope.TurnID, call)})
 	return err
 }
 

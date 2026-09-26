@@ -179,6 +179,16 @@ func (e *Executor) Run(ctx context.Context, scope agent.ExecutionScope, callID, 
 		}
 	}
 	if decision == agent.DecisionAsk {
+		if requester, ok := e.sink.(agent.ApprovalRequester); ok && authErr == nil {
+			if err := e.backendAvailable(def, frozen); err != nil {
+				return e.rejectWithError(ctx, envelope, scope, call, deniedOutcome(err), accepted, err)
+			}
+			wait, err := requester.RequestToolApproval(ctx, envelope, frozen)
+			if err != nil {
+				return Outcome{}, err
+			}
+			return Outcome{}, wait
+		}
 		unavailable := product.NewError(product.CodeResourceUnavailable, approvalUnavailableMessage)
 		out, saveErr := e.reject(ctx, envelope, scope, call, Outcome{Status: "denied", Content: approvalUnavailableMessage, SideEffect: "none"}, accepted)
 		if saveErr != nil {

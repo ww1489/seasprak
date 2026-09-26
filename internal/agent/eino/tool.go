@@ -3,6 +3,7 @@ package eino
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
@@ -58,8 +59,18 @@ func (t *pipelineTool) InvokableRun(ctx context.Context, arguments string, _ ...
 }
 
 func (t *pipelineTool) run(ctx context.Context, arguments string) (string, error) {
+	if interrupted, hasState, interactionID := tool.GetInterruptState[string](ctx); interrupted && hasState {
+		targeted, hasAnswer, answer := tool.GetResumeContext[string](ctx)
+		if !targeted || !hasAnswer || (answer != "allowed-once" && answer != "rejected" && answer != "cancelled") {
+			return "", tool.StatefulInterrupt(ctx, interactionID, interactionID)
+		}
+	}
 	out, err := t.exec.Run(ctx, ScopeFromContext(ctx, t.scope), compose.GetToolCallID(ctx), t.info.Name, arguments)
 	if err != nil {
+		var wait *agent.ApprovalWait
+		if errors.As(err, &wait) {
+			return "", tool.StatefulInterrupt(ctx, wait.InteractionID, wait.InteractionID)
+		}
 		return "", err
 	}
 	if out.Status != "succeeded" {

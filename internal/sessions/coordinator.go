@@ -3,6 +3,7 @@ package sessions
 import (
 	"context"
 	"errors"
+	"sort"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
@@ -218,6 +219,27 @@ func (rt *runtime) setBudgetPersistence(frame *execution) {
 	})
 }
 
+// cancellationOnly preserves independent causes in a joined error while
+// suppressing ordinary wrapped cancellation diagnostics.
+func cancellationOnly(err error) bool {
+	if err == context.Canceled {
+		return true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		causes := joined.Unwrap()
+		for _, cause := range causes {
+			if !cancellationOnly(cause) {
+				return false
+			}
+		}
+		return len(causes) != 0
+	}
+	if cause := errors.Unwrap(err); cause != nil {
+		return cancellationOnly(cause)
+	}
+	return false
+}
+
 func (rt *runtime) segmentFinished(frame *execution, runErr error) {
 	if rt.active != frame {
 		return
@@ -242,6 +264,29 @@ func (rt *runtime) segmentFinished(frame *execution, runErr error) {
 		}
 		v = rt.manager.View()
 		tr = v.Traces[frame.scope.TraceID]
+	}
+	if !rt.closing && frame.ctx.Err() == nil && tr.State == "running" && runErr == nil && frame.checkpoint != nil && frame.checkpoint.valid && len(frame.checkpoint.targets) != 0 && !v.TraceHasUnresolvedEffects(tr.ID) {
+		cp, err := rt.pauseReference(frame, frame.input, frame.checkpoint.ref, v)
+		if err == nil {
+			for id := range frame.checkpoint.targets {
+				cp.InteractionIDs = append(cp.InteractionIDs, id)
+			}
+			sort.Strings(cp.InteractionIDs)
+			if frame.pauseID != "" {
+				err = rt.manager.CommitApprovalPause(context.Background(), tr.ID, frame.pauseID, cp, frame.checkpoint.targets)
+			} else {
+				err = rt.manager.CommitApprovalCheckpoint(context.Background(), tr.ID, cp, frame.checkpoint.targets)
+			}
+		}
+		if err == nil {
+			frame.cancel()
+			frame.toolChunks = nil
+			frame.loop = nil
+			rt.active = nil
+			close(frame.done)
+			return
+		}
+		runErr = err
 	}
 	if frame.pauseID != "" && !rt.closing && frame.ctx.Err() == nil && tr.State == "running" && runErr == nil && frame.checkpoint != nil && frame.checkpoint.valid && !v.TraceHasUnresolvedEffects(tr.ID) {
 		cp, err := rt.pauseReference(frame, frame.input, frame.checkpoint.ref, v)
@@ -312,7 +357,7 @@ func (rt *runtime) segmentFinished(frame *execution, runErr error) {
 		}
 	}
 	if rt.manager.Fault() == nil {
-		if runErr != nil && !errors.Is(runErr, context.Canceled) {
+		if runErr != nil && !cancellationOnly(runErr) {
 			_ = rt.manager.SaveTraceError(context.Background(), tr.ID, runErr.Error())
 		}
 		_ = rt.manager.SetTraceState(context.Background(), tr.ID, state, terminal(state))

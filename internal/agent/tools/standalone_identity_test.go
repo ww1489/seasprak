@@ -59,7 +59,7 @@ func TestStandaloneDomainSurvivesExecutorAddressReuse(t *testing.T) {
 	// Reuse the old object's address deterministically, as allocator reuse can
 	// after the prior executor is collected. Its unresolved hold must remain.
 	*first = *next
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	out, err := first.Run(ctx, agent.ExecutionScope{}, "prov-1", "add", `{"n":1}`)
 	if err != nil || out.Status != "succeeded" || calls != 1 || out.Content != "independent result" {

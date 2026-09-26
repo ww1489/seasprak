@@ -1,15 +1,15 @@
 # P2 实施记录与验证证据
 
-记录日期：2026-09-25—2026-09-26；最新复核：2026-09-26。环境：Windows 10.0.26200、Go 1.27.0 windows/amd64。
+记录日期：2026-09-25—2026-09-27；最新复核：2026-09-27。环境：Windows 10.0.26200、Go 1.27.0 windows/amd64。
 基线：`feat/p0-p1-runtime` / `0541e3d`。
 
 ## 当前状态
 
-2026-09-26 最新：Steps 9–10 的 Windows 修复和独立复验见第 20 节，Linux/macOS 运行证据仍缺。Step 11 已部分实施：普通与增强型同步工具接口进入同一执行器，新增行为测试和本轮 Windows 验证通过；两种原生流式接口仍明确拒绝。同步接口上的 SDK 实际输出片段接线及边界见末尾附记，不能以此标记原 Step 11 四接口验收完成。审批中断和原生 reader 提前 Close 后的后端结算仍未满足；维护者随后要求在已验证同步路径继续，Step 12 的条件性交付及 Step 13 的显式恢复接线见末尾执行补充。阶段性提交后的 CI 失败及本轮结论见第 21 节；先前章节保留发生时的历史状态。
+2026-09-27 最新：同步路径已经接入持久 Pause、严格显式 Resume、一次审批应答和原调用定向恢复，实现及红绿记录见末尾 Steps 12–14 执行补充。Pause 先受理与业务中断保存 blob 期间晚受理均保留审批目标，暂停回执与 checkpoint/bindings/stopped 同一提交；最新冻结验证单独记录，修复前结果不作当前证明。先前宽范围 race20 曾在三工具逐个审批的第二次恢复中失败，专项 race40 未再复现；后续确认混合取消错误会隐藏独立失败原因，已用可控时钟行为红测修复这一诊断缺陷。诊断修复后的全仓及保留原范围、追加活动/收尾用例的 race20 通过，详见末尾新验证；历史执行失败原因仍未确认，不将其归因于 Pause 或诊断修复。两种同步工具接口共用唯一执行器，SDK 实际输出片段不是原生 reader 流式完成证明；原 Step 11 两种原生 Streamable 仍明确拒绝，四接口验收未完成。Step 15 可信核对/release、剩余协议、Linux/macOS 和完整 P2 验收仍待实施或认证；第 21 节保留先前 CI 问题及历史边界。
 
 Steps 1–2 已完成依赖/框架边界核实与持久记录专项实现，并通过第 8 节记录的全仓普通/race 验证。按用户后续要求，依赖已升级到第 7 节版本；OpenAI SDK 保留明确兼容例外。流式 Interrupt 探针已补齐，同时保留 reader 内中断重跑 sibling 的原生限制。Steps 3–4 已实现原子调用预算、执行段隔离、活动时间持久预留，以及只读/blob 存储基础，并通过第 11 节的独立 Windows 验证。恢复段来源映射已在 Step 13 同步路径接线，符号链接权限用例和其他平台认证尚待补齐。Steps 5–7 的开发与 Windows 确定性验证已完成：Step 5 的目录/凭据/选项已完成本地验收；Step 6 的有界用量采集与唯一物理请求预算已接线并通过第 13 节的独立 Windows 验收；Step 7 产品 Chat 工厂已实现并通过第 15 节的独立 Windows 全仓验证，真实 endpoint 产品工厂认证仍待 Step 23。Step 8 已补齐 attempt 登记/终态/证据、原子接纳、实时快照和真实工厂受限重试，并通过第 17 节独立 Windows 全仓验证；真实端点及其他平台认证仍待最终验收。Steps 9–10 的 Windows 修复及未完成的平台认证见第 20 节；Step 11 的部分交付与阻塞见第 21 节。Steps 12–23 的原计划全范围交付尚未完成；末尾附记记录 Step 11 内容流、Step 12 同步路径暂停与 Step 13 严格显式恢复的局部交付，不代表原计划 Step 23 验收。本记录不是 P2 完成证明。
 
-此前各阶段的变更已包含在阶段性提交中；本轮 Step 11 同步内容流、Steps 12–13 同步暂停/恢复改动及验证记录尚未提交或推送。原生 Immediate 限制不是由本次修改引入；中间尝试直接接 Immediate 曾破坏 P1 的真实退出等待，已由既有回归发现并修正。以下按实施时间保留历史命令与失败过程，旧版本结果不替代当前验收。
+此前阶段性变更（含 Step 11 同步内容流、Steps 12–13 同步暂停/恢复）已经明确获准提交并推送为 `56c592ae51681676422e0b2b9c5005bac0b95f68`。本轮 Step 14 审批接线及其后的修复、测试和记录尚未提交或推送，没有新的提交授权。原生 Immediate 限制不是由本次修改引入；中间尝试直接接 Immediate 曾破坏 P1 的真实退出等待，已由既有回归发现并修正。以下按实施时间保留历史命令与失败过程，旧版本结果不替代当前验收。
 
 ## 1. 依赖固定与兼容检查
 
@@ -535,3 +535,81 @@ Linux/macOS 运行证据、Windows 文件符号链接跳过项和既有 macOS CI
 - `git diff HEAD --check`：通过，仅 LF/CRLF 提示；本记录追加时曾发现末尾空白行，已修正。`git ls-files --others --exclude-standard` 新增清单只有必要 Go/test 文件，无 exe/test/bin/凭据。sessions、SDK 与本记录的冲突/私钥/常见令牌形式扫描无命中；`.test_env` 仍被 Git 忽略。
 
 最终独立只读复审未发现本轮指定范围内的剩余阻断问题；父执行者验证 GenInput 共享 scope、当前轮次授权、旧 fallback 拒绝及可控取消屏障均实际进入默认调用链。此结论只覆盖已测试的 Windows 同步路径；原计划完整 Step 11、Steps 12–13、P2 三平台与真实五协议认证仍未完成。Linux/macOS build/test/race 本轮未运行，请维护者提供实际环境或 CI 安排，不能将交叉编译视为认证。
+
+## Step 14：同步路径的一次审批与定向恢复（2026-09-27，执行补充）
+
+1. **前置条件：**维护者在阶段性提交 `56c592a` 后要求继续已批准计划。重新阅读开发规划执行规范，确认工作区干净，并先复验受影响完整调用链 race。延续静态 main Agent、两类同步工具的条件性范围，不修改原计划正文，不重复创建待办，不把原生两类 Streamable 或三平台认证记为完成。
+2. **目标与输入：**现有 `state/records.go` 的 immutable Interaction/Approval、operation 幂等记录、原子预算、持久恢复来源及真实 Eino StatefulInterrupt 探针；权威审批、应答、恢复定义为设计 05、06、09、11。当前 ask 会保存 denied 并返回 resource_unavailable，实际审批入口尚缺。
+3. **实施方法：**先写默认行为红测，再沿唯一 mailbox/Manager.commit/Executor.Run 接线。不改旧 Authorize 签名，不建第二许可服务、事实库或 ReAct。初始交互/审批仍不可变，新增有限 `approval_binding`、`approval_decision`、`approval_claim` 记录；框架地址仅在内部 binding 中保存，不作为 SDK 应答参数或公开事件内容。
+4. **动作顺序：**最终描述已冻结后持久 asked，返回窄执行层 ApprovalWait，由同步 Eino wrapper 转成原生 StatefulInterrupt；Wait、blob、实际退出与原调用地址校验后，一事务关联 bindings/checkpoint/stopped。RespondInteraction 使用 Options 中的受信 Principal、expectedRevision 和幂等键，只保存 allowed-once/rejected/cancelled 决定，不自动执行。显式 Resume 从保存映射构造 Targets；未答 sibling 再中断，已有结果复用。启动前当前权限及 24 小时有效期再检查，许可占用、原调用 intent、预算同一提交。
+5. **保留约束：**保持原 Trace/Invocation/Turn/Call/FrozenExecution，只有执行段变化；不放宽 matchesExecution。审批等待期间无活动 worker、工具超时或工具预算占用。SDK 保持唯一 `sdk/sdk.go`，增加必要别名及一致快照；公开交互 TargetRef 始终为空，实际冻结描述供授权查询。缺受信身份、兼容声明或 blob 能力的旧注入仍明确拒绝审批，不假造许可。
+6. **失败处理：**拒绝、取消、过期、策略改变、旧版本和错误绑定均零迟到执行；必要 Append 失败不露出新许可/预算。取消不推断忽略 context 的 hook 已退出。只读核对/release 未实现，已占用许可不自动返还。Pause 与审批合流时，operation 完成、绑定、checkpoint 和 stopped 仍同一提交；批准后的工具观察保存失败仍不重新执行。
+7. **交付物：**新增 `agent/approval.go`、`state/approvals.go`、`sessions/interactions.go`，接入已有工具、策略、Loop 和恢复路径。SDK 的 InteractionResponse、RespondInteraction 及 Interactions/Approvals/FrozenExecutions 快照供外部消费者实际关闭重开、批准和显式恢复。workflow 补参 answer 明确 unsupported；审批 Scope 与许可状态来自已提交事实的派生查询，不另存许可布尔。
+8. **验收：**默认测试覆盖两类同步真实等待、原调用批准恢复、三工具逐个批准跨三次恢复、当前策略/有效期/取消、失败提交和损坏回放。外部 consumer 只通过 sdk 产品入口关闭重开→决定→显式恢复，核对实际模型/工具次数、预算、原身份和私密目标。高风险 race20、全仓普通/race、格式/vet/build/漏洞/live 及新增文件检查须在最终修复后重新确认；Linux/macOS 和完整故障窗另列待验。
+
+### 红测及审查修复记录
+
+- 现有 `ClaimTool` 实际接受了声明需审批但无决定的调用，红测收到 nil；补为必须走专用批准占用，并把三类事实原子化。 asked、绑定、决定及 claim 保存失败的视图均保持不变。
+- 会话两种同步接口最初均因 resource_unavailable 终结；接入 ApprovalWait/原生中断后真实安全等待，模型 1、工具 0、预算 0，无伪造结果或 turn_end。保存批准后最初仍因旧 Resume 不支持 InteractionIDs 而拒绝；添加严格绑定和保存决定合并后，恢复原调用转绿。
+- SDK consumer 最初收到 paused 但快照没有 Interactions；补齐派生快照和应答入口后，真实磁盘重开不执行，批准不执行，显式恢复工具 1 次、模型总计 2 次，幂等重试返回原回执。
+- 独立状态复核建议已变为三条真实红测：恢复来源只追一层导致第二次未答重中断失败；跨会话 operation 仍能回放决定；删掉 claim 提交的预算 trace 仍能重开。分别修为有循环检测、逐层核对 CallID 的持久来源链、operation.SessionID 绑定、提交前整批校验原 call intent/预算/许可确实同事务；三条转绿。
+- 三工具逐个回答的两接口产品测试验证计数依次 1/0/0、1/1/0、1/1/1，预算 1、2、3，模型总计 2，原 call Scope 不改写；初始 interaction/approval 保持不可变。
+- 显式 Pause 先受理时，旧代码成功暂停却丢 InteractionIDs 和 targets；新增屏障红测后改为从 CancelError 的可信上下文捕获目标，并由 CommitApprovalPause 原子完成关联及回执。
+- 再次只读复审定位反向窗口：真实业务中断已确定退出原因、blob 保存仍阻塞时受理 Pause，旧分支将等待点错误收敛为失败。Put 通道屏障红测真实收到 state_conflict；最小修复按实际 InterruptError 处理业务等待，不用稍后到达的 Pause 意图改写框架退出原因。两种次序均转绿，后续必须重新验收冻结版本。
+- 取消后派生 Approval 状态仍显示 allowed-once 的红测已修复；未占用许可显示 cancelled，已占用许可仍保持 claimed，不回滚原决定或返还预算。
+
+中间版本审批完整调用链 `go test -race ./internal/sessions ./internal/sessions/state ./sdk/testdata/consumer -run 'Approval|ApprovesOriginal' -count=20 -timeout=240s` 退出码 0，sessions 128.849 秒、state 20.789 秒、consumer 21.004 秒。此结果发生在最后晚到 Pause 红测修复之前，不替代最终冻结验证。Step 15 Reconcile、审批 no-start/release、原生流式、扩展/workflow 与跨平台均未交付，本节不作为完整 Step 14/P2 完成证明。本轮原计划和完整待办继续未完成，后续改动未提交或推送。
+
+### 最新版本复验与历史失败（2026-09-27）
+
+修复晚到 Pause 后重新读取先前后台宽范围结果：`go test -race ./internal/sessions ./internal/sessions/state ./internal/agent/eino -run 'Approval|Resume|Pause|Cancel|Close|UnknownEffect|SessionCanQuery|Operation|TestP2PolicyAuthorizationRequires' -count=20 -timeout=600s` 退出码 1，sessions 464.737 秒。失败为 `TestApprovalPartialAnswersKeepUnansweredOriginalCallsWaiting/invokable` 在第二个工具 b 恢复后 trace=failed、ToolExecutions=1、公开 Error 为空。该进程启动早于最后 Pause 修复，记录作为真实中间失败，不推断是 Pause 所致，也不当作通过。为保留可核查证据，测试在失败时额外记录当前执行段的活动租约原因与三个实际工具计数，未降低任何状态、预算或原身份断言。当前同一用例 `go test -race ./internal/sessions -run '^TestApprovalPartialAnswersKeepUnansweredOriginalCallsWaiting$' -count=40 -timeout=240s` 退出码 0，186.025 秒；尚不足以认定旧失败的根因已经定位或修复。
+
+最新生产修复后主执行者已经实际完成，以下命令均退出码 0：
+
+- `gofmt -l .`：首次发现仅新 `approval_pause_test.go` 未格式化，`go fmt ./...` 后重查无输出；`go vet ./...`、`go build ./...`、`go mod verify`（all modules verified）。
+- `go test -race ./internal/llm ./internal/agent/... ./internal/sessions/... -count=1 -timeout=240s`：完整受影响调用链通过，sessions 41.346 秒；先于全仓运行。
+- `go test ./... -count=1 -timeout=240s`：全仓通过，sessions 7.966 秒。
+- `go test -race ./... -count=1 -timeout=240s`：全仓通过，sessions 41.045 秒。
+- `go test ./internal/architecture ./sdk ./sdk/testdata/consumer -count=1 -timeout=120s`；`go test -race ./sdk/testdata/consumer -count=10 -timeout=180s`（23.866 秒）。外部消费者仍实际经过关闭重开、批准、显式恢复和查询，Open/决定零执行、最终实际调用一次。
+- `go test ./internal/sessions ./internal/sessions/store/jsonl -run '^(TestSessionCrash|TestCommitCrashSubprocess)$' -count=10 -timeout=300s`：sessions 11.692 秒、jsonl 0.607 秒。旧 SessionCrash 的 input.accepted、assistant、tool_intent、tool_observation、trace.settled 各 before/after 窗口分别重复 10 次（合计 100 个子案例），torn-tail 真子进程窗口重复 10 次；不冒充新增审批、Resume 或 Reconcile 提交窗的完整 kill 认证。
+- `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...`：No vulnerabilities found；固定工具版本，不修改项目依赖。
+- `go test -tags live ./internal/llm -count=1 -v -timeout=120s`：`TestLocalCompatibleModel` 明确 PASS（1.03 秒），完整带标签包退出码 0。配置仅由测试内部加载，未读取或打印认证值；这是现有旧 HTTP 入口，不代表五协议产品工厂 live 认证。
+
+最终 Pause 窄复审只读结果已返回：两条先/晚受理用例 `go test -race ./internal/sessions -run '^TestPauseDuringApproval(Preparation|CheckpointSave)PreservesAnswerableCheckpoint$' -count=20` 通过（24.493 秒）；状态、会话、Eino 的审批范围 race20，以及取消覆盖 Pause、blob/关联故障、真实工具退出和 Close 范围 race20 均通过。复核确认条件删除仍保留 Cancel/Close/context 优先、原输入/可信 target/blob 校验，以及 Pause operation 与关联/停止证明同提交。此复审仅为限定同步路径结论，不替代父执行者全仓和宽范围复验。
+
+最终完整高风险命令 `go test -race ./internal/sessions ./internal/sessions/state ./internal/agent/eino -run 'Approval|Resume|Pause|Cancel|Close|UnknownEffect|SessionCanQuery|Operation|TestP2PolicyAuthorizationRequires' -count=20 -timeout=900s` 退出码 0：sessions 456.052 秒、state 22.784 秒、Eino 2.561 秒。900 秒为根据中间实测 464.737 秒预留的总运行上限，不缩减测试范围或改变产品等待逻辑。此为最后 Pause 生产修复及测试失败诊断补充后的新验证，完整范围含两条 Pause 次序用例、多轮部分应答、取消/关闭、原恢复身份和既有伪造 scope 门禁。旧中间失败没有再次出现；旧日志缺少活动租约原因，不能因此宣称历史根因已修复。
+
+差异卫生首次 `git diff HEAD --check` 退出码 2，仅报告本记录 EOF 多余空行；去除该空行后退出码 0，仅有 Git 的 LF/CRLF 提示。另逐个用 `git diff --no-index --check -- NUL <new-file>` 检查 9 个新增 Go 文件，无空白错误输出；该形式因新文件与 NUL 不同返回 1，属于 diff 差异状态，不当作命令 0，未发现返回 2 的空白错误。新增清单只有上述 Go/test 文件，无 `.test_env`、exe、test 或 bin 产物；sessions、agent、SDK 与本记录扫描冲突/私钥/常见令牌形式均无命中。`.test_env` 存在且仍被 Git 忽略，`go.mod`/`go.sum` 本轮没有差异，Eino 仍固定 v0.9.21，无 replace。
+
+完整 Step 14/15 和 P2 仍保持未完成：原生两类 Streamable、可信 Reconcile/no-start/release、完整审批与恢复子进程故障窗、其余协议/选择/受控内建能力尚待相应步骤交付。Linux/macOS 的 build/test/race 本轮未运行（无可用实际环境，退出码不适用）；Windows 文件符号链接权限跳过项、此前 macOS CI 失败细节及五协议产品工厂 live 认证仍待验，请维护者安排实际环境或 CI 并提供相关失败日志。交叉编译或配置文件存在不计作运行通过。本轮不修改原计划、不新建待办、不改依赖或上游 Eino、不提交或推送。
+
+### Step 14 后续：保留混合取消错误的独立失败原因（2026-09-27）
+
+1. **前置条件：**最新 Pause/审批冻结版本的全仓及完整高风险 race20 已通过；历史部分应答失败仍未归因。进一步只读检查确认 `errors.Is(runErr, context.Canceled)` 对整个 joined error 返回 true，会隐藏其他独立失败，不把这个诊断缺陷当作历史失败的已知取消来源。
+2. **目标与输入：**`sessions/runSegment` 把执行退出与 `endActivity` 原因通过 errors.Join 合并；`coordinator.go/segmentFinished` 决定状态并保存错误；已有 manualActivityClock、activitySession 和 memory Manager 可直接复现，不需网络、真实等待或新生产接口。
+3. **实施方法：**先新增默认 `execution_error_test.go`，以真实活动时钟推进与生产 worker 收尾为行为红测，另从真实 Manager 状态调用同一 segmentFinished 检查纯取消/包装/合并错误。只改变错误是否持久保存的判定，不新建日志、状态缓存或执行循环。
+4. **动作顺序：**模型实际进入后将可控时钟推进一秒，确认已取消但模型未退出且没有停止证明；释放模型后原路径保存 failed 和结算，检查预算错误与重开。新增私有 `cancellationOnly` 递归检查单层 Unwrap 和 joined error 的每个原因；只有所有叶子都是 context.Canceled 才抑制错误，独立预算/DeadlineExceeded 原因保留原完整诊断。
+5. **保留约束：**不改 worker 生命周期、活动预留/续订、Cancel/Close、终态优先级、预算、原审批 claim 或工具启动规则。普通纯取消（包括包装和多取消合并）仍不写失败诊断；有独立失败时取消终态仍为 cancelled，不复活执行。仅使用现有 budget_exhausted 错误码。
+6. **失败处理：**未退出模型仍无 ExecutionStopped；一秒预留到期仍保守停止，不因总额还有两秒就继续派请求。保存/重开不能自动执行或返额。新诊断帮助下次归因，但旧日志缺少取消来源/期限，历史原因保持未确认。
+7. **交付物：**一个内部判定函数、收尾路径一处条件替换、默认行为回归及更新后的验证记录；SDK/依赖/原计划不改，不提交或推送。
+8. **验收：**首轮普通测试真实失败：活动到期后 failed/Error 为空，另外三个混合错误子案例同样丢失诊断；修复后相同两条行为测试转绿，`-race -count=100` 退出码 0（13.555 秒）。断言实际模型一次、工具预算零、原传输预算一次、实际退出后 stopped、结算一秒及重开保留错误；纯取消用例保持空错误，混合错误用例保留诊断且状态仍 cancelled。
+
+由于收尾判定新增生产改动，上节 456.052 秒的宽范围通过只保留为修改前证据。本次重新冻结后的实际检查均退出码 0：
+
+- `gofmt -l .` 无输出；`go vet ./...`、`go build ./...`、`go mod verify`（all modules verified）。
+- `go test -race ./internal/llm ./internal/agent/... ./internal/sessions/... -count=1 -timeout=240s`：sessions 40.880 秒，先于全仓运行。
+- `go test ./... -count=1 -timeout=240s`：sessions 7.916 秒；`go test -race ./... -count=1 -timeout=240s`：sessions 41.373 秒。
+- `go test ./internal/architecture ./sdk ./sdk/testdata/consumer -count=1 -timeout=120s`；`go test -race ./sdk/testdata/consumer -count=10 -timeout=180s`（24.427 秒）。
+- `go test ./internal/sessions ./internal/sessions/store/jsonl -run '^(TestSessionCrash|TestCommitCrashSubprocess)$' -count=10 -timeout=300s`：sessions 11.668 秒、jsonl 0.575 秒；仍是原十个 before/after 窗口各 10 次及 torn-tail 10 次，不扩大新增故障窗认证。
+- `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...`：No vulnerabilities found。
+- `go test -tags live ./internal/llm -count=1 -timeout=120s`；另 `go test -tags live ./internal/llm -run '^TestLocalCompatibleModel$' -count=1 -v -timeout=40s` 明确 PASS（0.96 秒），不扩大旧入口认证范围，不查看或输出本地配置。
+
+最终命令 `go test -race ./internal/sessions ./internal/sessions/state ./internal/agent/eino -run 'Approval|Resume|Pause|Cancel|Close|UnknownEffect|SessionCanQuery|Operation|TestP2PolicyAuthorizationRequires|Activity|ExecutionFinalization' -count=20 -timeout=900s` 退出码 0：sessions 477.625 秒、state 23.793 秒、Eino 2.607 秒。保留原完整高风险过滤器，只追加活动与收尾诊断用例；这次结果包含本节诊断生产修复，不沿用之前冻结通过。
+
+本轮唯一追加的未跟踪文件 `internal/sessions/execution_error_test.go` 通过单独 no-index 空白检查（返回 1 为新内容差异，无空白错误）；`git diff HEAD --check` 退出码 0，仅有 LF/CRLF 提示。新增文件及变更包/本记录秘密、私钥与冲突模式扫描无命中，凭据仍忽略，依赖没有差异。原生流式、Reconcile/release、跨平台及完整 P2 状态仍未完成；平台实际环境仍按上节请求维护者安排，历史部分应答失败保持未归因。本次未提交或推送。
+
+### 当前审批批次的提交前复验（2026-09-27）
+
+维护者随后明确授权当前差异提交并推送，同时要求继续所有剩余步骤。提交前完整受影响 race 通过（sessions 40.758 秒）；格式无输出，vet/build/mod verify、固定 govulncheck 和旧 live 包均退出码 0。首次全仓普通测试退出码 1：`TestStandaloneDomainSurvivesExecutorAddressReuse` 的测试挂起保护只有 100ms，本次启动前返回 `permission_denied: execution ticket is expired`、calls=0；同次全仓 race 通过。该用例测试独立调度域，不验证百毫秒启动性能；仅将其测试调用期限改为 5 秒，不改生产票据期限、取消或授权规则，保留实际执行一次和旧未知 hold 仍在的全部断言。
+
+调整后 `go test -race ./internal/agent/tools -count=20 -timeout=180s` 退出码 0（6.109 秒）；重新执行 `go test ./... -count=1 -timeout=240s` 和 `go test -race ./... -count=1 -timeout=240s` 均退出码 0（sessions 12.452 秒、42.475 秒）。sessions/agent/SDK 与新增文件秘密和冲突模式扫描无命中，原 `.test_env` 不进入暂存。上节高风险 race20 和 crash10 的生产版本未改变，这次只改测试保护期限；其结果不扩大为 P2 或三平台完成。实际提交/推送结果另由 Git 核对，不修改原计划文件。
