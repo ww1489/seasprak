@@ -40,6 +40,7 @@ type OperationStatus struct {
 	Revision  uint64
 	ResultRef string
 	ErrorRef  string
+	Result    *Reconciliation `json:"result,omitempty"`
 }
 
 func operationDigest(cmd OperationCommand) (string, error) {
@@ -112,6 +113,12 @@ func (m *Manager) GetOperation(id string) (OperationStatus, error) {
 	}
 	result := OperationStatus{OperationReceipt: op.Receipt, Revision: op.Revision, ResultRef: op.ResultRef, ErrorRef: op.ErrorRef}
 	result.State = op.State
+	if op.ResultRef != "" {
+		if reconciliation, ok := m.view.Reconciliations[op.ResultRef]; ok {
+			copy := clone(reconciliation)
+			result.Result = &copy
+		}
+	}
 	return result, nil
 }
 

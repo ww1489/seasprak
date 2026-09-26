@@ -35,4 +35,5 @@ type Options struct {
 	Principal             string
 	ReadOnly              bool
 	GenerationFingerprint string // Trusted application/SDK build and model/tool/hook/backend implementation version; required for Resume.
+	ReconcileQueries      map[string]ReconcileQuery
 }

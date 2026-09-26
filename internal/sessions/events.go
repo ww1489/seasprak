@@ -33,6 +33,8 @@ type Snapshot struct {
 	Messages         []agent.AgentMessage
 	Turns            map[string]agent.TurnRecord
 	Calls            map[string]agent.ToolRecord
+	Operations       map[string]state.Operation
+	Reconciliations  map[string]state.Reconciliation
 	RepairRequired   bool
 }
 type queuedEvent struct {

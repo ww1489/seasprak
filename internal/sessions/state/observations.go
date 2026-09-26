@@ -94,7 +94,7 @@ func applyObservation(v *View, r store.Record) error {
 	if next.Version != old.Version+1 || next.PreviousID != old.ID {
 		return product.NewError(product.CodeStateConflict, "observation does not extend current revision")
 	}
-	if old.Observation.Executed && !next.Observation.Executed || old.Observation.SideEffect == "confirmed" && next.Observation.SideEffect != "confirmed" {
+	if old.Observation.SideEffect == "confirmed" && (!next.Observation.Executed || next.Observation.SideEffect != "confirmed") {
 		return product.NewError(product.CodeStateConflict, "confirmed execution facts cannot be erased")
 	}
 	if _, ok := v.Observations[next.ID]; ok {
@@ -117,7 +117,45 @@ func applyObservation(v *View, r store.Record) error {
 	return nil
 }
 
-// Old journals had one unversioned result per call. Its deterministic synthetic
+// CommitReconciliation appends the next observation, reconciliation result and
+// operation completion in one journal commit. It never rewrites the original
+// ToolRecord or refunds the original claim/budget.
+func (m *Manager) CommitReconciliation(ctx context.Context, operationID string, expectedRevision uint64, next ObservationRevision, result Reconciliation) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	op, ok := m.view.Operations[operationID]
+	if !ok || op.Kind != "reconcile" || op.State != "running" || op.Revision != expectedRevision || result.OperationID != operationID || result.ID == "" || result.CallID == "" || result.NewObservationID != next.ID || result.ObservationID != next.PreviousID || result.ObservationVersion != next.Version-1 {
+		return product.NewError(product.CodeStateConflict, "reconciliation operation or evidence is stale")
+	}
+	old, ok := m.view.latestObservation(next.CallID)
+	if !ok || old.ID != result.ObservationID || old.Version != result.ObservationVersion || next.Version != old.Version+1 || next.PreviousID != old.ID {
+		return product.NewError(product.CodeStateConflict, "reconciliation observation revision changed")
+	}
+	if next.ID == "" || next.CallID != result.CallID || result.EvidenceSource == "" || len(result.EvidenceRefs) == 0 {
+		return product.NewError(product.CodeInvalidArgument, "reconciliation evidence is incomplete")
+	}
+	nextOperation := op
+	nextOperation.Revision++
+	nextOperation.State = "completed"
+	nextOperation.ResultRef = result.ID
+	controls := []store.Record{
+		record("observation_revision", next.ID, next),
+		record("reconciliation", result.ID, result),
+		record("operation", operationID, nextOperation),
+	}
+	call := m.view.Calls[next.CallID]
+	payload := struct {
+		CallID           string `json:"callId"`
+		ObservationID    string `json:"observationId"`
+		ReconciliationID string `json:"reconciliationId"`
+		Status           string `json:"status"`
+		SideEffect       string `json:"sideEffect"`
+		Executed         bool   `json:"executed"`
+	}{next.CallID, next.ID, result.ID, next.Observation.Status, next.Observation.SideEffect, next.Observation.Executed}
+	_, err := m.commit(ctx, controls, nil, []agent.Event{m.event("tool.state_changed", call.Scope.TraceID, call.Scope.TurnID, payload)})
+	return err
+}
+
 // identity is only a replay reference; version 1 is never re-written to the log.
 func applyLegacyObservation(v *View, call agent.ToolRecord) error {
 	if call.Observation == nil {

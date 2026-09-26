@@ -102,7 +102,13 @@ func (rt *runtime) restoreResourceHolds() error {
 			continue
 		}
 		holdID := tools.ResourceHoldID(rt.opts.SessionID, id)
-		if call.Observation != nil && call.Observation.SideEffect != "unknown" && call.Observation.Status != "outcome_unknown" {
+		known := false
+		if reconciled, ok := v.EffectiveObservation(id); ok {
+			known = reconciled.Observation.SideEffect != "unknown" && reconciled.Observation.Status != "outcome_unknown"
+		} else if call.Observation != nil {
+			known = call.Observation.SideEffect != "unknown" && call.Observation.Status != "outcome_unknown"
+		}
+		if known {
 			release = append(release, holdID)
 			continue
 		}

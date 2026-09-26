@@ -30,11 +30,32 @@ func (m *Manager) ConfirmExecutionStopped(ctx context.Context, id string) error 
 	return err
 }
 
-// TraceHasUnresolvedEffects includes an occupied call without a durable result.
-// In particular, absence of an in-memory worker is not stopped-execution proof.
+func (v View) EffectiveObservation(callID string) (ObservationRevision, bool) {
+	var latest ObservationRevision
+	for _, reconciliation := range v.Reconciliations {
+		if reconciliation.CallID != callID {
+			continue
+		}
+		observation, ok := v.Observations[reconciliation.NewObservationID]
+		if ok && observation.Version > latest.Version {
+			latest = observation
+		}
+	}
+	return latest, latest.Version != 0
+}
+
 func (v View) TraceHasUnresolvedEffects(id string) bool {
 	for _, call := range v.Calls {
-		if call.Scope.TraceID == id && (unknownEffect(call) || call.Claimed && call.Observation == nil) {
+		if call.Scope.TraceID != id {
+			continue
+		}
+		if latest, ok := v.EffectiveObservation(call.Call.CallID); ok {
+			if unresolvedObservation(latest.Observation) {
+				return true
+			}
+			continue
+		}
+		if unknownEffect(call) || call.Claimed && call.Observation == nil {
 			return true
 		}
 	}
@@ -46,6 +67,12 @@ func (v View) TraceHasUnresolvedEffects(id string) bool {
 // unknown result and does not prevent accepting work into the existing queue.
 func (v View) HasUnresolvedEffects() bool {
 	for _, call := range v.Calls {
+		if latest, ok := v.EffectiveObservation(call.Call.CallID); ok {
+			if unresolvedObservation(latest.Observation) {
+				return true
+			}
+			continue
+		}
 		if unknownEffect(call) {
 			return true
 		}
@@ -59,6 +86,10 @@ func (v View) HasUnresolvedEffects() bool {
 	return false
 }
 
+func unresolvedObservation(observation agent.ToolObservation) bool {
+	return observation.SideEffect == "unknown" || observation.Status == "outcome_unknown"
+}
+
 func unknownEffect(call agent.ToolRecord) bool {
-	return call.Observation != nil && (call.Observation.SideEffect == "unknown" || call.Observation.Status == "outcome_unknown")
+	return call.Observation != nil && unresolvedObservation(*call.Observation)
 }

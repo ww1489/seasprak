@@ -131,5 +131,5 @@ func (s *AgentSession) Snapshot(ctx context.Context) (Snapshot, error) {
 
 func (rt *runtime) snapshot(v state.View, resume map[string]ResumeEligibility) Snapshot {
 	interactions, approvals := rt.snapshotApprovals(v)
-	return Snapshot{Revision: v.LastSeq, SessionID: rt.opts.SessionID, Cursor: v.Cursor, ActiveTrace: v.ActiveTrace, Traces: v.Traces, Inputs: v.Inputs, Messages: v.Messages, Turns: v.Turns, Calls: v.Calls, RepairRequired: v.RepairRequired, Resume: resume, Interactions: interactions, Approvals: approvals, FrozenExecutions: v.FrozenExecutions}
+	return Snapshot{Revision: v.LastSeq, SessionID: rt.opts.SessionID, Cursor: v.Cursor, ActiveTrace: v.ActiveTrace, Traces: v.Traces, Inputs: v.Inputs, Messages: v.Messages, Turns: v.Turns, Calls: v.Calls, Operations: v.Operations, Reconciliations: v.Reconciliations, RepairRequired: v.RepairRequired, Resume: resume, Interactions: interactions, Approvals: approvals, FrozenExecutions: v.FrozenExecutions}
 }
