@@ -2,6 +2,9 @@ package config
 
 import "time"
 
+// ToolOutputChunkBytes is the maximum UTF-8 text size of one temporary output event.
+const ToolOutputChunkBytes = 50 << 10
+
 // Limits holds the engineering protection defaults from the delivery plan.
 type Limits struct {
 	LogicalModelRequests   int

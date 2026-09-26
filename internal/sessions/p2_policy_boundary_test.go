@@ -176,6 +176,18 @@ func TestP2PolicyAuthorizationRequiresCommittedMatchingDescriptor(t *testing.T) 
 	}
 }
 
+// policyWaitDeadline lets the test expire the caller's wait only after the
+// mailbox has committed cancellation. A real 20ms timer could expire before
+// acceptance under race instrumentation, which does not cancel execution.
+type policyWaitDeadline struct{ context.Context }
+
+func (c policyWaitDeadline) Err() error {
+	if c.Context.Err() != nil {
+		return context.Cause(c.Context)
+	}
+	return nil
+}
+
 func TestP2PolicySessionChangedAfterFreezeAndCancelledHook(t *testing.T) {
 	for _, cancelled := range []bool{false, true} {
 		t.Run(map[bool]string{false: "changed", true: "cancelled-hook"}[cancelled], func(t *testing.T) {
@@ -216,9 +228,18 @@ func TestP2PolicySessionChangedAfterFreezeAndCancelledHook(t *testing.T) {
 				t.Fatal("hook not entered")
 			}
 			if cancelled {
-				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-				err := s.Cancel(ctx, receipt.TraceID)
-				cancel()
+				base, expire := context.WithCancelCause(context.Background())
+				ctx := policyWaitDeadline{base}
+				defer expire(context.Canceled)
+				result := make(chan error, 1)
+				go func() { result <- s.Cancel(ctx, receipt.TraceID) }()
+				select {
+				case <-frame.ctx.Done(): // accepted intent, not a stopped proof
+				case <-time.After(5 * time.Second):
+					t.Fatal("cancellation was not accepted")
+				}
+				expire(context.DeadlineExceeded)
+				err := <-result
 				if !errors.Is(err, context.DeadlineExceeded) {
 					t.Fatalf("cancel=%v", err)
 				}

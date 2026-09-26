@@ -42,33 +42,55 @@ type OperationStatus struct {
 	ErrorRef  string
 }
 
+func operationDigest(cmd OperationCommand) (string, error) {
+	content, err := json.Marshal(struct {
+		Content          json.RawMessage `json:"content"`
+		ExpectedRevision uint64          `json:"expectedRevision"`
+	}{cmd.Content, cmd.ExpectedRevision})
+	if err != nil {
+		return "", product.NewError(product.CodeInvalidArgument, "invalid operation content")
+	}
+	return digestCommand(agent.InputCommand{Kind: cmd.Kind, TargetTraceID: cmd.Target, Content: content})
+}
+
+func (m *Manager) FindOperation(cmd OperationCommand) (OperationReceipt, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.findOperation(cmd)
+}
+
+func (m *Manager) findOperation(cmd OperationCommand) (OperationReceipt, bool, error) {
+	if cmd.IdempotencyKey == "" {
+		return OperationReceipt{}, false, nil
+	}
+	digest, err := operationDigest(cmd)
+	if err != nil {
+		return OperationReceipt{}, false, err
+	}
+	for _, old := range m.view.Operations {
+		if old.Principal == cmd.Principal && old.SessionID == m.sessionID && old.Kind == cmd.Kind && old.Key == cmd.IdempotencyKey {
+			if old.Digest != digest {
+				return OperationReceipt{}, false, product.NewError(product.CodeIdempotencyConflict, "key already belongs to different operation content")
+			}
+			return old.Receipt, true, nil
+		}
+	}
+	return OperationReceipt{}, false, nil
+}
+
 func (m *Manager) AcceptOperation(ctx context.Context, cmd OperationCommand) (OperationReceipt, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if cmd.Kind == "" || cmd.Target == "" {
 		return OperationReceipt{}, product.NewError(product.CodeInvalidArgument, "operation kind and target are required")
 	}
-	content, err := json.Marshal(struct {
-		Content          json.RawMessage `json:"content"`
-		ExpectedRevision uint64          `json:"expectedRevision"`
-	}{cmd.Content, cmd.ExpectedRevision})
-	if err != nil {
-		return OperationReceipt{}, product.NewError(product.CodeInvalidArgument, "invalid operation content")
-	}
-	digest, err := digestCommand(agent.InputCommand{Kind: cmd.Kind, TargetTraceID: cmd.Target, Content: content})
+	digest, err := operationDigest(cmd)
 	if err != nil {
 		return OperationReceipt{}, err
 	}
 	// Check durable receipts before any revision or operation-state precondition.
-	if cmd.IdempotencyKey != "" {
-		for _, old := range m.view.Operations {
-			if old.Principal == cmd.Principal && old.SessionID == m.sessionID && old.Kind == cmd.Kind && old.Key == cmd.IdempotencyKey {
-				if old.Digest != digest {
-					return OperationReceipt{}, product.NewError(product.CodeIdempotencyConflict, "key already belongs to different operation content")
-				}
-				return old.Receipt, nil
-			}
-		}
+	if receipt, found, err := m.findOperation(cmd); found || err != nil {
+		return receipt, err
 	}
 	if cmd.ExpectedRevision != m.view.LastSeq {
 		return OperationReceipt{}, product.NewError(product.CodeStateConflict, "session revision changed")

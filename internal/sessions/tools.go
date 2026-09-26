@@ -22,6 +22,9 @@ func alignTools(opts *Options) ([]toolDecl, error) {
 	infos := make([]*schema.ToolInfo, 0, len(opts.Tools))
 	seen := map[string]struct{}{}
 	for _, def := range opts.Tools {
+		if def.Run != nil && def.RunWithOutput != nil {
+			return nil, product.NewError(product.CodeInvalidArgument, "tool has conflicting execution callbacks")
+		}
 		if def.Name == "" || def.Version == "" {
 			return nil, product.NewError(product.CodeInvalidArgument, "tool name and implementation version are required")
 		}
@@ -29,6 +32,12 @@ func alignTools(opts *Options) ([]toolDecl, error) {
 			return nil, product.Errorf(product.CodeInvalidArgument, "duplicate tool %s", def.Name)
 		}
 		seen[def.Name] = struct{}{}
+		if !tools.ValidToolInterface(def.ToolInterface) {
+			return nil, product.NewError(product.CodeInvalidArgument, "tool interface is unsupported")
+		}
+		if def.ToolInterface == "streamable" || def.ToolInterface == "enhanced-streamable" {
+			return nil, product.NewError(product.CodeResourceUnavailable, "streaming tool lifecycle is unavailable")
+		}
 		info, err := toolInfoFromDefinition(def)
 		if err != nil {
 			return nil, err
@@ -40,7 +49,7 @@ func alignTools(opts *Options) ([]toolDecl, error) {
 		}
 		static := def.Execution.Clone()
 		decls = append(decls, toolDecl{
-			Name: def.Name, Version: def.Version, Description: def.Description, Schema: json.RawMessage(schemaText), Execution: &static,
+			Name: def.Name, Version: def.Version, Description: def.Description, Schema: json.RawMessage(schemaText), ToolInterface: def.ToolInterface, Execution: &static, OutputCallback: def.RunWithOutput != nil,
 		})
 	}
 	if err := matchToolInfos(decls, opts.ToolInfos); err != nil {

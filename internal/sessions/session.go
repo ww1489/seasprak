@@ -95,6 +95,40 @@ func (s *AgentSession) Snapshot(ctx context.Context) (Snapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return Snapshot{}, err
 	}
-	v := s.rt.manager.View()
-	return Snapshot{SessionID: s.rt.opts.SessionID, Cursor: v.Cursor, ActiveTrace: v.ActiveTrace, Traces: v.Traces, Inputs: v.Inputs, Messages: v.Messages, Turns: v.Turns, Calls: v.Calls, RepairRequired: v.RepairRequired}, nil
+	select {
+	case <-s.rt.done:
+		return s.rt.snapshot(s.rt.manager.View(), nil), nil
+	default:
+	}
+	value, err := s.rt.call(ctx, func(rt *runtime) (any, error) {
+		v := rt.manager.View()
+		resume := make(map[string]ResumeEligibility, len(v.Traces))
+		for id := range v.Traces {
+			err := rt.writable()
+			if err == nil {
+				_, err = rt.validateResume(ctx, id, v)
+			}
+			status := ResumeEligibility{CanResume: err == nil}
+			if err != nil {
+				status.Code = product.CodeIncompatibleResume
+				if pe, ok := product.AsError(err); ok {
+					status.Code = pe.Code
+					status.Reason = pe.Message
+				}
+			}
+			resume[id] = status
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return rt.snapshot(v, resume), nil
+	})
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return value.(Snapshot), nil
+}
+
+func (rt *runtime) snapshot(v state.View, resume map[string]ResumeEligibility) Snapshot {
+	return Snapshot{Revision: v.LastSeq, SessionID: rt.opts.SessionID, Cursor: v.Cursor, ActiveTrace: v.ActiveTrace, Traces: v.Traces, Inputs: v.Inputs, Messages: v.Messages, Turns: v.Turns, Calls: v.Calls, RepairRequired: v.RepairRequired, Resume: resume}
 }

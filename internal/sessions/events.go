@@ -7,12 +7,21 @@ import (
 	product "github.com/ww1489/seasprak/internal/errors"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ww1489/seasprak/internal/agent"
 	"github.com/ww1489/seasprak/internal/sessions/state"
 )
 
+type ResumeEligibility struct {
+	CanResume bool   `json:"canResume"`
+	Code      string `json:"code,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
 type Snapshot struct {
+	Revision       uint64
+	Resume         map[string]ResumeEligibility
 	SessionID      string
 	Cursor         uint64
 	ActiveTrace    string
@@ -203,6 +212,52 @@ func (rt *runtime) publishModelSnapshot(ctx context.Context, scope agent.Executi
 		return err
 	}
 	ev := agent.Event{SchemaVersion: 1, Type: "message.snapshot", Scope: agent.EventScope{SessionID: scope.SessionID, TraceID: scope.TraceID, TurnID: scope.TurnID}, StreamID: update.StreamID, ChunkSeq: &update.ChunkSeq, OccurredAt: time.Now().UTC(), Payload: raw}
+	for id, sub := range rt.subs {
+		if !sub.enqueue(ev) {
+			delete(rt.subs, id)
+		}
+	}
+	return nil
+}
+
+func (rt *runtime) publishToolOutput(ctx context.Context, scope agent.ExecutionScope, payload json.RawMessage) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := rt.active.ctx.Err(); err != nil {
+		return err
+	}
+	if !utf8.Valid(payload) {
+		return product.NewError(product.CodeInvalidArgument, "tool output fact is not valid UTF-8")
+	}
+	var update agent.ToolOutputFact
+	if err := json.Unmarshal(payload, &update); err != nil {
+		return err
+	}
+	view := rt.manager.View()
+	call, exists := view.Calls[update.CallID]
+	trace := view.Traces[scope.TraceID]
+	if !exists || trace == nil || trace.State != "running" || !call.Claimed || call.Observation != nil ||
+		!acceptedAttemptForCall(view, call) || !rt.matchesCallScope(scope, call) || call.Call.CallID != update.ToolCallID ||
+		update.StreamID == "" || update.ChunkSeq == 0 || update.Text == "" || len(update.Text) > config.ToolOutputChunkBytes ||
+		(update.Stream != "output" && update.Stream != "stdout" && update.Stream != "stderr") {
+		return product.NewError(product.CodeStateConflict, "tool output does not belong to an active claimed call")
+	}
+	position, exists := rt.active.toolChunks[update.CallID]
+	if (!exists && update.ChunkSeq != 1) || (exists && (position.streamID != update.StreamID || update.ChunkSeq != position.seq+1)) {
+		return product.NewError(product.CodeStateConflict, "tool output stream is stale")
+	}
+	if rt.active.toolChunks == nil {
+		rt.active.toolChunks = make(map[string]toolChunkPosition)
+	}
+	rt.active.toolChunks[update.CallID] = toolChunkPosition{streamID: update.StreamID, seq: update.ChunkSeq}
+	// Re-encode the public allowlist; the internal call identity and unknown
+	// fact fields never enter the SDK event payload or the durable journal.
+	public, err := json.Marshal(update.ToolOutputDelta)
+	if err != nil {
+		return err
+	}
+	ev := agent.Event{SchemaVersion: 1, Type: "tool.output.delta", Scope: agent.EventScope{SessionID: scope.SessionID, TraceID: scope.TraceID, TurnID: scope.TurnID}, StreamID: update.StreamID, ChunkSeq: &update.ChunkSeq, OccurredAt: time.Now().UTC(), Payload: public}
 	for id, sub := range rt.subs {
 		if !sub.enqueue(ev) {
 			delete(rt.subs, id)

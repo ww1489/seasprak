@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/ww1489/seasprak/internal/agent"
+	einorun "github.com/ww1489/seasprak/internal/agent/eino"
 	product "github.com/ww1489/seasprak/internal/errors"
 	"github.com/ww1489/seasprak/internal/sessions/state"
 )
@@ -92,13 +93,17 @@ func (a sessionAuthorizer) Authorize(ctx context.Context, authorization agent.Fr
 		if !rt.matchesExecution(a.scope) {
 			return nil, product.NewError(product.CodeStateConflict, "execution is no longer active")
 		}
-		scope := a.scope
+		// The boundary annotates the actual turn; the fixed execution binding
+		// above still rejects a replaced worker. Keep explicit fallback scopes
+		// intact so a mismatched standalone scope cannot acquire permission.
+		scope := einorun.ScopeFromContext(ctx, a.scope)
 		if scope.TurnID == "" {
 			scope.TurnID = rt.active.turnID
 		}
 		v := rt.manager.View()
 		frozen, ok := v.FrozenExecutions["execution:"+authorization.CallID]
-		if !ok || frozen.CallID != authorization.CallID || frozen.ProviderCallID != authorization.ProviderCallID || frozen.Tool != authorization.Name || frozen.Generation != authorization.Generation || string(frozen.FinalArguments) != authorization.Arguments || frozen.Hash != authorization.Hash || frozen.Scope != scope {
+		call, exists := v.Calls[authorization.CallID]
+		if !exists || !rt.matchesCallScope(scope, call) || !ok || frozen.CallID != authorization.CallID || frozen.ProviderCallID != authorization.ProviderCallID || frozen.Tool != authorization.Name || frozen.Generation != authorization.Generation || string(frozen.FinalArguments) != authorization.Arguments || frozen.Hash != authorization.Hash || frozen.Scope != call.Scope {
 			return nil, product.NewError(product.CodePermissionDenied, "authorization does not match committed execution")
 		}
 		return rt.checkToolPolicy(ctx, scope, frozen)
@@ -119,7 +124,7 @@ func (rt *runtime) checkToolPolicyState(ctx context.Context, scope agent.Executi
 	if err := ctx.Err(); err != nil {
 		return agent.DecisionCancel, err
 	}
-	if !rt.matchesExecution(scope) {
+	if rt.active == nil {
 		return agent.DecisionDeny, product.NewError(product.CodeStateConflict, "execution is no longer active")
 	}
 	if err := rt.active.ctx.Err(); err != nil {
@@ -130,7 +135,7 @@ func (rt *runtime) checkToolPolicyState(ctx context.Context, scope agent.Executi
 	}
 	v := rt.manager.View()
 	call, ok := v.Calls[frozen.CallID]
-	if !ok || call.Scope != scope || frozen.Scope != scope || call.Observation != nil || call.Claimed != claimed || !acceptedAttemptForCall(v, call) {
+	if !ok || !rt.matchesCallScope(scope, call) || frozen.Scope != call.Scope || call.Observation != nil || call.Claimed != claimed || !acceptedAttemptForCall(v, call) {
 		return agent.DecisionDeny, product.NewError(product.CodeStateConflict, "execution is not a pending accepted call")
 	}
 	committed, ok := v.FrozenExecutions[frozen.ID]
@@ -158,7 +163,7 @@ func (rt *runtime) checkToolPolicyState(ctx context.Context, scope agent.Executi
 	case "trusted-run":
 		if len(frozen.Argv) == 0 && frozen.Cwd == "" && len(frozen.Mounts) == 0 && frozen.StdinRef == "" && frozen.TempRootRef == "" {
 			for _, def := range rt.opts.Tools {
-				if def.Name == frozen.Tool && def.Version == frozen.ToolVersion && toolArgumentHash(def.Schema) == frozen.SchemaHash && def.Run != nil && (def.Execution.BackendID == "" || def.Execution.BackendID == "trusted-run") {
+				if def.Name == frozen.Tool && def.Version == frozen.ToolVersion && toolArgumentHash(def.Schema) == frozen.SchemaHash && (def.Run != nil || def.RunWithOutput != nil) && (def.Execution.BackendID == "" || def.Execution.BackendID == "trusted-run") {
 					return agent.DecisionAllow, nil
 				}
 			}

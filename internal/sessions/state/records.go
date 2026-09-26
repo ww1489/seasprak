@@ -68,6 +68,7 @@ type CheckpointRef struct {
 	BlobSize               int64                `json:"blobSize"`
 	Scope                  agent.ExecutionScope `json:"scope"`
 	Target                 agent.TargetAgent    `json:"target"`
+	Input                  agent.InputRef       `json:"input,omitempty"`
 	UnfinishedTurnIDs      []string             `json:"unfinishedTurnIds,omitempty"`
 	CallIDs                []string             `json:"callIds,omitempty"`
 	ModelConfigVersion     string               `json:"modelConfigVersion"`

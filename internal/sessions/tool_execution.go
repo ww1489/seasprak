@@ -26,7 +26,7 @@ func (rt *runtime) saveFrozenExecution(ctx context.Context, scope agent.Executio
 	v := rt.manager.View()
 	call, ok := v.Calls[frozen.CallID]
 	if !ok || call.Claimed || call.Observation != nil || !acceptedAttemptForCall(v, call) ||
-		call.Scope != scope || frozen.Scope != scope || frozen.ID != "execution:"+call.Call.CallID ||
+		!rt.matchesCallScope(scope, call) || frozen.Scope != call.Scope || frozen.ID != "execution:"+call.Call.CallID ||
 		frozen.Origin != "model" || frozen.ProviderCallID != call.Call.ProviderCallID ||
 		frozen.Tool != call.Call.Name || frozen.Generation != call.Call.Generation ||
 		frozen.OriginalArgumentsHash != toolArgumentHash([]byte(call.Call.Arguments)) ||

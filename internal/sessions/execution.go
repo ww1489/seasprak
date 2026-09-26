@@ -17,9 +17,16 @@ import (
 	"github.com/ww1489/seasprak/internal/agent/tools"
 	"github.com/ww1489/seasprak/internal/llm"
 	"github.com/ww1489/seasprak/internal/sessions/state"
+	"github.com/ww1489/seasprak/internal/sessions/store"
 )
 
+type checkpointResult struct {
+	ref   agent.CheckpointBlobRef
+	valid bool
+}
+
 func (rt *runtime) runSegment(frame *execution, inputID string) {
+	frame.input = agent.InputRef{InputID: inputID, TraceID: frame.scope.TraceID, Kind: "prompt"}
 	err := rt.beginActivity(frame)
 	if err == nil {
 		err = rt.executeSegment(frame, inputID)
@@ -38,7 +45,18 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 	}
 	baseTools := make([]tool.BaseTool, 0, len(rt.opts.ToolInfos))
 	for _, info := range rt.opts.ToolInfos {
-		baseTools = append(baseTools, einorun.NewPipelineTool(info, exec, scope))
+		kind := ""
+		for _, def := range rt.opts.Tools {
+			if def.Name == info.Name {
+				kind = def.ToolInterface
+				break
+			}
+		}
+		wrapped, wrapErr := einorun.NewPipelineToolForInterface(info, exec, scope, kind)
+		if wrapErr != nil {
+			return wrapErr
+		}
+		baseTools = append(baseTools, wrapped)
 	}
 	ag, err := einorun.NewAgent(ctx, einorun.Deps{Model: rt.opts.Model, Tools: baseTools, Sink: rt, Budget: frame.budget, Boundary: rt, Instruction: rt.opts.Instruction, Scope: scope, RemainingActivity: frame.activity.remaining,
 		EmptyInventoryCall: func(ctx context.Context, callID, name, arguments string) error {
@@ -58,8 +76,21 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 		return err
 	}
 	var eventErr error
+	var checkpoint *einorun.CheckpointStore
+	var checkpointID string
+	if blobs, ok := rt.opts.Store.(store.CheckpointBlobs); ok {
+		checkpoint = einorun.NewCheckpointStore(checkpointBlobs{store: blobs, session: scope.SessionID})
+		checkpointID = scope.ExecutionID
+		if frame.resume != nil {
+			checkpoint.Bind(checkpointID, agent.CheckpointBlobRef{Hash: frame.resume.BlobHash, Size: frame.resume.BlobSize})
+		}
+	}
 	loop := adk.NewTurnLoop(adk.TurnLoopConfig[agent.InputRef, *schema.AgenticMessage]{
+		Store: checkpoint, CheckpointID: checkpointID,
 		GenInput: func(ctx context.Context, _ *adk.TurnLoop[agent.InputRef, *schema.AgenticMessage], items []agent.InputRef) (*adk.GenInputResult[agent.InputRef, *schema.AgenticMessage], error) {
+			if frame.resume != nil {
+				return nil, incompatibleResume("resume cannot fall back to a fresh input")
+			}
 			if len(items) == 0 {
 				return nil, product.NewError(product.CodeInternal, "execution input is missing")
 			}
@@ -80,7 +111,14 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 			if err != nil {
 				return nil, err
 			}
-			return &adk.GenInputResult[agent.InputRef, *schema.AgenticMessage]{Input: &adk.TypedAgentInput[*schema.AgenticMessage]{EnableStreaming: llm.UsesObservedTransport(rt.opts.Model), Messages: value.([]*schema.AgenticMessage)}, Consumed: items[:1], Remaining: items[1:], RunOpts: []adk.AgentRunOption{adk.WithAfterToolCallsHook(einorun.FinishAfterTools(rt, scope))}}, nil
+			return &adk.GenInputResult[agent.InputRef, *schema.AgenticMessage]{RunCtx: einorun.WithExecutionScope(ctx, scope), Input: &adk.TypedAgentInput[*schema.AgenticMessage]{EnableStreaming: llm.UsesObservedTransport(rt.opts.Model), Messages: value.([]*schema.AgenticMessage)}, Consumed: items[:1], Remaining: items[1:], RunOpts: []adk.AgentRunOption{adk.WithAfterToolCallsHook(einorun.FinishAfterTools(rt, scope))}}, nil
+		},
+		GenResume: func(ctx context.Context, _ *adk.TurnLoop[agent.InputRef, *schema.AgenticMessage], interrupted, unhandled, newItems []agent.InputRef) (*adk.GenResumeResult[agent.InputRef, *schema.AgenticMessage], error) {
+			if frame.resume == nil || len(interrupted) != 1 || interrupted[0] != frame.resume.Input || len(unhandled) != 0 || len(newItems) != 0 {
+				return nil, incompatibleResume("resume input does not match the original checkpoint")
+			}
+			return &adk.GenResumeResult[agent.InputRef, *schema.AgenticMessage]{RunCtx: einorun.WithExecutionScope(ctx, scope), Consumed: interrupted,
+				ResumeParams: &adk.ResumeParams{}, RunOpts: []adk.AgentRunOption{adk.WithAfterToolCallsHook(einorun.FinishAfterTools(rt, scope))}}, nil
 		},
 		PrepareAgent: func(context.Context, *adk.TurnLoop[agent.InputRef, *schema.AgenticMessage], []agent.InputRef) (adk.TypedAgent[*schema.AgenticMessage], error) {
 			return ag, nil
@@ -99,6 +137,18 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 			return eventErr
 		},
 	})
+	if err := rt.do(context.Background(), func(rt *runtime) error {
+		if rt.active != frame {
+			return product.NewError(product.CodeStateConflict, "execution was replaced")
+		}
+		frame.loop = loop
+		if frame.pauseID != "" {
+			loop.Stop(adk.WithGraceful())
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
 	// Parent cancellation (Cancel, Close, or the activity deadline) must also
 	// stop the framework loop. Immediate Stop alone does not cancel synchronous
 	// tool contexts. Join the callback before this segment can be finalized.
@@ -112,11 +162,43 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 			<-abortDone
 		}
 	}()
-	if pushed, _ := loop.Push(agent.InputRef{InputID: inputID, TraceID: scope.TraceID, Kind: "prompt"}); !pushed {
-		return product.NewError(product.CodeStateConflict, "execution loop rejected input")
+	if frame.resume == nil {
+		if pushed, _ := loop.Push(frame.input); !pushed {
+			return product.NewError(product.CodeStateConflict, "execution loop rejected input")
+		}
 	}
 	loop.Run(ctx)
 	exit := loop.Wait()
+	pauseValue, pauseErr := rt.call(context.Background(), func(rt *runtime) (any, error) { return rt.active == frame && frame.pauseID != "", nil })
+	if pauseErr != nil {
+		return pauseErr
+	}
+	if pauseValue.(bool) {
+		result := &checkpointResult{}
+		frame.checkpoint = result
+		var stopped *adk.CancelError
+		var callbackCancel *adk.CancelError
+		if eventErr != nil && !errors.As(eventErr, &callbackCancel) && !errors.Is(eventErr, einorun.ErrControlledStop) {
+			return eventErr
+		}
+		if !exit.CheckpointAttempted || exit.CheckpointErr != nil || !errors.As(exit.ExitReason, &stopped) || len(exit.UnhandledItems) != 0 || len(exit.TakeLateItems()) != 0 || len(exit.InterruptedItems) != 1 || exit.InterruptedItems[0] != (agent.InputRef{InputID: inputID, TraceID: scope.TraceID, Kind: "prompt"}) {
+			return errors.Join(exit.CheckpointErr, exit.ExitReason, product.NewError(product.CodeIncompatibleResume, "pause did not reach a matching runner checkpoint"))
+		}
+		ref, ok := checkpoint.Ref(checkpointID)
+		if !ok {
+			return product.NewError(product.CodeStorageUnavailable, "checkpoint blob is missing")
+		}
+		data, ok, err := checkpoint.Get(context.Background(), checkpointID)
+		if err != nil || !ok {
+			return errors.Join(err, product.NewError(product.CodeStorageUnavailable, "checkpoint blob cannot be read"))
+		}
+		if err := einorun.ValidatePausedCheckpoint(data, agent.InputRef{InputID: inputID, TraceID: scope.TraceID, Kind: "prompt"}); err != nil {
+			return err
+		}
+		result.ref = ref
+		result.valid = true
+		return ctx.Err()
+	}
 	if exit.CheckpointErr != nil {
 		return exit.CheckpointErr
 	}
@@ -153,6 +235,8 @@ func (rt *runtime) CommitFact(ctx context.Context, scope agent.ExecutionScope, f
 			scope.TurnID = rt.active.turnID
 		}
 		switch fact.Kind {
+		case "tool_output":
+			return rt.publishToolOutput(ctx, scope, fact.Payload)
 		case "model_stream_snapshot":
 			return rt.publishModelSnapshot(ctx, scope, fact.Payload)
 		case "model_attempt_started":
@@ -399,7 +483,8 @@ func (rt *runtime) PrepareNextTurn(ctx context.Context, scope agent.ExecutionSco
 		// together with logical occupancy before any model request is allowed.
 		turn := agent.TurnRecord{ID: agent.MustID(), TraceID: scope.TraceID, InvocationID: scope.InvocationID}
 		rt.active.turnID = turn.ID
-		return agent.TurnPlan{TurnID: turn.ID, SelectionRevision: rt.manager.View().LastSeq}, nil
+		rt.active.turnSelectionRevision = rt.manager.View().LastSeq
+		return agent.TurnPlan{TurnID: turn.ID, SelectionRevision: rt.active.turnSelectionRevision}, nil
 	})
 	if err != nil {
 		return agent.TurnPlan{}, err

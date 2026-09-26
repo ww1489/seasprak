@@ -6,13 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/ww1489/seasprak/internal/agent"
 	product "github.com/ww1489/seasprak/internal/errors"
 )
+
+const approvalUnavailableMessage = "execution approval is not available"
 
 type Outcome struct {
 	Status     string
@@ -22,17 +23,18 @@ type Outcome struct {
 }
 
 type Executor struct {
-	defs        map[string]Definition
-	comp        map[string]*jsonschema.Schema
-	sink        agent.ExecutionSink
-	auth        agent.ToolAuthorizer
-	budg        *agent.BudgetLedger
-	gen         string
-	operations  Operations
-	scheduler   *ResourceScheduler
-	environment string
-	workspace   string
-	tickets     *agent.ExecutionTickets
+	defs         map[string]Definition
+	comp         map[string]*jsonschema.Schema
+	sink         agent.ExecutionSink
+	auth         agent.ToolAuthorizer
+	budg         *agent.BudgetLedger
+	gen          string
+	operations   Operations
+	scheduler    *ResourceScheduler
+	environment  string
+	workspace    string
+	standaloneID string
+	tickets      *agent.ExecutionTickets
 }
 
 func NewExecutor(gen string, defs []Definition, sink agent.ExecutionSink, auth agent.ToolAuthorizer, budg *agent.BudgetLedger, options ...ExecutorOption) (*Executor, error) {
@@ -40,7 +42,11 @@ func NewExecutor(gen string, defs []Definition, sink agent.ExecutionSink, auth a
 	if err != nil {
 		return nil, err
 	}
-	e := &Executor{defs: map[string]Definition{}, comp: map[string]*jsonschema.Schema{}, sink: sink, auth: auth, budg: budg, gen: gen, scheduler: SharedResourceScheduler(), tickets: tickets}
+	standaloneID, err := agent.NewID()
+	if err != nil {
+		return nil, err
+	}
+	e := &Executor{defs: map[string]Definition{}, comp: map[string]*jsonschema.Schema{}, sink: sink, auth: auth, budg: budg, gen: gen, scheduler: SharedResourceScheduler(), standaloneID: "standalone:" + standaloneID, tickets: tickets}
 	for _, option := range options {
 		option(e)
 	}
@@ -54,6 +60,9 @@ func NewExecutor(gen string, defs []Definition, sink agent.ExecutionSink, auth a
 		return nil, product.NewError(product.CodeInvalidArgument, "compiled schemas do not match tool definitions")
 	}
 	for _, def := range defs {
+		if def.Run != nil && def.RunWithOutput != nil {
+			return nil, product.NewError(product.CodeInvalidArgument, "tool has conflicting execution callbacks")
+		}
 		if def.Name == "" || e.comp[def.Name] == nil {
 			return nil, product.NewError(product.CodeInvalidArgument, "compiled schema is missing")
 		}
@@ -74,6 +83,9 @@ func (e *Executor) Run(ctx context.Context, scope agent.ExecutionScope, callID, 
 		return Outcome{}, err
 	}
 	if accepted && record.Observation != nil {
+		if record.Observation.Status == "denied" && record.Observation.Content == approvalUnavailableMessage {
+			return Outcome{}, product.NewError(product.CodeResourceUnavailable, approvalUnavailableMessage)
+		}
 		return outcomeOf(record.Observation), nil
 	}
 	if accepted && record.Claimed {
@@ -166,6 +178,17 @@ func (e *Executor) Run(ctx context.Context, scope agent.ExecutionScope, callID, 
 			return Outcome{}, err
 		}
 	}
+	if decision == agent.DecisionAsk {
+		unavailable := product.NewError(product.CodeResourceUnavailable, approvalUnavailableMessage)
+		out, saveErr := e.reject(ctx, envelope, scope, call, Outcome{Status: "denied", Content: approvalUnavailableMessage, SideEffect: "none"}, accepted)
+		if saveErr != nil {
+			return out, errors.Join(unavailable, authErr, saveErr)
+		}
+		if authErr != nil {
+			return out, authErr
+		}
+		return out, unavailable
+	}
 	if authErr != nil {
 		return e.rejectWithError(ctx, envelope, scope, call, deniedOutcome(authErr), accepted, authErr)
 	}
@@ -179,7 +202,7 @@ func (e *Executor) Run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	if err := ctx.Err(); err != nil {
 		return e.rejectWithError(ctx, envelope, scope, call, Outcome{Status: "cancelled", Content: err.Error(), SideEffect: "none"}, accepted, err)
 	}
-	if frozen.BackendID == "trusted-run" && def.Run == nil {
+	if frozen.BackendID == "trusted-run" && def.Run == nil && def.RunWithOutput == nil {
 		return e.reject(ctx, envelope, scope, call, Outcome{Status: "failed", Content: "tool runner is nil", SideEffect: "none"}, accepted)
 	}
 	if err := e.backendAvailable(def, frozen); err != nil {
@@ -192,7 +215,11 @@ func (e *Executor) Run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	retain := false
 	defer func() {
 		if retain {
-			_ = lease.Retain(ResourceHoldID(envelope.SessionID, call.CallID))
+			owner := envelope.SessionID
+			if owner == "" {
+				owner = e.standaloneID
+			}
+			_ = lease.Retain(ResourceHoldID(owner, call.CallID))
 		} else {
 			lease.Release()
 		}
@@ -231,7 +258,9 @@ func (e *Executor) Run(ctx context.Context, scope agent.ExecutionScope, callID, 
 		}
 		return out, err
 	}
-	out = e.invokeAuthorized(runCtx, def, frozen, ticket)
+	output := &callOutput{runCtx: runCtx, sink: e.sink, scope: envelope, callID: call.CallID, streamID: agent.MustID()}
+	out = e.invokeAuthorized(runCtx, def, frozen, ticket, output)
+	output.close() // Drain accepted publications before saving the final observation.
 	if out.SideEffect == "unknown" || out.Status == "outcome_unknown" {
 		retain = true
 	}
@@ -247,7 +276,7 @@ func (e *Executor) Run(ctx context.Context, scope agent.ExecutionScope, callID, 
 func (e *Executor) backendAvailable(def Definition, frozen agent.FrozenExecution) error {
 	switch frozen.BackendID {
 	case "trusted-run":
-		if def.Run != nil && len(frozen.Argv) == 0 && frozen.Cwd == "" && len(frozen.Mounts) == 0 && frozen.StdinRef == "" && frozen.TempRootRef == "" {
+		if (def.Run != nil || def.RunWithOutput != nil) && len(frozen.Argv) == 0 && frozen.Cwd == "" && len(frozen.Mounts) == 0 && frozen.StdinRef == "" && frozen.TempRootRef == "" {
 			return nil
 		}
 	case "process-operations":
@@ -274,9 +303,9 @@ func (e *Executor) acquire(ctx context.Context, scope agent.ExecutionScope, froz
 	if workspace == "" {
 		workspace = scope.SessionID
 		if workspace == "" {
-			// A standalone trusted executor has no workspace binding. Keep its
-			// scheduling domain local rather than locking unrelated executors.
-			workspace = fmt.Sprintf("standalone:%p", e)
+			// An executor-lifetime identity outlives allocator address reuse and
+			// keeps historical unknown holds separate from unrelated executors.
+			workspace = e.standaloneID
 		}
 	}
 	if e.scheduler == nil {
@@ -386,7 +415,7 @@ func DecodeNumbers(r io.Reader) (any, error) {
 	return v, err
 }
 
-func (e *Executor) invokeAuthorized(ctx context.Context, def Definition, frozen agent.FrozenExecution, ticket agent.ExecutionTicketRef) (out Outcome) {
+func (e *Executor) invokeAuthorized(ctx context.Context, def Definition, frozen agent.FrozenExecution, ticket agent.ExecutionTicketRef, output agent.ToolOutputSink) (out Outcome) {
 	out = Outcome{Status: "succeeded", SideEffect: "none"}
 	defer func() {
 		if value := recover(); value != nil {
@@ -402,7 +431,13 @@ func (e *Executor) invokeAuthorized(ctx context.Context, def Definition, frozen 
 		if err := ctx.Err(); err != nil {
 			return deniedOutcome(err)
 		}
-		content, err := def.Run(ctx, append(json.RawMessage(nil), frozen.FinalArguments...))
+		var content string
+		var err error
+		if def.RunWithOutput != nil {
+			content, err = def.RunWithOutput(ctx, append(json.RawMessage(nil), frozen.FinalArguments...), output)
+		} else {
+			content, err = def.Run(ctx, append(json.RawMessage(nil), frozen.FinalArguments...))
+		}
 		out.Content, out.Executed = content, true
 		if err != nil {
 			out.Status, out.Content, out.SideEffect = "failed", "trusted tool execution failed", "unknown"
@@ -411,7 +446,7 @@ func (e *Executor) invokeAuthorized(ctx context.Context, def Definition, frozen 
 		observation, err := e.operations.Process.Execute(ctx, agent.AuthorizedProcess{Authorization: auth,
 			Argv: append([]string(nil), frozen.Argv...), Cwd: frozen.Cwd, EnvironmentRef: frozen.EnvironmentRef,
 			StdinRef: frozen.StdinRef, Mounts: append([]agent.ExecutionMount(nil), frozen.Mounts...),
-			TempRootRef: frozen.TempRootRef, OutputLimitBytes: frozen.OutputLimitBytes}, nil)
+			TempRootRef: frozen.TempRootRef, OutputLimitBytes: frozen.OutputLimitBytes}, processOutput{output: output})
 		out.Content, out.Executed, out.SideEffect = observation.Content, observation.Started, observation.SideEffect
 		if out.SideEffect == "" {
 			out.SideEffect = "none"

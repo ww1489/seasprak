@@ -60,6 +60,8 @@ func applyControl(v *View, r store.Record) error {
 	switch r.Type {
 	case "execution_policy":
 		return applyExecutionPolicy(v, r)
+	case "resumed_execution":
+		return applyResumedExecution(v, r)
 	case "model_attempt", "frozen_execution", "interaction", "approval", "checkpoint_ref":
 		return applyP2Record(v, r)
 	case "model_attempt_details":

@@ -34,5 +34,5 @@ type Options struct {
 	Store                 store.Store
 	Principal             string
 	ReadOnly              bool
-	GenerationFingerprint string
+	GenerationFingerprint string // Trusted application/SDK build and model/tool/hook/backend implementation version; required for Resume.
 }

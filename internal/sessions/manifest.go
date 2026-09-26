@@ -18,11 +18,13 @@ import (
 const builtinVersion = "builtin-v1"
 
 type toolDecl struct {
-	Name        string                      `json:"name"`
-	Version     string                      `json:"version"`
-	Description string                      `json:"description"`
-	Schema      json.RawMessage             `json:"schema"`
-	Execution   *tools.ExecutionDescription `json:"execution,omitempty"`
+	Name           string                      `json:"name"`
+	Version        string                      `json:"version"`
+	Description    string                      `json:"description"`
+	Schema         json.RawMessage             `json:"schema"`
+	ToolInterface  string                      `json:"toolInterface,omitempty"`
+	OutputCallback bool                        `json:"outputCallback,omitempty"`
+	Execution      *tools.ExecutionDescription `json:"execution,omitempty"`
 }
 
 type capabilityManifest struct {
@@ -130,10 +132,10 @@ func loadManifest(stateRoot, sessionID, id string) (capabilityManifest, error) {
 	return manifest, nil
 }
 
-func canonicalTools(tools []toolDecl) ([]toolDecl, error) {
-	out := make([]toolDecl, 0, len(tools))
+func canonicalTools(declarations []toolDecl) ([]toolDecl, error) {
+	out := make([]toolDecl, 0, len(declarations))
 	seen := map[string]struct{}{}
-	for _, tool := range tools {
+	for _, tool := range declarations {
 		if tool.Name == "" || tool.Version == "" {
 			return nil, product.NewError(product.CodeInvalidArgument, "tool name and implementation version are required")
 		}
@@ -145,7 +147,14 @@ func canonicalTools(tools []toolDecl) ([]toolDecl, error) {
 		if err != nil {
 			return nil, product.NewError(product.CodeInvalidArgument, "tool schema is invalid")
 		}
-		decl := toolDecl{Name: tool.Name, Version: tool.Version, Description: tool.Description, Schema: json.RawMessage(schema)}
+		if !tools.ValidToolInterface(tool.ToolInterface) {
+			return nil, product.NewError(product.CodeInvalidArgument, "tool interface is unsupported")
+		}
+		kind := tool.ToolInterface
+		if kind == "invokable" {
+			kind = "" // Existing manifests omitted the original invokable interface.
+		}
+		decl := toolDecl{Name: tool.Name, Version: tool.Version, Description: tool.Description, Schema: json.RawMessage(schema), ToolInterface: kind, OutputCallback: tool.OutputCallback}
 		if tool.Execution != nil {
 			copy := tool.Execution.Clone()
 			decl.Execution = &copy

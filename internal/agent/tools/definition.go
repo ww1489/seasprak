@@ -36,17 +36,29 @@ func (d ExecutionDescription) clone() ExecutionDescription {
 	return d
 }
 
+func ValidToolInterface(kind string) bool {
+	switch kind {
+	case "", "invokable", "streamable", "enhanced-invokable", "enhanced-streamable":
+		return true
+	default:
+		return false
+	}
+}
+
+// Explicitly selected Eino interfaces are part of the immutable tool generation.
 type Definition struct {
 	Version          string
 	Name             string
 	Description      string
 	Schema           json.RawMessage
+	ToolInterface    string // Empty means the original invokable interface.
 	PrepareArguments []func(context.Context, json.RawMessage) (json.RawMessage, error)
 	Validate         func(context.Context, json.RawMessage) error
 	ResolveExecution func(context.Context, json.RawMessage, ExecutionDescription) (ExecutionDescription, error)
 	BeforeCall       []func(context.Context, agent.FrozenExecution) error
 	Execution        ExecutionDescription
 	Run              func(context.Context, json.RawMessage) (string, error) // Trusted in-process compatibility only.
+	RunWithOutput    func(context.Context, json.RawMessage, agent.ToolOutputSink) (string, error)
 }
 
 func (d Definition) Clone() Definition {

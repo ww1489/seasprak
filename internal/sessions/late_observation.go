@@ -34,7 +34,19 @@ func (rt *runtime) recordLateObservation(ctx context.Context, scope agent.Execut
 		scope.TurnID = original.Scope.TurnID
 	}
 	if scope != original.Scope {
-		return conflict()
+		view := rt.manager.View()
+		segment, resumed := view.ResumedExecutions[scope.ExecutionID]
+		checkpoint := view.Checkpoints[segment.CheckpointID]
+		bound := false
+		for _, id := range checkpoint.CallIDs {
+			if id == original.Call.CallID {
+				bound = true
+				break
+			}
+		}
+		if !resumed || segment.Scope != scope || !sameLogicalScope(checkpoint.Scope, original.Scope) || !bound {
+			return conflict()
+		}
 	}
 	previous, err := rt.manager.LatestObservation(incoming.Call.CallID)
 	if err != nil {

@@ -17,6 +17,8 @@ type TraceState struct {
 	Hold         bool              `json:"hold"`
 	Started      bool              `json:"started"`
 	InvocationID string            `json:"invocationId,omitempty"`
+	ExecutionID  string            `json:"executionId,omitempty"`
+	CheckpointID string            `json:"checkpointId,omitempty"`
 	Limits       config.Limits     `json:"limits"`
 	Usage        agent.Usage       `json:"usage"`
 	Activity     ActivityBudget    `json:"activity"`
@@ -68,6 +70,7 @@ type View struct {
 	Interactions       map[string]Interaction
 	Approvals          map[string]Approval
 	Checkpoints        map[string]CheckpointRef
+	ResumedExecutions  map[string]ResumedExecution
 	RepairRequired     bool
 }
 type idemRecord struct {

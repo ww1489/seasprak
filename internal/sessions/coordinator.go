@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/schema"
 	"github.com/ww1489/seasprak/internal/agent"
 	product "github.com/ww1489/seasprak/internal/errors"
 	"github.com/ww1489/seasprak/internal/sessions/state"
@@ -19,13 +21,25 @@ type command struct {
 	reply chan commandResult
 }
 type execution struct {
-	scope    agent.ExecutionScope
-	ctx      context.Context
-	cancel   context.CancelFunc
-	done     chan struct{}
-	budget   *agent.BudgetLedger
-	activity *activityLease
-	turnID   string // owned by the session mailbox
+	scope                 agent.ExecutionScope
+	ctx                   context.Context
+	cancel                context.CancelFunc
+	done                  chan struct{}
+	budget                *agent.BudgetLedger
+	activity              *activityLease
+	turnID                string // owned by the session mailbox
+	turnSelectionRevision uint64 // fixed when PrepareNextTurn selects this turn
+	loop                  *adk.TurnLoop[agent.InputRef, *schema.AgenticMessage]
+	pauseID               string
+	checkpoint            *checkpointResult
+	input                 agent.InputRef
+	resume                *state.CheckpointRef
+	resumeID              string
+	toolChunks            map[string]toolChunkPosition // mailbox-owned, one execution segment only
+}
+type toolChunkPosition struct {
+	streamID string
+	seq      uint64
 }
 type runtime struct {
 	clock       activityClock
@@ -216,6 +230,40 @@ func (rt *runtime) segmentFinished(frame *execution, runErr error) {
 	if runErr == nil && frame.ctx.Err() != nil {
 		runErr = frame.ctx.Err()
 	}
+	if frame.resumeID != "" && rt.manager.Fault() == nil {
+		next := "completed"
+		if tr.State == "cancelling" || rt.closing {
+			next = "cancelled"
+		} else if runErr != nil {
+			next = "failed"
+		}
+		if err := rt.manager.TransitionOperation(context.Background(), frame.resumeID, 1, next, frame.scope.ExecutionID, ""); err != nil {
+			runErr = errors.Join(runErr, err)
+		}
+		v = rt.manager.View()
+		tr = v.Traces[frame.scope.TraceID]
+	}
+	if frame.pauseID != "" && !rt.closing && frame.ctx.Err() == nil && tr.State == "running" && runErr == nil && frame.checkpoint != nil && frame.checkpoint.valid && !v.TraceHasUnresolvedEffects(tr.ID) {
+		cp, err := rt.pauseReference(frame, frame.input, frame.checkpoint.ref, v)
+		if err != nil {
+			runErr = err
+		}
+		if runErr == nil {
+			if err := rt.manager.CommitPause(context.Background(), tr.ID, frame.pauseID, cp); err == nil {
+				frame.cancel()
+				frame.toolChunks = nil
+				frame.loop = nil
+				rt.active = nil
+				close(frame.done)
+				return
+			} else {
+				runErr = err
+			}
+		}
+	}
+	if frame.pauseID != "" && rt.manager.Fault() == nil {
+		_ = rt.manager.TransitionOperation(context.Background(), frame.pauseID, 1, "failed", "", "pause checkpoint unavailable")
+	}
 	if runErr == nil && v.HasUnresolvedEffects() {
 		runErr = product.NewError(product.CodeReconciliationRequired, "execution stopped with unresolved tool effects")
 	}
@@ -258,8 +306,10 @@ func (rt *runtime) segmentFinished(frame *execution, runErr error) {
 			state = "failed"
 		}
 	}
-	if err := rt.finishInterruptedTurn(frame); err != nil && state == "completed" {
-		state = "failed"
+	if frame.pauseID == "" || tr.State == "cancelling" {
+		if err := rt.finishInterruptedTurn(frame); err != nil && state == "completed" {
+			state = "failed"
+		}
 	}
 	if rt.manager.Fault() == nil {
 		if runErr != nil && !errors.Is(runErr, context.Canceled) {
@@ -268,6 +318,7 @@ func (rt *runtime) segmentFinished(frame *execution, runErr error) {
 		_ = rt.manager.SetTraceState(context.Background(), tr.ID, state, terminal(state))
 	}
 	frame.cancel()
+	frame.toolChunks = nil
 	rt.active = nil
 	close(frame.done)
 	if terminal(state) {

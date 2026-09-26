@@ -75,6 +75,10 @@ type (
 	SessionOptions     = sessions.Options
 	AgentSession       = sessions.AgentSession
 	Snapshot           = sessions.Snapshot
+	ResumeCommand      = sessions.ResumeCommand
+	ResumeEligibility  = sessions.ResumeEligibility
+	OperationReceipt   = state.OperationReceipt
+	OperationStatus    = state.OperationStatus
 	Subscription       = sessions.Subscription
 	TraceState         = state.TraceState
 	InputState         = state.InputState
@@ -86,6 +90,9 @@ type (
 	TurnRecord         = agent.TurnRecord
 	ToolRecord         = agent.ToolRecord
 	ToolObservation    = agent.ToolObservation
+	ToolOutputChunk    = agent.ToolOutputChunk
+	ToolOutputSink     = agent.ToolOutputSink
+	ToolOutputDelta    = agent.ToolOutputDelta
 	InputCommand       = agent.InputCommand
 	InputReceipt       = agent.InputReceipt
 	TargetAgent        = agent.TargetAgent

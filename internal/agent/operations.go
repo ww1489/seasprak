@@ -204,8 +204,35 @@ type AuthorizedProcess struct {
 type ProgressSink interface {
 	WriteProgress(context.Context, ProcessProgress) error
 }
+
+// ToolOutputChunk contains only text the trusted tool has prepared for SDK subscribers.
+type ToolOutputChunk struct {
+	Stream, Text string
+}
+
+type ToolOutputSink interface {
+	WriteOutput(context.Context, ToolOutputChunk) error
+}
+
+// ToolOutputDelta is the allowlisted payload of a temporary tool.output.delta event.
+type ToolOutputDelta struct {
+	ToolCallID string `json:"toolCallId"`
+	Stream     string `json:"stream"`
+	Text       string `json:"text"`
+}
+
+// ToolOutputFact is internal publication metadata; CallID and ToolCallID
+// both identify the accepted product call, never a backend-supplied identity.
+type ToolOutputFact struct {
+	ToolOutputDelta
+	CallID   string `json:"callId"`
+	StreamID string `json:"streamId"`
+	ChunkSeq uint64 `json:"chunkSeq"`
+}
+
 type ProcessProgress struct {
 	Stream, ContentRef string
+	Text               string
 	Sequence           uint64
 }
 type ProcessObservation struct {
