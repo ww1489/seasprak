@@ -46,6 +46,9 @@ func (m *Manager) SetTraceState(ctx context.Context, id, state string, settled b
 	tr := *old
 	tr.State = state
 	if state == "running" {
+		if !old.Started && !tr.Activity.Unknown {
+			tr.Activity.Known = true
+		}
 		tr.Started = true
 		tr.ExecutionStopped = false
 		tr.InvocationID = agent.MustID()

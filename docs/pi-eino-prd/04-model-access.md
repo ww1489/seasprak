@@ -353,9 +353,9 @@ Gemini GenerateContent 的显式缓存资源与隐式缓存分别定义，不能
 
 只有供应商语义明确、字段完整且互不重叠时，才校验 `inputTotal = uncachedInput + cacheRead + cacheWrite`；缺字段不自行填零或通过未经证明的减法推断。响应中的 PromptTokens 已经包含缓存输入时，不能再把 CachedTokens 加到总输入。
 
-当前选定的 agenticclaude 将 InputTokens + CacheReadInputTokens + CacheCreationInputTokens 合成 PromptTokens，并把缓存读保存为 CachedTokens；在所读完整与流式转换中，缓存写入未单独保留。见 [完整 usage](../../eino-ext/components/model/agenticclaude/convertor.go#L1317) `[VERIFY: eino-ext/components/model/agenticclaude/convertor.go:1317]`、[流式 usage](../../eino-ext/components/model/agenticclaude/convertor.go#L1285) `[VERIFY: eino-ext/components/model/agenticclaude/convertor.go:1285]`。旧 claude 组件的 schema.Message Extra getter 不能直接用于 AgenticMessage。
+原基线组件将 InputTokens + CacheReadInputTokens + CacheCreationInputTokens 合成 PromptTokens，并把缓存读保存为 CachedTokens；当时核查的缓存写明细缺口是历史事实，不能直接用于判断升级后的能力。2026-09-25 依赖更新后的 agenticclaude v0.1.7 已在 Generate/Stream 的 `PromptTokenDetails.CacheWriteTokens` 保留缓存写，并提供 `GetCacheCreationInputTokens`。产品测试 `internal/llm/p2_usage_upstream_test.go` 实际调用 adapter，确认正数缓存写可直接读取，开启/关闭补采集不改变原 SDK 数值；该测试不是完整产品 Claude 工厂或真实 endpoint 认证。
 
-要认证 cacheWrite 计量，L1 必须在信息被转换丢弃前通过可用响应扩展点或限定适配保留原始 usage 的该明细，完整和流式路径分别验证；本地组件尚未提供所需扩展点时应列出缺口，不虚构现成 getter。无法取得时 cacheWrite 为未知，uncachedInput 也不能仅靠 PromptTokens - CachedTokens 推出，因为差值仍可能包含缓存写。PromptTokens 可作为 inputTotal，不能再把读/写重复加到总输入。
+应优先复用现成字段与 getter。当前 getter 只在缓存写大于零时返回存在标记，缺失与明确返回零都表现为 `(0, false)`；因此不能用它独自满足“known/unknown”的字段存在性契约。仅对仍缺失的 presence、TTL 等必需证据，通过响应扩展点或有界 read-through 采集补取，不能重复实现整套协议解析。无法取得证据时 cacheWrite 为未知，uncachedInput 也不能仅靠 PromptTokens - CachedTokens 推出，因为差值仍可能包含缓存写。PromptTokens 可作为适配器报告的总量，但产品对其 known 状态仍按所需原始字段完整性判定，不能再把读/写重复加到总输入。
 
 所有用量按 attempt 保存，区分累积报告与增量报告。指标至少可区分“策略未启用/不支持”“请求已携带优化参数”“供应商确认读取/写入”“统计未知”；最终是否命中以供应商响应为依据。
 

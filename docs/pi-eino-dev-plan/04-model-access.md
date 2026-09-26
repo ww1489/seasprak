@@ -116,6 +116,8 @@ sequenceDiagram
 
 D10-重试图不经过工具重执行。ADK MaxRetries=2，ShouldRetry 只重试尚未接纳的请求；已接纳消息不再由内容质量规则重新生成。参数、鉴权、必需能力、取消、审批和工具错误不自动重试；429/暂时服务故障/可恢复连接错误才进入普通退避。
 
+实际 Eino v0.9.21 已提供模型重试循环、可取消等待、BackoffFunc 和指数抖动退避，产品不再实现这些执行机制。产品通过 ShouldRetry 判定错误、已接纳状态及剩余预算，只有为了在等待前核对 Retry-After/剩余活动时间才计算并返回显式 Backoff；该策略计算不是新增重试执行器，也不构成请求速率限制器。
+
 SDK 支持时关闭内部重试。所有实际请求还经过 request-context 计数器，同一次逻辑调用最多 3 次物理请求；SDK 隐藏重试也计入。传输耗尽额度返回不可重试预算错误，不能以 ADK attempt 计数掩盖 3×3 请求。缓存资源/摘要等额外模型服务请求也占全 Trace 对应预算；计费与业务用途分别标记。
 
 上下文溢出首先匹配 endpoint 认证的结构/错误码，补充认证过的文本规则；400/413、length、空文本单独都不是溢出证据。可信 inputTotal 超窗或已认证满窗零输出组合可作为证据，必须排除限流、输出上限过小以及工具/推理非空输出。
@@ -150,7 +152,7 @@ UsageRecord 每个字段都有 value/known/source，记录 inputTotal、uncached
 
 仅在口径明确且字段齐全时验证 inputTotal=uncachedInput+cacheRead+cacheWrite。未知字段不填 0；Claude PromptTokens-CachedTokens 可能还包含缓存写，不能推为 uncachedInput。
 
-本地 agenticclaude 已把缓存写合入总输入，但未在转换结果单独保留。通过 Config.HTTPClient 装配 read-through Body 包装器，按请求上下文解析需要的原始 usage：完整 JSON、message_start、message_delta 分别归一化。DeepSeek 同样采集 hit/miss。包装器只复制必要小字段，不替换字节、不预读耗尽 body、不重复读流、不持久化原始正文；并发请求的收集器必须独立，Close/error 一并传播。
+依赖升级后，agenticclaude v0.1.7 已在 Generate/Stream 的 PromptTokenDetails.CacheWriteTokens 中保留缓存写，并提供 GetCacheCreationInputTokens；“未单独保留缓存写”只适用于原调查基线。优先复用适配器字段；当前 getter 对缺失和明确零值都返回 (0, false)，因此仅凭该值不能判断字段是否实际返回。产品需要的字段存在性、TTL 等缺失证据，通过 Config.HTTPClient 的有界 read-through Body 包装器按完整 JSON、message_start、message_delta 补取。DeepSeek hit/miss 同样先核对实际适配器，只有缺失必需证据才补取。包装器只复制必要小字段，不替换字节、不预读耗尽 body、不重复读流、不持久化原始正文；并发请求的收集器必须独立，Close/error 一并传播。`internal/llm/p2_usage_upstream_test.go` 覆盖原 SDK 数值不变及缺失/已知零值区别，不代表产品 Claude 工厂或真实 endpoint 已认证。
 
 采集器有限帧缓冲，超限/未知结构则相关统计 unknown 并给诊断，不能破坏原模型响应或臆造值。SDK 未暴露 HTTPClient 的路径不宣称具备补取能力；不列入本次已认证协议组合。全部采样字段要和 fake transport 原始 fixture 对照。
 

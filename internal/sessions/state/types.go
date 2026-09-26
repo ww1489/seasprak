@@ -19,6 +19,7 @@ type TraceState struct {
 	InvocationID string            `json:"invocationId,omitempty"`
 	Limits       config.Limits     `json:"limits"`
 	Usage        agent.Usage       `json:"usage"`
+	Activity     ActivityBudget    `json:"activity"`
 	HoldOnStop   []string          `json:"holdOnStop,omitempty"`
 	Error        string            `json:"error,omitempty"`
 
@@ -36,25 +37,38 @@ type InputState struct {
 	CommitSeq uint64            `json:"commitSeq"`
 }
 type View struct {
-	LastSeq        uint64
-	Cursor         uint64
-	BranchID       string
-	LeafID         string
-	Traces         map[string]*TraceState
-	Inputs         map[string]*InputState
-	Order          []string
-	Steering       []string
-	Follow         []string
-	Independent    []string
-	Idem           map[string]idemRecord
-	Budget         agent.Usage // compatibility: aggregate diagnostic; limits are per Trace
-	Generation     string
-	Events         []agent.Event
-	ActiveTrace    string
-	Messages       []agent.AgentMessage
-	Turns          map[string]agent.TurnRecord
-	Calls          map[string]agent.ToolRecord
-	RepairRequired bool
+	LastSeq         uint64
+	Cursor          uint64
+	BranchID        string
+	LeafID          string
+	Traces          map[string]*TraceState
+	Inputs          map[string]*InputState
+	Order           []string
+	Steering        []string
+	Follow          []string
+	Independent     []string
+	Idem            map[string]idemRecord
+	Budget          agent.Usage // compatibility: aggregate diagnostic; limits are per Trace
+	Generation      string
+	ExecutionPolicy agent.ResolvedPolicy
+	Events          []agent.Event
+	ActiveTrace     string
+	Messages        []agent.AgentMessage
+	Turns           map[string]agent.TurnRecord
+	Calls           map[string]agent.ToolRecord
+	Operations      map[string]Operation
+	Observations    map[string]ObservationRevision
+	Reconciliations map[string]Reconciliation
+	ModelAttempts   map[string]ModelAttempt
+	AttemptResults  map[string]ModelAttemptTransition
+	AttemptDetails  map[string]ModelAttemptDetailsRecord
+	// Derived from committed records; absence of a terminal is not exit proof.
+	UnfinishedAttempts []UnfinishedModelAttempt
+	FrozenExecutions   map[string]FrozenExecution
+	Interactions       map[string]Interaction
+	Approvals          map[string]Approval
+	Checkpoints        map[string]CheckpointRef
+	RepairRequired     bool
 }
 type idemRecord struct {
 	Digest  string

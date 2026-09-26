@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"sync"
 	"time"
 
@@ -31,6 +32,13 @@ func NewManager(store store.Store, id string) (*Manager, error) {
 			return nil, err
 		}
 	}
+	// Loading is diagnostic only: an unclosed reservation is conservative
+	// crash occupancy, never evidence of elapsed downtime or execution exit.
+	for _, tr := range v.Traces {
+		tr.Activity.Uncertain += tr.Activity.Reserved
+		tr.Activity.Reserved = 0
+		tr.Activity.ExecutionID = ""
+	}
 	return &Manager{store: store, sessionID: id, view: v}, nil
 }
 func emptyView() *View {
@@ -47,7 +55,26 @@ func clone[T any](v T) T {
 	}
 	return out
 }
-func (m *Manager) View() View   { m.mu.Lock(); defer m.mu.Unlock(); return clone(*m.view) }
+
+// UnfinishedModelAttempt reports only missing durable terminal evidence.
+// It does not infer a crash, success, or execution exit.
+type UnfinishedModelAttempt struct {
+	AttemptID string `json:"attemptId"`
+	Reason    string `json:"reason"`
+}
+
+func (m *Manager) View() View {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v := clone(*m.view)
+	for id, initial := range v.ModelAttempts {
+		if _, ended := v.AttemptResults[id]; initial.State == "started" && !ended {
+			v.UnfinishedAttempts = append(v.UnfinishedAttempts, UnfinishedModelAttempt{AttemptID: id, Reason: "terminal_not_recorded"})
+		}
+	}
+	sort.Slice(v.UnfinishedAttempts, func(i, j int) bool { return v.UnfinishedAttempts[i].AttemptID < v.UnfinishedAttempts[j].AttemptID })
+	return v
+}
 func (m *Manager) Fault() error { m.mu.Lock(); defer m.mu.Unlock(); return m.fault }
 func record(kind, id string, v any) store.Record {
 	raw, err := json.Marshal(v)

@@ -43,6 +43,9 @@ func (m *Manager) SaveTurn(ctx context.Context, tr agent.TurnRecord) error {
 func (m *Manager) SaveAssistant(ctx context.Context, msg agent.AgentMessage, calls []agent.ToolRecord) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.saveAssistant(ctx, msg, calls, nil)
+}
+func (m *Manager) saveAssistant(ctx context.Context, msg agent.AgentMessage, calls []agent.ToolRecord, controls []store.Record) error {
 	if err := msg.Validate(); err != nil {
 		return err
 	}
@@ -50,7 +53,6 @@ func (m *Manager) SaveAssistant(ctx context.Context, msg agent.AgentMessage, cal
 	if !ok || turn.Ended || turn.TraceID != msg.Scope.TraceID {
 		return product.NewError(product.CodeStateConflict, "assistant turn is not active")
 	}
-	var controls []store.Record
 	events := []agent.Event{m.event("message.finalized", msg.Scope.TraceID, msg.Scope.TurnID, msg)}
 	for _, call := range calls {
 		controls = append(controls, record("tool_call", call.Call.CallID, call))

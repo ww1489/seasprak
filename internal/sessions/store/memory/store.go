@@ -15,6 +15,7 @@ type Store struct {
 	closed bool
 	header store.Header
 	chain  *store.Chain
+	blobs  map[string][]byte
 }
 
 func Open(sessionID string, header store.Header) (*Store, error) {

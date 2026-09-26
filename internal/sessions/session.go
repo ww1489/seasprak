@@ -26,12 +26,22 @@ func Start(opts Options, manager *state.Manager, generation string) (*AgentSessi
 	opts.Limits = opts.Limits.WithDefaults()
 	opts.Tools = append([]tools.Definition(nil), opts.Tools...)
 	for i := range opts.Tools {
-		opts.Tools[i].Schema = append([]byte(nil), opts.Tools[i].Schema...)
+		opts.Tools[i] = opts.Tools[i].Clone()
+	}
+	if opts.Policy != nil {
+		copyPolicy := *opts.Policy
+		opts.Policy = &copyPolicy
 	}
 	if opts.Store == nil || manager == nil {
 		return nil, product.NewError(product.CodeInvalidArgument, "session store and manager are required")
 	}
+	if err := initializeExecutionPolicy(opts, manager); err != nil {
+		return nil, err
+	}
 	rt := &runtime{opts: opts, manager: manager, mailbox: make(chan command, 64), done: make(chan struct{}), subs: map[int]*subscription{}, generation: generation}
+	if err := rt.restoreResourceHolds(); err != nil {
+		return nil, err
+	}
 	view := manager.View()
 	// Opening never replays an execution or silently releases an old queue.
 	if !opts.ReadOnly && !view.RepairRequired {

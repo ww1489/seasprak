@@ -19,25 +19,28 @@ type command struct {
 	reply chan commandResult
 }
 type execution struct {
-	scope  agent.ExecutionScope
-	ctx    context.Context
-	cancel context.CancelFunc
-	done   chan struct{}
-	budget *agent.BudgetLedger
-	turnID string // owned by the session mailbox
+	scope    agent.ExecutionScope
+	ctx      context.Context
+	cancel   context.CancelFunc
+	done     chan struct{}
+	budget   *agent.BudgetLedger
+	activity *activityLease
+	turnID   string // owned by the session mailbox
 }
 type runtime struct {
-	opts       Options
-	manager    *state.Manager
-	mailbox    chan command
-	done       chan struct{}
-	subs       map[int]*subscription
-	nextSub    int
-	closing    bool
-	closeErr   error // read only after done is closed
-	generation string
-	active     *execution
-	cursor     uint64
+	clock       activityClock
+	opts        Options
+	manager     *state.Manager
+	mailbox     chan command
+	done        chan struct{}
+	subs        map[int]*subscription
+	nextSub     int
+	closing     bool
+	closeErr    error // read only after done is closed
+	generation  string
+	active      *execution
+	cursor      uint64
+	modelChunks map[string]uint64 // mailbox-owned temporary stream positions
 }
 
 func (rt *runtime) writable() error {
@@ -170,17 +173,37 @@ func (rt *runtime) schedule() {
 			return
 		}
 		tr = rt.manager.View().Traces[tr.ID]
-		ctx, cancel := context.WithTimeout(context.Background(), tr.Limits.ActivityBudget)
+		ctx, cancel := context.WithCancel(context.Background())
 		frame := &execution{scope: agent.ExecutionScope{SessionID: rt.opts.SessionID, BranchID: v.BranchID, TraceID: tr.ID, InvocationID: tr.InvocationID, ExecutionID: agent.MustID(), Generation: tr.Generation}, ctx: ctx, cancel: cancel, done: make(chan struct{}), budget: agent.NewBudget(tr.Limits)}
 		frame.budget.Restore(tr.Usage)
-		frame.budget.SetPersist(func(usage agent.Usage) error {
-			return rt.do(context.Background(), func(rt *runtime) error { return rt.manager.SaveTraceBudget(context.Background(), tr.ID, usage) })
-		})
+		rt.setBudgetPersistence(frame)
 		rt.active = frame
 		go rt.runSegment(frame, in.ID)
 		return
 	}
 }
+func (rt *runtime) setBudgetPersistence(frame *execution) {
+	// Only configure a fresh, unpublished ledger. The callback's frame and
+	// ExecutionID stay immutable even when the trace starts another segment.
+	frame.budget.SetPersist(func(usage agent.Usage) error {
+		return rt.do(context.Background(), func(rt *runtime) error {
+			if !rt.matchesExecution(frame.scope) {
+				return product.NewError(product.CodeStateConflict, "budget execution is no longer active")
+			}
+			if err := frame.ctx.Err(); err != nil {
+				return err
+			}
+			if frame.activity == nil {
+				return activityExhausted()
+			}
+			if err := frame.activity.allowed(); err != nil {
+				return err
+			}
+			return rt.manager.SaveTraceBudget(context.Background(), frame.scope.TraceID, usage)
+		})
+	})
+}
+
 func (rt *runtime) segmentFinished(frame *execution, runErr error) {
 	if rt.active != frame {
 		return
@@ -202,12 +225,19 @@ func (rt *runtime) segmentFinished(frame *execution, runErr error) {
 			for _, id := range queue {
 				in := v.Inputs[id]
 				if in.TraceID == tr.ID && in.State == "pending" {
-					used, limits := frame.budget.Snapshot(), frame.budget.Limits()
+					used, limits := tr.Usage, tr.Limits
 					if used.LogicalModelCalls >= limits.TraceLogicalModelCalls || used.TransportRequests >= limits.TraceTransportRequests {
 						runErr = product.NewError(product.CodeBudgetExhausted, "model budget exhausted")
 						break continuation
 					}
-					go rt.runSegment(frame, id)
+					frame.cancel()
+					ctx, cancel := context.WithCancel(context.Background())
+					next := &execution{scope: frame.scope, ctx: ctx, cancel: cancel, done: frame.done, budget: agent.NewBudget(limits)}
+					next.scope.ExecutionID = agent.MustID()
+					next.budget.Restore(used)
+					rt.setBudgetPersistence(next)
+					rt.active = next
+					go rt.runSegment(next, id)
 					return
 				}
 			}
@@ -299,11 +329,6 @@ func (rt *runtime) do(ctx context.Context, fn func(*runtime) error) error {
 	return err
 }
 
-type allowAll struct{}
-
-func (allowAll) Authorize(context.Context, agent.FrozenCall) (agent.Decision, error) {
-	return agent.DecisionAllow, nil
-}
 func terminal(state string) bool {
 	return state == "completed" || state == "cancelled" || state == "failed"
 }

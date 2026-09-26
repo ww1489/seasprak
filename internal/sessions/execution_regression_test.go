@@ -53,7 +53,7 @@ func TestRuntimePersistsOrderedToolResultsAndTurns(t *testing.T) {
 	manager, _ := state.NewManager(store, "tools")
 	secondStarted := make(chan struct{})
 	var executions atomic.Int32
-	s, e := sessions.Start(sessions.Options{SessionID: "tools", Profile: sessions.ProfileMemory, Store: store, Model: m, Tools: []tools.Definition{{Name: "add", Version: "v1", Schema: json.RawMessage(`{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}`), Run: func(ctx context.Context, args json.RawMessage) (string, error) {
+	s, e := sessions.Start(sessions.Options{SessionID: "tools", Profile: sessions.ProfileMemory, Store: store, Model: m, Tools: []tools.Definition{{Name: "add", Version: "v1", Schema: json.RawMessage(`{"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}`), Execution: tools.ExecutionDescription{Effect: "read", Resources: []agent.ExecutionResource{{Identity: "ordered-results"}}}, Run: func(ctx context.Context, args json.RawMessage) (string, error) {
 		executions.Add(1)
 		var p struct {
 			N int `json:"n"`
@@ -141,6 +141,8 @@ func TestRuntimeUsesCompleteHistoryAndPerTraceBudget(t *testing.T) {
 }
 func TestRuntimePublishesOriginalDurableEvents(t *testing.T) {
 	s, manager := runtimeSession(t, &controlledModel{})
+	// Start may have committed initialization events before live subscription.
+	initialCursor := manager.View().Cursor
 	sub := s.SubscribeEvents(config.DefaultLimits())
 	defer sub.Close()
 	r := submit(t, s)
@@ -151,6 +153,12 @@ func TestRuntimePublishesOriginalDurableEvents(t *testing.T) {
 		case ev, ok := <-sub.Events:
 			if !ok {
 				t.Fatalf("subscription closed: %v", sub.Err())
+			}
+			if ev.Type == "message.started" || ev.Type == "message.snapshot" {
+				if ev.EventID != "" || ev.DurableSeq != nil || ev.StreamID == "" || ev.ChunkSeq == nil {
+					t.Fatal("temporary model event has invalid identity")
+				}
+				continue
 			}
 			if ev.EventID == "" || ev.DurableSeq == nil {
 				t.Fatal("published event has no durable identity")
@@ -165,7 +173,7 @@ func TestRuntimePublishesOriginalDurableEvents(t *testing.T) {
 	}
 settled:
 	for _, ev := range manager.View().Events {
-		if ev.Type == "queue.changed" {
+		if ev.Type == "queue.changed" || (ev.DurableSeq != nil && *ev.DurableSeq <= initialCursor) {
 			continue
 		}
 		actual, ok := got[ev.EventID]

@@ -6,6 +6,7 @@ import (
 	"github.com/ww1489/seasprak/internal/config"
 	product "github.com/ww1489/seasprak/internal/errors"
 	"sync"
+	"time"
 
 	"github.com/ww1489/seasprak/internal/agent"
 	"github.com/ww1489/seasprak/internal/sessions/state"
@@ -152,6 +153,64 @@ func (sub *subscription) deliver() {
 		sub.mu.Unlock()
 	}
 }
+func (rt *runtime) publishModelStarted(scope agent.ExecutionScope, identity agent.ModelAttemptIdentity) {
+	if rt.modelChunks == nil {
+		rt.modelChunks = map[string]uint64{}
+	}
+	rt.modelChunks[identity.StreamID] = 0
+	payload, _ := json.Marshal(identity)
+	seq := uint64(0)
+	ev := agent.Event{SchemaVersion: 1, Type: "message.started", Scope: agent.EventScope{SessionID: scope.SessionID, TraceID: scope.TraceID, TurnID: scope.TurnID}, StreamID: identity.StreamID, ChunkSeq: &seq, OccurredAt: time.Now().UTC(), Payload: payload}
+	for id, sub := range rt.subs {
+		if !sub.enqueue(ev) {
+			delete(rt.subs, id)
+		}
+	}
+}
+
+func (rt *runtime) saveAttemptResult(ctx context.Context, scope agent.ExecutionScope, id, status, finish string, msg *agent.AgentMessage, calls []agent.ToolRecord, details agent.ModelAttemptDetails) error {
+	if err := rt.manager.SaveAttemptResult(ctx, scope, id, status, finish, msg, calls, details); err != nil {
+		return err
+	}
+	delete(rt.modelChunks, rt.manager.View().ModelAttempts[id].StreamID)
+	return nil
+}
+
+func (rt *runtime) publishModelSnapshot(ctx context.Context, scope agent.ExecutionScope, payload json.RawMessage) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := rt.active.ctx.Err(); err != nil {
+		return err
+	}
+	var update agent.ModelStreamSnapshot
+	if err := json.Unmarshal(payload, &update); err != nil {
+		return err
+	}
+	v := rt.manager.View()
+	initial, ok := v.ModelAttempts[update.AttemptID]
+	_, ended := v.AttemptResults[update.AttemptID]
+	if !ok || ended || initial.Scope != scope || initial.MessageID != update.MessageID || initial.StreamID != update.StreamID || update.ChunkSeq == 0 || update.ChunkSeq <= rt.modelChunks[update.StreamID] {
+		return product.NewError(product.CodeStateConflict, "model stream is not active or update is stale")
+	}
+	if rt.modelChunks == nil {
+		rt.modelChunks = map[string]uint64{}
+	}
+	rt.modelChunks[update.StreamID] = update.ChunkSeq
+	// Decode then re-encode the allowlist, so unknown fields cannot become public.
+	raw, err := json.Marshal(update)
+	if err != nil {
+		return err
+	}
+	ev := agent.Event{SchemaVersion: 1, Type: "message.snapshot", Scope: agent.EventScope{SessionID: scope.SessionID, TraceID: scope.TraceID, TurnID: scope.TurnID}, StreamID: update.StreamID, ChunkSeq: &update.ChunkSeq, OccurredAt: time.Now().UTC(), Payload: raw}
+	for id, sub := range rt.subs {
+		if !sub.enqueue(ev) {
+			delete(rt.subs, id)
+		}
+	}
+	return nil
+}
+
 func (rt *runtime) publishCommitted() {
 	v := rt.manager.View()
 	for _, ev := range v.Events {

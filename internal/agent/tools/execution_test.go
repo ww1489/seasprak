@@ -58,6 +58,7 @@ type recordSink struct {
 	scopes       []agent.ExecutionScope
 	beforeCommit func(agent.Fact) error
 	afterCommit  func(agent.Fact)
+	validator    agent.ExecutionTicketValidator
 }
 
 func (s *recordSink) CommitFact(_ context.Context, scope agent.ExecutionScope, fact agent.Fact) error {
@@ -66,13 +67,21 @@ func (s *recordSink) CommitFact(_ context.Context, scope agent.ExecutionScope, f
 			return err
 		}
 	}
-	if s.budg != nil && fact.Kind == "tool_intent" {
-		s.at = append(s.at, s.budg.Snapshot().ToolExecutions)
+	if fact.Kind == "tool_intent" && fact.Budget != nil {
+		// Inspect the candidate, never re-enter the ledger while it commits.
+		s.at = append(s.at, fact.Budget.ToolExecutions)
 	}
 	s.scopes = append(s.scopes, scope)
 	s.facts = append(s.facts, fact)
 	if s.afterCommit != nil {
 		s.afterCommit(fact)
+	}
+	return nil
+}
+
+func (s *recordSink) ValidateExecutionTicket(ctx context.Context, frozen agent.FrozenExecution) error {
+	if s.validator != nil {
+		return s.validator.ValidateExecutionTicket(ctx, frozen)
 	}
 	return nil
 }
@@ -212,7 +221,7 @@ func TestAcceptedNameOrArgumentsMustMatch(t *testing.T) {
 	}
 }
 
-func TestIntentIsPersistedBeforeBudget(t *testing.T) {
+func TestP2BudgetIntentAndOccupancyAreOneFact(t *testing.T) {
 	budg := agent.NewBudget(config.DefaultLimits())
 	sink := &recordSink{found: true, budg: budg, rec: accepted(`{"n":1}`)}
 	exec, err := NewExecutor("gen", []Definition{addDef(func(context.Context, json.RawMessage) (string, error) {
@@ -224,7 +233,7 @@ func TestIntentIsPersistedBeforeBudget(t *testing.T) {
 	if _, err := exec.Run(context.Background(), agent.ExecutionScope{}, "prov-1", "add", `{"n":1}`); err != nil {
 		t.Fatal(err)
 	}
-	if len(sink.at) != 1 || sink.at[0] != 0 {
+	if len(sink.at) != 1 || sink.at[0] != 1 {
 		t.Fatalf("tool executions at intent time = %v", sink.at)
 	}
 	var intent agent.FrozenCall
@@ -305,7 +314,7 @@ func hasObservation(t *testing.T, sink *recordSink, status string) bool {
 	return false
 }
 
-func TestBudgetFailureKeepsClaimedAndReturnsError(t *testing.T) {
+func TestBudgetFailureDoesNotClaimAndReturnsError(t *testing.T) {
 	limits := config.DefaultLimits()
 	limits.TraceToolCalls = 1
 	budg := agent.NewBudget(limits)
@@ -341,7 +350,7 @@ func TestBudgetFailureKeepsClaimedAndReturnsError(t *testing.T) {
 		if err := json.Unmarshal(fact.Payload, &saved); err != nil {
 			t.Fatal(err)
 		}
-		if !saved.Claimed || saved.Observation == nil || saved.Observation.Executed || saved.Observation.SideEffect != "none" {
+		if saved.Claimed || saved.Observation == nil || saved.Observation.Executed || saved.Observation.SideEffect != "none" {
 			t.Fatalf("observation %+v", saved)
 		}
 		if saved.Call.Hash != "parent-hash" {

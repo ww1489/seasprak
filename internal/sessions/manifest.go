@@ -9,6 +9,8 @@ import (
 	goruntime "runtime"
 	"sort"
 
+	"github.com/ww1489/seasprak/internal/agent/tools"
+
 	product "github.com/ww1489/seasprak/internal/errors"
 	"github.com/ww1489/seasprak/internal/sessions/store"
 )
@@ -16,10 +18,11 @@ import (
 const builtinVersion = "builtin-v1"
 
 type toolDecl struct {
-	Name        string          `json:"name"`
-	Version     string          `json:"version"`
-	Description string          `json:"description"`
-	Schema      json.RawMessage `json:"schema"`
+	Name        string                      `json:"name"`
+	Version     string                      `json:"version"`
+	Description string                      `json:"description"`
+	Schema      json.RawMessage             `json:"schema"`
+	Execution   *tools.ExecutionDescription `json:"execution,omitempty"`
 }
 
 type capabilityManifest struct {
@@ -142,7 +145,12 @@ func canonicalTools(tools []toolDecl) ([]toolDecl, error) {
 		if err != nil {
 			return nil, product.NewError(product.CodeInvalidArgument, "tool schema is invalid")
 		}
-		out = append(out, toolDecl{Name: tool.Name, Version: tool.Version, Description: tool.Description, Schema: json.RawMessage(schema)})
+		decl := toolDecl{Name: tool.Name, Version: tool.Version, Description: tool.Description, Schema: json.RawMessage(schema)}
+		if tool.Execution != nil {
+			copy := tool.Execution.Clone()
+			decl.Execution = &copy
+		}
+		out = append(out, decl)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Name != out[j].Name {

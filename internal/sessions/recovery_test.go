@@ -399,8 +399,18 @@ func assertOpenedState(t *testing.T, s *AgentSession, ws, stateRoot, sessionID s
 			t.Fatalf("unfinished reopen should be paused, got state=%s settled=%v (must not resume)", tr.State, tr.Settled)
 		}
 	}
-	if tr.Usage != expectedUsage(rep.Window) {
-		t.Fatalf("persisted usage %+v, want %+v (budget occupancy is not execution)", tr.Usage, expectedUsage(rep.Window))
+	wantUsage := expectedUsage(rep.Window)
+	if rep.Window == windowIntent && rep.Phase == "after" {
+		wantUsage.ToolExecutions = 1
+	}
+	if wantUsage.LogicalModelCalls > 0 {
+		if tr.Usage.ModelCallID == "" || tr.Usage.ModelRequests != 1 {
+			t.Fatalf("missing durable logical request identity: %+v", tr.Usage)
+		}
+		wantUsage.ModelCallID, wantUsage.ModelRequests = tr.Usage.ModelCallID, 1
+	}
+	if tr.Usage != wantUsage {
+		t.Fatalf("persisted usage %+v, want %+v (budget occupancy is not execution)", tr.Usage, wantUsage)
 	}
 	_, wantTool := expectedCalls(rep.Window)
 	if effect != wantTool {

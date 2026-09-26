@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/ww1489/seasprak/internal/llm"
 )
 
 // ScopeSnapshot is the fixed range used to build one model request.
@@ -34,6 +36,50 @@ type ExecutionScope struct {
 type Fact struct {
 	Kind    string
 	Payload json.RawMessage
+	// Budget is the candidate usage committed atomically with a tool intent.
+	Budget *Usage
+}
+
+// ModelAttemptIdentity is allocated before requesting a model and retained in
+// the request context until its sole terminal commit.
+type ModelAttemptIdentity struct {
+	ID                 string `json:"id"`
+	ModelCallID        string `json:"modelCallId"`
+	MessageID          string `json:"messageId"`
+	StreamID           string `json:"streamId"`
+	ModelConfigVersion string `json:"modelConfigVersion,omitempty"`
+}
+
+// ModelAttemptDetails is terminal evidence, not a second budget ledger. Each
+// usage item is the last cumulative observation of one physical request.
+type ModelAttemptDetails struct {
+	FailureCode          string              `json:"failureCode,omitempty"`
+	FailureReason        string              `json:"failureReason,omitempty"`
+	RefusalReason        string              `json:"refusalReason,omitempty"`
+	OriginalFinishReason string              `json:"originalFinishReason,omitempty"`
+	Usage                []ModelRequestUsage `json:"usage,omitempty"`
+}
+type ModelRequestUsage struct {
+	Request  llm.TransportRequest `json:"request"`
+	Snapshot llm.UsageSnapshot    `json:"snapshot"`
+}
+
+// ModelStreamSnapshot is a temporary allowlisted presentation, not model history.
+// Provider extensions and reasoning signatures never enter this payload.
+type ModelStreamSnapshot struct {
+	AttemptID string             `json:"attemptId"`
+	MessageID string             `json:"messageId"`
+	StreamID  string             `json:"streamId"`
+	ChunkSeq  uint64             `json:"chunkSeq"`
+	Blocks    []ModelStreamBlock `json:"blocks"`
+}
+type ModelStreamBlock struct {
+	BlockIndex int    `json:"blockIndex"`
+	Type       string `json:"type"`
+	Text       string `json:"text,omitempty"`
+	CallID     string `json:"callId,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Arguments  string `json:"arguments,omitempty"`
 }
 
 // ExecutionSink commits execution facts. Implementations must not run the agent.
@@ -56,11 +102,12 @@ const (
 )
 
 type TurnRecord struct {
-	ID           string
-	TraceID      string
-	InvocationID string
-	Ended        bool
-	CallIDs      []string
+	ID                string
+	TraceID           string
+	InvocationID      string
+	Ended             bool
+	CallIDs           []string
+	TransportRequests int
 }
 
 type ToolObservation struct {

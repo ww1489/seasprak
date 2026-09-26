@@ -38,13 +38,19 @@ func alignTools(opts *Options) ([]toolDecl, error) {
 		if err != nil {
 			return nil, product.NewError(product.CodeInvalidArgument, "tool schema is invalid")
 		}
+		static := def.Execution.Clone()
 		decls = append(decls, toolDecl{
-			Name: def.Name, Version: def.Version, Description: def.Description, Schema: json.RawMessage(schemaText),
+			Name: def.Name, Version: def.Version, Description: def.Description, Schema: json.RawMessage(schemaText), Execution: &static,
 		})
 	}
 	if err := matchToolInfos(decls, opts.ToolInfos); err != nil {
 		return nil, err
 	}
+	compiled, err := tools.CompileSchemas(opts.Tools)
+	if err != nil {
+		return nil, err
+	}
+	opts.compiledTools = compiled
 	opts.ToolInfos = infos
 	return decls, nil
 }
@@ -110,6 +116,20 @@ func matchGeneration(opts *Options, generation string) error {
 	decls, err := alignTools(opts)
 	if err != nil {
 		return err
+	}
+	legacy := len(loaded.Tools) > 0
+	for _, tool := range loaded.Tools {
+		if tool.Execution != nil {
+			legacy = false
+			break
+		}
+	}
+	if legacy {
+		// Earlier manifests did not record execution declarations. Preserve their
+		// original hash and explicit Version contract without rewriting history.
+		for i := range decls {
+			decls[i].Execution = nil
+		}
 	}
 	current, err := buildManifest(loaded.ID, decls, opts.GenerationFingerprint)
 	if err != nil {

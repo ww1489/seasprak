@@ -75,6 +75,7 @@ func TestUnresolvedEffectsDistinguishInFlightFromUnknown(t *testing.T) {
 		{name: "paused_claim", trace: "paused", call: agent.ToolRecord{Claimed: true}, conflicts: true, unresolved: true},
 		{name: "terminal_claim", trace: "cancelled", call: agent.ToolRecord{Claimed: true}, conflicts: true, unresolved: true},
 		{name: "unknown_effect", trace: "cancelled", call: agent.ToolRecord{Claimed: true, Observation: &agent.ToolObservation{Status: "failed", SideEffect: "unknown"}}, conflicts: true, unresolved: true},
+		{name: "no_start_unknown_effect", trace: "cancelled", call: agent.ToolRecord{Claimed: true, Observation: &agent.ToolObservation{Status: "outcome_unknown", SideEffect: "unknown", Executed: false}}, conflicts: true, unresolved: true},
 		{name: "unknown_outcome", trace: "running", call: agent.ToolRecord{Claimed: true, Observation: &agent.ToolObservation{Status: "outcome_unknown", SideEffect: "none"}}, conflicts: true, unresolved: true},
 		{name: "known_result", trace: "paused", call: agent.ToolRecord{Claimed: true, Observation: &agent.ToolObservation{Status: "succeeded", SideEffect: "none"}}},
 	} {

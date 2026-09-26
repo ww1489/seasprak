@@ -31,11 +31,12 @@ func TestPersistOrAuthorizeCancelDoesNotStartTool(t *testing.T) {
 	}{
 		{
 			name: "budget persist",
-			setup: func(cancel context.CancelFunc, budg *agent.BudgetLedger, _ *recordSink) agent.ToolAuthorizer {
-				budg.SetPersist(func(agent.Usage) error {
-					cancel()
-					return nil
-				})
+			setup: func(cancel context.CancelFunc, _ *agent.BudgetLedger, sink *recordSink) agent.ToolAuthorizer {
+				sink.afterCommit = func(fact agent.Fact) {
+					if fact.Budget != nil {
+						cancel()
+					}
+				}
 				return allow{}
 			},
 		},
@@ -80,11 +81,16 @@ func TestPersistOrAuthorizeCancelDoesNotStartTool(t *testing.T) {
 			if calls != 0 || out.Executed || out.SideEffect != "none" || out.Status != "cancelled" {
 				t.Fatalf("out=%+v calls=%d", out, calls)
 			}
-			if budg.Snapshot().ToolExecutions != 1 {
+			claimed := tc.name != "authorize"
+			wantBudget := 0
+			if claimed {
+				wantBudget = 1
+			}
+			if budg.Snapshot().ToolExecutions != wantBudget {
 				t.Fatalf("budget=%+v", budg.Snapshot())
 			}
 			saved := mustObservation(t, sink)
-			if !saved.Claimed || saved.Observation == nil || saved.Observation.Executed || saved.Observation.SideEffect != "none" || saved.Observation.Status != "cancelled" {
+			if saved.Claimed != claimed || saved.Observation == nil || saved.Observation.Executed || saved.Observation.SideEffect != "none" || saved.Observation.Status != "cancelled" {
 				t.Fatalf("observation %+v", saved)
 			}
 			if saved.Call.Hash != "parent-hash" || saved.Call.Name != "add" || saved.Call.Arguments != `{"n":1}` {
@@ -93,8 +99,8 @@ func TestPersistOrAuthorizeCancelDoesNotStartTool(t *testing.T) {
 			if saved.Scope.TurnID != "turn-real" {
 				t.Fatalf("scope %+v", saved.Scope)
 			}
-			if !hasIntent(sink) {
-				t.Fatal("intent was not kept")
+			if hasIntent(sink) != claimed {
+				t.Fatal("intent must exist exactly when the atomic claim committed")
 			}
 		})
 	}

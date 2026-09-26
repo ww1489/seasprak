@@ -10,20 +10,29 @@ import (
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 	"github.com/ww1489/seasprak/internal/agent"
 	einorun "github.com/ww1489/seasprak/internal/agent/eino"
 	"github.com/ww1489/seasprak/internal/agent/tools"
+	"github.com/ww1489/seasprak/internal/llm"
+	"github.com/ww1489/seasprak/internal/sessions/state"
 )
 
 func (rt *runtime) runSegment(frame *execution, inputID string) {
-	err := rt.executeSegment(frame, inputID)
+	err := rt.beginActivity(frame)
+	if err == nil {
+		err = rt.executeSegment(frame, inputID)
+	}
+	err = errors.Join(err, rt.endActivity(frame))
 	_ = rt.do(context.Background(), func(rt *runtime) error { rt.segmentFinished(frame, err); return nil })
 }
 func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 	ctx := frame.ctx
 	scope := frame.scope
-	exec, err := tools.NewExecutor(scope.Generation, rt.opts.Tools, rt, allowAll{}, frame.budget)
+	environment, workspace := rt.resourceDomain()
+	exec, err := tools.NewExecutor(scope.Generation, rt.opts.Tools, rt, sessionAuthorizer{rt: rt, scope: scope}, frame.budget,
+		tools.WithCompiledSchemas(rt.opts.compiledTools), tools.WithOperations(rt.opts.Operations), tools.WithResourceScheduler(rt.resourceScheduler()), tools.WithResourceDomain(environment, workspace))
 	if err != nil {
 		return err
 	}
@@ -31,7 +40,20 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 	for _, info := range rt.opts.ToolInfos {
 		baseTools = append(baseTools, einorun.NewPipelineTool(info, exec, scope))
 	}
-	ag, err := einorun.NewAgent(ctx, einorun.Deps{Model: rt.opts.Model, Tools: baseTools, Sink: rt, Budget: frame.budget, Boundary: rt, Instruction: rt.opts.Instruction, Scope: scope})
+	ag, err := einorun.NewAgent(ctx, einorun.Deps{Model: rt.opts.Model, Tools: baseTools, Sink: rt, Budget: frame.budget, Boundary: rt, Instruction: rt.opts.Instruction, Scope: scope, RemainingActivity: frame.activity.remaining,
+		EmptyInventoryCall: func(ctx context.Context, callID, name, arguments string) error {
+			_, err := exec.RejectUnavailable(ctx, einorun.ScopeFromContext(ctx, scope), callID, name, arguments)
+			return err
+		},
+		UnknownToolsHandler: func(ctx context.Context, name, arguments string) (string, error) {
+			out, err := exec.RejectUnavailable(ctx, einorun.ScopeFromContext(ctx, scope), compose.GetToolCallID(ctx), name, arguments)
+			if err != nil {
+				return "", err
+			}
+			raw, _ := json.Marshal(out)
+			return string(raw), nil
+		},
+	})
 	if err != nil {
 		return err
 	}
@@ -58,7 +80,7 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 			if err != nil {
 				return nil, err
 			}
-			return &adk.GenInputResult[agent.InputRef, *schema.AgenticMessage]{Input: &adk.TypedAgentInput[*schema.AgenticMessage]{Messages: value.([]*schema.AgenticMessage)}, Consumed: items[:1], Remaining: items[1:], RunOpts: []adk.AgentRunOption{adk.WithAfterToolCallsHook(einorun.FinishAfterTools(rt, scope))}}, nil
+			return &adk.GenInputResult[agent.InputRef, *schema.AgenticMessage]{Input: &adk.TypedAgentInput[*schema.AgenticMessage]{EnableStreaming: llm.UsesObservedTransport(rt.opts.Model), Messages: value.([]*schema.AgenticMessage)}, Consumed: items[:1], Remaining: items[1:], RunOpts: []adk.AgentRunOption{adk.WithAfterToolCallsHook(einorun.FinishAfterTools(rt, scope))}}, nil
 		},
 		PrepareAgent: func(context.Context, *adk.TurnLoop[agent.InputRef, *schema.AgenticMessage], []agent.InputRef) (adk.TypedAgent[*schema.AgenticMessage], error) {
 			return ag, nil
@@ -77,6 +99,19 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 			return eventErr
 		},
 	})
+	// Parent cancellation (Cancel, Close, or the activity deadline) must also
+	// stop the framework loop. Immediate Stop alone does not cancel synchronous
+	// tool contexts. Join the callback before this segment can be finalized.
+	abortDone := make(chan struct{})
+	stopAbort := context.AfterFunc(ctx, func() {
+		defer close(abortDone)
+		einorun.AbortTurnLoop(loop, frame.cancel)
+	})
+	defer func() {
+		if !stopAbort() {
+			<-abortDone
+		}
+	}()
 	if pushed, _ := loop.Push(agent.InputRef{InputID: inputID, TraceID: scope.TraceID, Kind: "prompt"}); !pushed {
 		return product.NewError(product.CodeStateConflict, "execution loop rejected input")
 	}
@@ -96,25 +131,78 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 	}
 	return ctx.Err()
 }
+func (rt *runtime) matchesExecution(scope agent.ExecutionScope) bool {
+	if rt.active == nil || scope.ExecutionID == "" {
+		return false
+	}
+	current := rt.active.scope
+	current.TurnID, scope.TurnID = "", ""
+	return current == scope
+}
+
 func (rt *runtime) CommitFact(ctx context.Context, scope agent.ExecutionScope, fact agent.Fact) error {
 	// Execution results must be recorded even when the request was cancelled.
 	return rt.do(context.WithoutCancel(ctx), func(rt *runtime) error {
-		if rt.active == nil || rt.active.scope.TraceID != scope.TraceID || rt.active.scope.InvocationID != scope.InvocationID {
+		if !rt.matchesExecution(scope) {
+			if fact.Kind == "tool_observation" {
+				return rt.recordLateObservation(context.WithoutCancel(ctx), scope, fact)
+			}
 			return product.NewError(product.CodeStateConflict, "execution scope is not active")
 		}
 		if scope.TurnID == "" {
 			scope.TurnID = rt.active.turnID
 		}
 		switch fact.Kind {
+		case "model_stream_snapshot":
+			return rt.publishModelSnapshot(ctx, scope, fact.Payload)
+		case "model_attempt_started":
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := rt.active.ctx.Err(); err != nil {
+				return err
+			}
+			var identity agent.ModelAttemptIdentity
+			if err := json.Unmarshal(fact.Payload, &identity); err != nil {
+				return err
+			}
+			v := rt.manager.View()
+			turn, ok := v.Turns[scope.TurnID]
+			if !ok || turn.Ended || identity.ID == "" || identity.MessageID == "" || identity.StreamID == "" || identity.ModelCallID != scope.TurnID {
+				return product.NewError(product.CodeStateConflict, "model attempt does not belong to active turn")
+			}
+			ordinal := uint64(1)
+			for _, prior := range v.ModelAttempts {
+				if prior.ModelCallID == identity.ModelCallID {
+					ordinal++
+				}
+			}
+			if err := rt.manager.SaveRecords(ctx, v.LastSeq, state.Records{ModelAttempts: []state.ModelAttempt{{ID: identity.ID, ModelCallID: identity.ModelCallID, MessageID: identity.MessageID, StreamID: identity.StreamID, Scope: scope, Purpose: "agent", Attempt: ordinal, State: "started", ModelConfigVersion: identity.ModelConfigVersion}}}); err != nil {
+				return err
+			}
+			rt.publishModelStarted(scope, identity)
+			return nil
 		case "assistant":
 			var body struct {
-				Status  string                 `json:"status"`
-				Message *schema.AgenticMessage `json:"message"`
+				AttemptID string                    `json:"attemptId"`
+				Status    string                    `json:"status"`
+				Message   *schema.AgenticMessage    `json:"message"`
+				Details   agent.ModelAttemptDetails `json:"details"`
 			}
 			if err := json.Unmarshal(fact.Payload, &body); err != nil {
 				return err
 			}
 			if body.Status != "complete" {
+				if body.AttemptID != "" {
+					var partial *agent.AgentMessage
+					if body.Message != nil {
+						msg := assistantMessage(scope, body.Message)
+						msg.ID = rt.manager.View().ModelAttempts[body.AttemptID].MessageID
+						msg.Status = agent.StatusIncomplete
+						partial = &msg
+					}
+					return rt.saveAttemptResult(context.WithoutCancel(ctx), scope, body.AttemptID, body.Status, modelFinish(body.Message), partial, nil, body.Details)
+				}
 				if body.Message == nil {
 					_, err := rt.manager.AppendEvent(context.Background(), "model.attempt_failed", scope.TraceID, fact.Payload)
 					return err
@@ -149,8 +237,30 @@ func (rt *runtime) CommitFact(ctx context.Context, scope agent.ExecutionScope, f
 				hash := sha256.Sum256([]byte(call.Name + "\n" + version + "\n" + call.Arguments + "\n" + scope.Generation))
 				calls = append(calls, agent.ToolRecord{Scope: scope, Call: agent.FrozenCall{CallID: agent.MustID(), ProviderCallID: call.CallID, Name: call.Name, Arguments: call.Arguments, Generation: scope.Generation, Hash: hex.EncodeToString(hash[:])}})
 			}
+			if body.AttemptID != "" {
+				msg.ID = rt.manager.View().ModelAttempts[body.AttemptID].MessageID
+				return rt.saveAttemptResult(ctx, scope, body.AttemptID, "accepted", modelFinish(body.Message), &msg, calls, body.Details)
+			}
 			return rt.manager.SaveAssistant(ctx, msg, calls)
+		case "tool_frozen":
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := rt.active.ctx.Err(); err != nil {
+				return err
+			}
+			var frozen agent.FrozenExecution
+			if err := json.Unmarshal(fact.Payload, &frozen); err != nil {
+				return err
+			}
+			return rt.saveFrozenExecution(ctx, scope, frozen)
 		case "tool_intent":
+			if rt.active.activity == nil {
+				return activityExhausted()
+			}
+			if err := rt.active.activity.allowed(); err != nil {
+				return err
+			}
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -162,14 +272,30 @@ func (rt *runtime) CommitFact(ctx context.Context, scope agent.ExecutionScope, f
 				return err
 			}
 			call, ok := rt.manager.View().Calls[frozen.CallID]
-			if !ok || call.Scope.TurnID != scope.TurnID || call.Call != frozen {
+			if !ok || call.Scope.TraceID != scope.TraceID || call.Scope.InvocationID != scope.InvocationID || call.Scope.TurnID != scope.TurnID || call.Call != frozen {
 				return product.NewError(product.CodeStateConflict, "tool intent does not match accepted call")
+			}
+			if !acceptedAttemptForCall(rt.manager.View(), call) {
+				return product.NewError(product.CodeStateConflict, "tool attempt was not accepted")
+			}
+			committed, ok := rt.manager.View().FrozenExecutions["execution:"+frozen.CallID]
+			if !ok {
+				return product.NewError(product.CodePermissionDenied, "tool execution has no frozen description")
+			}
+			decision, err := rt.checkToolPolicy(ctx, call.Scope, committed)
+			if err != nil {
+				return err
+			}
+			if decision != agent.DecisionAllow {
+				return product.NewError(product.CodePermissionDenied, "tool execution is not allowed")
 			}
 			if call.Claimed {
 				return product.NewError(product.CodeReconciliationRequired, "tool execution was already claimed")
 			}
-			call.Claimed = true
-			return rt.manager.SaveCall(ctx, call)
+			if fact.Budget == nil {
+				return product.NewError(product.CodeInvalidArgument, "tool intent requires atomic budget")
+			}
+			return rt.manager.ClaimTool(ctx, frozen, *fact.Budget)
 		case "tool_observation":
 			var call agent.ToolRecord
 			if err := json.Unmarshal(fact.Payload, &call); err != nil {
@@ -179,7 +305,7 @@ func (rt *runtime) CommitFact(ctx context.Context, scope agent.ExecutionScope, f
 				call.Scope.TurnID = scope.TurnID
 			}
 			old, ok := rt.manager.View().Calls[call.Call.CallID]
-			if !ok || old.Call != call.Call || old.Scope != call.Scope || call.Observation == nil {
+			if !ok || old.Call != call.Call || old.Scope != call.Scope || call.Observation == nil || call.Scope.TraceID != scope.TraceID || call.Scope.InvocationID != scope.InvocationID || call.Scope.TurnID != scope.TurnID {
 				return product.NewError(product.CodeStateConflict, "tool observation does not match accepted call")
 			}
 			return rt.manager.SaveCall(context.Background(), call)
@@ -189,19 +315,31 @@ func (rt *runtime) CommitFact(ctx context.Context, scope agent.ExecutionScope, f
 		}
 	})
 }
+func modelFinish(msg *schema.AgenticMessage) string {
+	if msg == nil {
+		return ""
+	}
+	reason, _ := msg.Extra["seasprak.finish"].(string)
+	return reason
+}
+
 func assistantMessage(scope agent.ExecutionScope, msg *schema.AgenticMessage) agent.AgentMessage {
 	return agent.AgentMessage{ID: agent.MustID(), Kind: agent.KindAssistant, Status: agent.StatusComplete, Source: agent.SourceRef{Kind: agent.SourceModel}, Scope: agent.MessageScope{SessionID: scope.SessionID, TraceID: scope.TraceID, TurnID: scope.TurnID, InvocationID: scope.InvocationID}, Standard: msg}
 }
 func (rt *runtime) LookupTool(ctx context.Context, scope agent.ExecutionScope, providerID string) (agent.ToolRecord, error) {
 	value, err := rt.call(ctx, func(rt *runtime) (any, error) {
-		if rt.active == nil || rt.active.scope.TraceID != scope.TraceID || rt.active.scope.InvocationID != scope.InvocationID {
+		if !rt.matchesExecution(scope) {
 			return nil, product.NewError(product.CodeStateConflict, "tool execution is not active")
 		}
 		if scope.TurnID == "" {
 			scope.TurnID = rt.active.turnID
 		}
-		for _, call := range rt.manager.View().Calls {
-			if call.Scope.TraceID == scope.TraceID && call.Scope.TurnID == scope.TurnID && call.Call.ProviderCallID == providerID {
+		view := rt.manager.View()
+		for _, call := range view.Calls {
+			if call.Scope.TraceID == scope.TraceID && call.Scope.InvocationID == scope.InvocationID && call.Scope.TurnID == scope.TurnID && call.Call.ProviderCallID == providerID {
+				if !acceptedAttemptForCall(view, call) {
+					return nil, product.NewError(product.CodeStateConflict, "tool attempt was not accepted")
+				}
 				return call, nil
 			}
 		}
@@ -212,9 +350,40 @@ func (rt *runtime) LookupTool(ctx context.Context, scope agent.ExecutionScope, p
 	}
 	return value.(agent.ToolRecord), nil
 }
+
+// Legacy P1 journals have no attempt records. Once a Turn has registered an
+// attempt, only its accepted candidate can authorize the matching model call.
+func acceptedAttemptForCall(view state.View, call agent.ToolRecord) bool {
+	registered := false
+	for id, initial := range view.ModelAttempts {
+		if initial.Scope.TraceID != call.Scope.TraceID || initial.Scope.InvocationID != call.Scope.InvocationID || initial.Scope.TurnID != call.Scope.TurnID {
+			continue
+		}
+		registered = true
+		if view.AttemptResults[id].State != "accepted" || initial.Scope != call.Scope {
+			continue
+		}
+		for _, msg := range view.Messages {
+			if msg.ID != initial.MessageID || msg.Status != agent.StatusComplete || msg.Standard == nil {
+				continue
+			}
+			for _, block := range msg.Standard.ContentBlocks {
+				if block == nil || block.FunctionToolCall == nil {
+					continue
+				}
+				fc := block.FunctionToolCall
+				if fc.CallID == call.Call.ProviderCallID && fc.Name == call.Call.Name && fc.Arguments == call.Call.Arguments {
+					return true
+				}
+			}
+		}
+	}
+	return !registered
+}
+
 func (rt *runtime) PrepareNextTurn(ctx context.Context, scope agent.ExecutionScope) (agent.TurnPlan, error) {
 	value, err := rt.call(ctx, func(rt *runtime) (any, error) {
-		if rt.active == nil || rt.active.scope.TraceID != scope.TraceID {
+		if !rt.matchesExecution(scope) {
 			return nil, product.NewError(product.CodeStateConflict, "trace is not active")
 		}
 		if err := rt.active.ctx.Err(); err != nil {
@@ -226,10 +395,9 @@ func (rt *runtime) PrepareNextTurn(ctx context.Context, scope agent.ExecutionSco
 				return nil, product.NewError(product.CodeStateConflict, "previous turn is unfinished")
 			}
 		}
+		// Allocation is not a durable turn start. BeginTurnID persists this ID
+		// together with logical occupancy before any model request is allowed.
 		turn := agent.TurnRecord{ID: agent.MustID(), TraceID: scope.TraceID, InvocationID: scope.InvocationID}
-		if err := rt.manager.SaveTurn(ctx, turn); err != nil {
-			return nil, err
-		}
 		rt.active.turnID = turn.ID
 		return agent.TurnPlan{TurnID: turn.ID, SelectionRevision: rt.manager.View().LastSeq}, nil
 	})
@@ -240,7 +408,7 @@ func (rt *runtime) PrepareNextTurn(ctx context.Context, scope agent.ExecutionSco
 }
 func (rt *runtime) ShouldStop(ctx context.Context, scope agent.ExecutionScope) (bool, string, error) {
 	value, err := rt.call(context.WithoutCancel(ctx), func(rt *runtime) (any, error) {
-		if rt.active == nil || rt.active.scope.TraceID != scope.TraceID {
+		if !rt.matchesExecution(scope) {
 			return "execution_stopped", nil
 		}
 		if rt.active.ctx.Err() != nil {
@@ -264,7 +432,7 @@ func (rt *runtime) ShouldStop(ctx context.Context, scope agent.ExecutionScope) (
 }
 func (rt *runtime) FinishTurn(ctx context.Context, scope agent.ExecutionScope, fact agent.TurnFact) error {
 	return rt.do(context.WithoutCancel(ctx), func(rt *runtime) error {
-		if rt.active == nil || rt.active.scope.TraceID != scope.TraceID {
+		if !rt.matchesExecution(scope) {
 			return product.NewError(product.CodeStateConflict, "trace is not active")
 		}
 		id := fact.TurnID
@@ -275,7 +443,7 @@ func (rt *runtime) FinishTurn(ctx context.Context, scope agent.ExecutionScope, f
 			id = rt.active.turnID
 		}
 		turn, ok := rt.manager.View().Turns[id]
-		if !ok || turn.TraceID != scope.TraceID {
+		if !ok || turn.TraceID != scope.TraceID || turn.InvocationID != scope.InvocationID || id != rt.active.turnID {
 			return product.NewError(product.CodeStateConflict, "turn is not active")
 		}
 		if len(turn.CallIDs) > 0 {
@@ -287,6 +455,12 @@ func (rt *runtime) FinishTurn(ctx context.Context, scope agent.ExecutionScope, f
 }
 func (rt *runtime) TakeSteering(ctx context.Context, scope agent.ExecutionScope) (*agent.AgentMessage, error) {
 	value, err := rt.call(ctx, func(rt *runtime) (any, error) {
+		if !rt.matchesExecution(scope) {
+			return nil, product.NewError(product.CodeStateConflict, "execution is no longer active")
+		}
+		if err := rt.active.ctx.Err(); err != nil {
+			return nil, err
+		}
 		v := rt.manager.View()
 		for _, id := range v.Steering {
 			in := v.Inputs[id]

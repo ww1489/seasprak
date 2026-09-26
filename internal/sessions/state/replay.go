@@ -58,6 +58,20 @@ func applyControl(v *View, r store.Record) error {
 		return product.NewError(product.CodeIncompatibleVersion, "unknown control version")
 	}
 	switch r.Type {
+	case "execution_policy":
+		return applyExecutionPolicy(v, r)
+	case "model_attempt", "frozen_execution", "interaction", "approval", "checkpoint_ref":
+		return applyP2Record(v, r)
+	case "model_attempt_details":
+		return applyAttemptDetails(v, r)
+	case "model_attempt_transition":
+		return applyAttemptTransition(v, r)
+	case "operation":
+		return applyOperation(v, r)
+	case "observation_revision":
+		return applyObservation(v, r)
+	case "reconciliation":
+		return applyReconciliation(v, r)
 	case "input":
 		var in InputState
 		if err := json.Unmarshal(r.Payload, &in); err != nil {
@@ -83,6 +97,9 @@ func applyControl(v *View, r store.Record) error {
 		if err := json.Unmarshal(r.Payload, &tr); err != nil {
 			return err
 		}
+		if !tr.Activity.Known && tr.Started {
+			tr.Activity.Unknown = true
+		}
 		v.Traces[tr.ID] = &tr
 		v.Generation = tr.Generation
 	case "idempotency":
@@ -100,6 +117,12 @@ func applyControl(v *View, r store.Record) error {
 	case "tool_call":
 		var call agent.ToolRecord
 		if err := json.Unmarshal(r.Payload, &call); err != nil {
+			return err
+		}
+		if old, ok := v.Calls[call.Call.CallID]; ok && old.Observation != nil && (call.Observation == nil || *old.Observation != *call.Observation) {
+			return product.NewError(product.CodeStateConflict, "original tool observation is immutable")
+		}
+		if err := applyLegacyObservation(v, call); err != nil {
 			return err
 		}
 		v.Calls[call.Call.CallID] = call

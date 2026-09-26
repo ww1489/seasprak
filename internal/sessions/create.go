@@ -119,7 +119,7 @@ func OpenAgentSession(ctx context.Context, opts Options) (*AgentSession, error) 
 	if err := bindWorkspace(&opts, binding.HostRealRoot); err != nil {
 		return nil, err
 	}
-	backend, err := jsonl.Open(opts.SessionID, opts.StateRoot, sessstore.Header{}, jsonl.Options{OpenExisting: true, MaxLine: opts.Limits.WithDefaults().MaxCommitLineBytes})
+	backend, err := jsonl.Open(opts.SessionID, opts.StateRoot, sessstore.Header{}, jsonl.Options{OpenExisting: true, ReadOnly: opts.ReadOnly, MaxLine: opts.Limits.WithDefaults().MaxCommitLineBytes})
 	if err != nil {
 		return nil, err
 	}

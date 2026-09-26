@@ -82,6 +82,9 @@ func ensureDir(path string, create bool) error {
 		if !info.IsDir() {
 			return product.NewError(product.CodeInvalidArgument, "session path is not a directory")
 		}
+		if !create {
+			return nil
+		}
 		return os.Chmod(path, 0o700)
 	}
 	if !os.IsNotExist(err) {

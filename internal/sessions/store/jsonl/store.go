@@ -26,20 +26,22 @@ const formatVersion = 1
 // Windows directory flush often cannot be requested; see store.SyncDir.
 // File.Sync and MoveFileEx WRITE_THROUGH do not promise durability on every filesystem.
 type Store struct {
-	mu        sync.Mutex
-	dir       string
-	sessionID string
-	journal   *os.File
-	lock      *flock.Flock
-	maxLine   int
-	syncFile  func(*os.File) error
-	syncDir   func(string) error
-	write     func(*os.File, []byte) (int, error)
-	broken    bool
-	repair    bool
-	closed    bool
-	header    store.Header
-	chain     *store.Chain
+	mu           sync.Mutex
+	dir          string
+	sessionID    string
+	journal      *os.File
+	lock         *flock.Flock
+	maxLine      int
+	syncFile     func(*os.File) error
+	syncDir      func(string) error
+	write        func(*os.File, []byte) (int, error)
+	broken       bool
+	repair       bool
+	closed       bool
+	readOnly     bool
+	snapshotSize int64
+	header       store.Header
+	chain        *store.Chain
 }
 
 type Options struct {
@@ -51,11 +53,16 @@ type Options struct {
 	// OpenExisting opens a journal that is already on disk.
 	// It does not create the session directory or the journal file.
 	OpenExisting bool
+	// ReadOnly opens an existing journal without locks, chmod, creation or repair.
+	ReadOnly bool
 }
 
 func Open(sessionID, stateRoot string, header store.Header, opt Options) (*Store, error) {
 	if sessionID == "" || stateRoot == "" {
 		return nil, product.NewError(product.CodeInvalidArgument, "session and state root are required")
+	}
+	if opt.ReadOnly {
+		opt.OpenExisting = true
 	}
 	var dir string
 	var err error
@@ -83,32 +90,49 @@ func Open(sessionID, stateRoot string, header store.Header, opt Options) (*Store
 			return nil, err
 		}
 	}
-	lk := flock.New(filepath.Join(dir, "writer.lock"))
-	ok, err := lk.TryLock()
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, product.NewError(product.CodeStateConflict, "session already has a writer")
-	}
-	flags := os.O_RDWR
-	if !opt.OpenExisting {
-		flags |= os.O_CREATE
+	var lk *flock.Flock
+	flags := os.O_RDONLY
+	if !opt.ReadOnly {
+		// Existing writers retain the original permission tightening. Browsers
+		// only validate these directories and never chmod them.
+		if opt.OpenExisting {
+			for _, directory := range []string{filepath.Dir(dir), dir} {
+				if err := os.Chmod(directory, 0o700); err != nil {
+					return nil, err
+				}
+			}
+		}
+		lk = flock.New(filepath.Join(dir, "writer.lock"))
+		ok, lockErr := lk.TryLock()
+		if lockErr != nil {
+			return nil, lockErr
+		}
+		if !ok {
+			return nil, product.NewError(product.CodeStateConflict, "session already has a writer")
+		}
+		flags = os.O_RDWR
+		if !opt.OpenExisting {
+			flags |= os.O_CREATE
+		}
 	}
 	f, err := os.OpenFile(path, flags, 0o600)
 	if err != nil {
-		_ = lk.Unlock()
+		if lk != nil {
+			_ = lk.Unlock()
+		}
 		return nil, err
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		_ = f.Close()
-		_ = lk.Unlock()
-		return nil, err
+	if !opt.ReadOnly {
+		if err := os.Chmod(path, 0o600); err != nil {
+			_ = f.Close()
+			_ = lk.Unlock()
+			return nil, err
+		}
 	}
 	s := &Store{
 		dir: dir, sessionID: sessionID, journal: f, lock: lk,
 		maxLine: opt.MaxLine, syncFile: opt.SyncFile, syncDir: opt.SyncDir, write: opt.Write,
-		header: header, chain: store.NewChain(),
+		header: header, chain: store.NewChain(), readOnly: opt.ReadOnly,
 	}
 	if s.maxLine == 0 {
 		s.maxLine = config.DefaultLimits().MaxCommitLineBytes
@@ -124,6 +148,7 @@ func Open(sessionID, stateRoot string, header store.Header, opt Options) (*Store
 		_ = s.Close()
 		return nil, err
 	}
+	s.snapshotSize = info.Size()
 	if info.Size() == 0 {
 		if opt.OpenExisting {
 			_ = s.Close()
@@ -175,7 +200,13 @@ func (s *Store) reload() (store.StoredSession, error) {
 	if _, err := s.journal.Seek(0, io.SeekStart); err != nil {
 		return store.StoredSession{}, err
 	}
-	stored, err := ReadFile(s.journal, s.sessionID, s.maxLine)
+	var source io.Reader = s.journal
+	if s.readOnly {
+		// Bound browsing to the prefix present at Open. A writer may append
+		// concurrently; a partial last line is excluded by ReadFile.
+		source = io.NewSectionReader(s.journal, 0, s.snapshotSize)
+	}
+	stored, err := ReadFile(source, s.sessionID, s.maxLine)
 	if err != nil {
 		return store.StoredSession{}, err
 	}
@@ -287,6 +318,9 @@ func (s *Store) readable() error {
 func (s *Store) writable() error {
 	if err := s.readable(); err != nil {
 		return err
+	}
+	if s.readOnly {
+		return product.NewError(product.CodePermissionDenied, "session store is read-only")
 	}
 	if s.broken || s.repair {
 		return product.NewError(product.CodeStorageUnavailable, "journal cannot accept writes")
