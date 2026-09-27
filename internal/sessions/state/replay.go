@@ -13,6 +13,9 @@ import (
 )
 
 func applyCommit(v *View, c store.Commit) error {
+	if err := validateResourceHoldReleaseCommit(c); err != nil {
+		return err
+	}
 	if err := validateApprovalCommit(v, c); err != nil {
 		return err
 	}
@@ -67,7 +70,7 @@ func applyControl(v *View, r store.Record) error {
 		return applyApprovalRecord(v, r)
 	case "resumed_execution":
 		return applyResumedExecution(v, r)
-	case "model_attempt", "frozen_execution", "interaction", "approval", "checkpoint_ref":
+	case "model_attempt", "selection", "frozen_execution", "interaction", "approval", "checkpoint_ref":
 		return applyP2Record(v, r)
 	case "model_attempt_details":
 		return applyAttemptDetails(v, r)
@@ -77,6 +80,8 @@ func applyControl(v *View, r store.Record) error {
 		return applyOperation(v, r)
 	case "observation_revision":
 		return applyObservation(v, r)
+	case "resource_hold_release":
+		return applyResourceHoldRelease(v, r)
 	case "reconciliation":
 		return applyReconciliation(v, r)
 	case "input":

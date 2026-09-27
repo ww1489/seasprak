@@ -613,3 +613,71 @@ Linux/macOS 运行证据、Windows 文件符号链接跳过项和既有 macOS CI
 维护者随后明确授权当前差异提交并推送，同时要求继续所有剩余步骤。提交前完整受影响 race 通过（sessions 40.758 秒）；格式无输出，vet/build/mod verify、固定 govulncheck 和旧 live 包均退出码 0。首次全仓普通测试退出码 1：`TestStandaloneDomainSurvivesExecutorAddressReuse` 的测试挂起保护只有 100ms，本次启动前返回 `permission_denied: execution ticket is expired`、calls=0；同次全仓 race 通过。该用例测试独立调度域，不验证百毫秒启动性能；仅将其测试调用期限改为 5 秒，不改生产票据期限、取消或授权规则，保留实际执行一次和旧未知 hold 仍在的全部断言。
 
 调整后 `go test -race ./internal/agent/tools -count=20 -timeout=180s` 退出码 0（6.109 秒）；重新执行 `go test ./... -count=1 -timeout=240s` 和 `go test -race ./... -count=1 -timeout=240s` 均退出码 0（sessions 12.452 秒、42.475 秒）。sessions/agent/SDK 与新增文件秘密和冲突模式扫描无命中，原 `.test_env` 不进入暂存。上节高风险 race20 和 crash10 的生产版本未改变，这次只改测试保护期限；其结果不扩大为 P2 或三平台完成。实际提交/推送结果另由 Git 核对，不修改原计划文件。
+
+## 协议工厂与 Step15 后续回归（2026-09-27，本批仍未收口 P2）
+
+本批新增 Anthropic Messages 和 Gemini GenerateContent 基础 Catalog 工厂，复用固定 Eino adapter、请求期凭据和 observed transport；修正红测中的 Close、AsError、schema 类型、认证头和建流阻塞假设。Anthropic 将 end_turn/tool_use 分别归一为 stop/tool_calls；增加实际缺失 message_stop 的行为红测，确认先失败后在既有有界采集器中补终态证据。Gemini 固定一次 SDK 尝试，工具 CallID 不能保真时在请求前返回 unsupported_capability；服务端工具、额外 provider route、显式缓存资源仍不可用。两协议的 thinking/off、完整缓存、usage presence、关闭后读取收敛和执行层端到端契约未全部验收，不标 Steps19–20 完成。Responses 缺 usage 流测试先失败，随后清除中间 SDK 块的合成 usage，只在最终块提交有原始证据的数值。
+
+Step15 新增回归覆盖 LookupTool/FinishTools 使用核对结果、残留未知和相互矛盾的 no-start/confirmed 证据、查询期间 Trace 状态变化，以及 no-start 后的迟到确认事实。原观察保持不可变，最新核对和其后的不同观察保留未知门禁；迟到真实 CommitFact 路径恢复资源限制，进一步核对允许基于最新已确认观察继续处理。原子 release 的独立持久记录、完整崩溃窗口和已有工具结果消息的恢复投影仍待验收，不能据这些测试标记整个 Step15 完成。默认模型选择测试改为等待持久 completed 状态；尚未证明完整下一 Turn/审批/重开选择契约。
+
+本批最终 Windows 验证：
+
+- `gofmt -l .`：退出码0、无输出；此前按项目要求执行 `go fmt ./...`，并单独格式化 `sdk/testdata/consumer`。
+- `go vet ./...`、`go build ./...`、`go mod verify`：均退出码0，依赖完整性通过。
+- `go test -race ./internal/llm ./internal/agent/... ./internal/sessions/... -count=1 -timeout=180s`：退出码0，先于全仓竞态验证。
+- `go test ./... -count=1 -timeout=180s`：最终退出码0。
+- `go test -race ./... -count=1 -timeout=180s`：最终退出码0。
+- `go test ./sdk ./sdk/testdata/consumer ./internal/architecture -count=1 -timeout=120s`：退出码0。
+- `go test -race ./internal/sessions ./internal/sessions/state -run 'Reconcile|Reconciliation|LateConfirmedEvidence|UnknownEffect|Unresolved' -count=20 -timeout=180s`：最终退出码0，包含真实迟到 CommitFact 入口。本批未新增或重跑全部崩溃进程窗口，不挪用旧证据作为新窗口证明。
+- `govulncheck ./...`：命令不可用，PowerShell CommandNotFoundException；改用既定 `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...`，退出码0、0个可达漏洞；另报告1个未调用的包级漏洞和1个模块级漏洞，不宣称依赖图完全无漏洞。
+- `go test -tags live ./internal/llm -count=1 -timeout=120s`：退出码0，仍非五协议产品工厂的完整真实端点认证。只通过测试加载本地配置，未读取凭据内容。
+- `git diff HEAD --check`：退出码0，仅LF/CRLF提示。列出的新增文件无禁止提交产物；internal Go文件的冲突标记/常见密钥/私钥模式扫描无命中。`.test_env`仍被忽略。
+
+Linux/macOS 本批未运行。`wsl --list --quiet` 提示未安装 Linux 子系统；docker/gh 不在 PATH。平台及全部剩余功能仍待完成，原计划文件未改，本批未提交或推送。
+
+## Step15 原子释放与协议 thinking 校验（2026-09-27，续批）
+
+新增不可变 `resource_hold_release` 控制记录，与新观察、核对结论和 operation 完成同一次 Append。回放也校验事务成员和受信 no-start/停止证明；不返还预算或 claim。查询期间新增 ExecutionID 一致性复核。TrustedNoStart 与 ConfirmedEffects 同时出现保留冲突；迟到确认使已有释放失效并恢复 hold。旧日志只有 no-start 观察而无释放记录时保守保留 hold，本批没有迁移旧记录。新增行为红测先复现缺记录、观察误释放、ExecutionID 变化及矛盾证据误释放，再转绿；另覆盖 Append 失败视图不变、同事务回放和历史不改。完整进程崩溃窗口及已有工具结果消息恢复投影仍未收口。
+
+Anthropic 工厂新增 `1024 <= thinking budget < max_tokens` 校验，Generate/Stream 调用时缩小输出上限也不能绕过；非法配置实际请求和占额均为零。合法 fixture 使用 1024/2048 并验证 1024/1025 边界。Gemini 显式 off 仅在已有 scoped verified 声明且精确模型为 gemini-2.5-flash/flash-lite 时通过固定 adapter 发送零 thinkingBudget；未认证模型或 off 映射为 minimal 等不能兑现配置前置拒绝。未指定 thinking 与显式 off 保持区别。本批未新增 endpoint 认证，显式缓存和完整协议契约仍未完成。
+
+实际 Windows 验证（均退出码0）：
+
+- `gofmt -l .`：无输出。
+- `go vet ./...`、`go build ./...`、`go mod verify`：通过。
+- `go test -race ./internal/llm ./internal/agent/... ./internal/sessions/... -count=1 -timeout=180s`：最终协议改动后再次通过，先于最终全仓 race。
+- `go test ./... -count=1 -timeout=180s`、`go test -race ./... -count=1 -timeout=180s`：最终改动后通过。
+- `go test -race ./internal/sessions ./internal/sessions/state -run 'Reconcile|Reconciliation|ResourceHoldRelease|LateConfirmedEvidence|UnknownEffect|Unresolved' -count=20 -timeout=180s`：通过。
+- `go test ./internal/sessions ./internal/sessions/store/jsonl -run 'TestSessionCrash|TestCommitCrashKeepsPrefix|TestRuntimeCancelPausedCrashPrefix' -count=10 -timeout=180s`：通过，仅证明现有命中用例，不代表所有新增故障窗已覆盖。
+- `go test ./sdk ./sdk/testdata/consumer ./internal/architecture -count=1 -timeout=120s`：通过。
+- `go test -tags live ./internal/llm -count=1 -timeout=120s`：最终协议改动后通过，仍不代表五协议产品工厂认证。
+- 安全检查沿用固定 `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...`；0个可达漏洞，仍报告未调用的包级和模块级漏洞。
+
+新增文件清单未见禁止产物，internal Go 文件的冲突标记和常见密钥模式检查无命中；`.test_env`仍被忽略。Linux/macOS 实际运行、五协议完整统一契约、选择/直接命令/SDK闭环等仍未完成。未修改原计划、未提交或推送，不将本批结果标为P2完成。
+
+## 直接命令事务、模型选择恢复与 usage presence（2026-09-27 续批）
+
+直接命令受理现在将 operation、输入和 Trace 同事务提交；command 结果、operation 终态和输入消费同事务提交。零 ExpectedRevision 不随最新日志版本改变幂等摘要；确认丢失后重开不重新执行。默认测试先复现孤立 operation、结果部分可见、输入 undelivered、重复请求冲突及 unknown 仍受理新工作，再转绿。另通过真实 ExecuteCommand 红测修复普通参数误用 schema 规范化：required 数组保持原序，大整数精度保留，尾随 JSON 请求前拒绝。直接命令完整审批/Resume 仍未交付；当前并无与其相容的 Eino checkpoint，不能改为 fresh-start 来规避。
+
+模型选择幂等重放不再替换进程内实例或回退最新默认。SelectNextTurnModel 在终态检查前查询原回执，同键异内容仍冲突。恢复校验只允许核对通过的 next_trace 默认选择控制记录，原 Trace/Turn 的模型实例和 revision 用于恢复；当前 Trace pending 选择、未知记录、新历史继续拒绝。真实审批测试覆盖 A 为初始模型、Trace 默认选择或 Turn 激活选择三类：决定不执行，显式恢复 A、工具一次，新独立 Trace B。磁盘重开后的动态模型实例重新绑定及多工具部分审批组合尚待完成。
+
+Anthropic/Gemini/DeepSeek 复用最终 read-through 统计投影 usage；中间块不重复累计，缺失字段及溢出不使用 SDK 合成零值。Anthropic 保留 message_start 输入和 message_delta 输出；统计溢出后继续有界识别后续 message_stop，终态自身超限或不完整仍拒绝。工厂行为红测及分帧/溢出测试已进入默认套件。完整工具与显式缓存等未交付能力不因这些测试标为支持。
+
+本批实际 Windows 验证：
+
+- `gofmt -l .` 无输出；`go vet ./...`、`go build ./...` 退出码0。
+- `go test -race ./internal/llm ./internal/agent/... ./internal/sessions/... -count=1 -timeout=180s` 最终退出码0。
+- `go test ./... -count=1 -timeout=180s` 最终退出码0。
+- `go test -race ./internal/sessions -run 'ExecuteCommand|Selection|DefaultModel|NextTurnModel|Resume.*Model|Model.*Resume' -count=20 -timeout=240s` 首次退出码1：command fixture 共享全局调度域，unknown 占用污染后续轮次。count=2复现，排除unknown的对照通过；仅给fixture独立临时工作区和调度器，同fixture重开仍复用，新增Close后unknown hold仍在断言。最终组合race20退出码0（179.150秒），未加长原等待期限或修改生产释放规则。
+- `go test -race ./... -count=1 -timeout=180s` 一轮退出码1：TestRuntimeConsumesConsecutiveSteeringAtSeparateBoundaries 遇到 activity reservation expired。当时其他验证并发运行；尚未证明并发负载就是根因。该用例单独 `-race -count=20 -timeout=180s` 退出码0，随后全仓同命令独立复跑退出码0（sessions 70.856秒）。保留这次间歇失败，未宣称根因已修复，未削弱活动预算限制。
+- `go test -race ./sdk/testdata/consumer -count=10 -timeout=180s` 退出码0。
+- `go test -tags live ./internal/llm -count=1 -timeout=120s` 退出码0，仍是现有live入口，不代表五协议工厂真实认证。
+- `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` 退出码0、0个可达漏洞，仍报告未调用的包级和模块级漏洞。
+
+新增文件清单未见禁止产物，internal Go文件冲突及常见秘密模式检查无命中，`.test_env`仍忽略。最新Git状态未复现启动快照中的反斜杠重复文件。Linux/macOS 未运行；本批未补全新进程崩溃窗口。原计划未修改，未提交或推送，P2保持未完成。
+
+### 活动预留旧截止校验的追加修复
+
+调查确认“预留过期但总预算仍有余额时停止”符合既有安全契约，不放宽该行为。另用假时钟和阻塞Append确定性复现独立漏洞：续期在500ms提交，旧watchdog未获调度，1000/1100ms才返回成功时会错误放行新请求。红测实际TransportRequests从1增到2，退出码1。现保存并复核旧预留截止时间，迟到提交仍保留事实用于退出结算，但取消执行、拒绝新请求；999999999ns准时成功边界保持通过。模型未退出前不宣称ExecutionStopped。此修复不被用作前述steering间歇失败根因的证明。
+
+`go test -race ./internal/sessions -run '^TestActivity' -count=20` 退出码0。最终主流程再次执行受影响sessions/state全包race、`go test -race ./... -count=1 -timeout=180s`（sessions 63.733秒）、`go test ./... -count=1 -timeout=180s`，全部退出码0。最终代码格式无输出，vet/build通过；`go mod verify`退出码0、all modules verified；固定govulncheck再次退出码0（0可达漏洞但仍有未调用漏洞），现有live再次退出码0。`git -c core.safecrlf=false diff HEAD --check`在修正文档末尾多余空行后通过。上述仍不能替代三平台、五协议完整认证和所有剩余P2交付。

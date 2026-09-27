@@ -72,76 +72,125 @@ const (
 var ErrControlledStop = einorun.ErrControlledStop
 
 type (
-	SessionOptions        = sessions.Options
-	AgentSession          = sessions.AgentSession
-	Snapshot              = sessions.Snapshot
-	ResumeCommand         = sessions.ResumeCommand
-	InteractionResponse   = sessions.InteractionResponse
-	Interaction           = state.Interaction
-	Approval              = state.Approval
-	Reconciliation        = state.Reconciliation
-	ReconcileCommand      = sessions.ReconcileCommand
-	ReconcileEvidence     = sessions.ReconcileEvidence
-	ReconcileQuery        = sessions.ReconcileQuery
-	ReconcileQueryRequest = sessions.ReconcileQueryRequest
-	ReconcileQueryFunc    = sessions.ReconcileQueryFunc
-	FrozenExecution       = agent.FrozenExecution
-	ResumeEligibility     = sessions.ResumeEligibility
-	OperationReceipt      = state.OperationReceipt
-	OperationStatus       = state.OperationStatus
-	Subscription          = sessions.Subscription
-	TraceState            = state.TraceState
-	InputState            = state.InputState
-	AgentMessage          = agent.AgentMessage
-	CustomMessage         = agent.CustomMessage
-	SummaryMessage        = agent.SummaryMessage
-	CommandMessage        = agent.CommandMessage
-	OpaqueMessage         = agent.OpaqueMessage
-	TurnRecord            = agent.TurnRecord
-	ToolRecord            = agent.ToolRecord
-	ToolObservation       = agent.ToolObservation
-	ToolOutputChunk       = agent.ToolOutputChunk
-	ToolOutputSink        = agent.ToolOutputSink
-	ToolOutputDelta       = agent.ToolOutputDelta
-	InputCommand          = agent.InputCommand
-	InputReceipt          = agent.InputReceipt
-	TargetAgent           = agent.TargetAgent
-	Event                 = agent.Event
-	EventScope            = agent.EventScope
-	MessageKind           = agent.MessageKind
-	MessageStatus         = agent.MessageStatus
-	MessageScope          = agent.MessageScope
-	SourceKind            = agent.SourceKind
-	SourceRef             = agent.SourceRef
-	Usage                 = agent.Usage
-	ExecutionScope        = agent.ExecutionScope
-	Fact                  = agent.Fact
-	FrozenCall            = agent.FrozenCall
-	Decision              = agent.Decision
-	ExecutionSink         = agent.ExecutionSink
-	ToolAuthorizer        = agent.ToolAuthorizer
-	BoundaryController    = agent.BoundaryController
-	TurnPlan              = agent.TurnPlan
-	TurnFact              = agent.TurnFact
-	BudgetLedger          = agent.BudgetLedger
-	Error                 = product.Error
-	Limits                = config.Limits
-	Model                 = llm.Model
-	ModelConfig           = llm.ModelConfig
-	EffectiveOptions      = llm.EffectiveOptions
-	ToolDefinition        = tools.Definition
-	Executor              = tools.Executor
-	Outcome               = tools.Outcome
-	AgentDeps             = einorun.Deps
-	SessionStore          = store.Store
-	Commit                = store.Commit
-	ExpectedCommit        = store.ExpectedCommit
-	CommitReceipt         = store.CommitReceipt
-	Header                = store.Header
-	StoredSession         = store.StoredSession
-	CommitReader          = store.CommitReader
-	Record                = store.Record
-	BranchUpdate          = store.BranchUpdate
+	SessionOptions             = sessions.Options
+	AgentSession               = sessions.AgentSession
+	Snapshot                   = sessions.Snapshot
+	ResumeCommand              = sessions.ResumeCommand
+	InteractionResponse        = sessions.InteractionResponse
+	Interaction                = state.Interaction
+	Approval                   = state.Approval
+	Reconciliation             = state.Reconciliation
+	ReconcileCommand           = sessions.ReconcileCommand
+	ReconcileEvidence          = sessions.ReconcileEvidence
+	ReconcileQuery             = sessions.ReconcileQuery
+	ReconcileQueryRequest      = sessions.ReconcileQueryRequest
+	ReconcileQueryFunc         = sessions.ReconcileQueryFunc
+	CommandRequest             = sessions.CommandRequest
+	FrozenExecution            = agent.FrozenExecution
+	ResumeEligibility          = sessions.ResumeEligibility
+	OperationReceipt           = state.OperationReceipt
+	OperationStatus            = state.OperationStatus
+	Selection                  = state.Selection
+	ModelChoice                = sessions.ModelChoice
+	SetDefaultModelRequest     = sessions.SetDefaultModelRequest
+	SelectNextTurnModelRequest = sessions.SelectNextTurnModelRequest
+	SetActiveToolsRequest      = sessions.SetActiveToolsRequest
+	SearchToolsRequest         = sessions.SearchToolsRequest
+	ToolCandidate              = sessions.ToolCandidate
+	Subscription               = sessions.Subscription
+	TraceState                 = state.TraceState
+	InputState                 = state.InputState
+	AgentMessage               = agent.AgentMessage
+	CustomMessage              = agent.CustomMessage
+	SummaryMessage             = agent.SummaryMessage
+	CommandMessage             = agent.CommandMessage
+	OpaqueMessage              = agent.OpaqueMessage
+	TurnRecord                 = agent.TurnRecord
+	ToolRecord                 = agent.ToolRecord
+	ToolObservation            = agent.ToolObservation
+	ToolOutputChunk            = agent.ToolOutputChunk
+	ToolOutputSink             = agent.ToolOutputSink
+	ToolOutputDelta            = agent.ToolOutputDelta
+	InputCommand               = agent.InputCommand
+	InputReceipt               = agent.InputReceipt
+	TargetAgent                = agent.TargetAgent
+	Event                      = agent.Event
+	EventScope                 = agent.EventScope
+	MessageKind                = agent.MessageKind
+	MessageStatus              = agent.MessageStatus
+	MessageScope               = agent.MessageScope
+	SourceKind                 = agent.SourceKind
+	SourceRef                  = agent.SourceRef
+	Usage                      = agent.Usage
+	ExecutionScope             = agent.ExecutionScope
+	Fact                       = agent.Fact
+	FrozenCall                 = agent.FrozenCall
+	Decision                   = agent.Decision
+	ExecutionSink              = agent.ExecutionSink
+	ToolAuthorizer             = agent.ToolAuthorizer
+	BoundaryController         = agent.BoundaryController
+	TurnPlan                   = agent.TurnPlan
+	TurnFact                   = agent.TurnFact
+	BudgetLedger               = agent.BudgetLedger
+	Error                      = product.Error
+	Limits                     = config.Limits
+	Model                      = llm.Model
+	ModelConfig                = llm.ModelConfig
+	ModelKey                   = llm.ModelKey
+	RequestedOptions           = llm.RequestedOptions
+	EffectiveOptions           = llm.EffectiveOptions
+	Catalog                    = llm.Catalog
+	Capability                 = llm.Capability
+	CapabilityName             = llm.CapabilityName
+	ModelCapabilities          = llm.ModelCapabilities
+	CredentialResolver         = llm.CredentialResolver
+	ResolvedCredential         = llm.ResolvedCredential
+	ToolDefinition             = tools.Definition
+	ExecutionDescription       = tools.ExecutionDescription
+	ExecutorOption             = tools.ExecutorOption
+	ResourceScheduler          = tools.ResourceScheduler
+	Operations                 = tools.Operations
+	BuiltinOptions             = tools.BuiltinOptions
+	OutputLimits               = tools.OutputLimits
+	Preview                    = tools.Preview
+	FileOperations             = agent.FileOperations
+	ListRequest                = agent.ListRequest
+	ListResult                 = agent.ListResult
+	FileEntry                  = agent.FileEntry
+	ReadRequest                = agent.ReadRequest
+	ReadResult                 = agent.ReadResult
+	SearchRequest              = agent.SearchRequest
+	SearchResult               = agent.SearchResult
+	SearchMatch                = agent.SearchMatch
+	ProcessOperations          = agent.ProcessOperations
+	ProgressSink               = agent.ProgressSink
+	ArtifactStore              = agent.ArtifactStore
+	TodoOperations             = agent.TodoOperations
+	AuthorizedExecution        = agent.AuthorizedExecution
+	AuthorizedProcess          = agent.AuthorizedProcess
+	AuthorizedFileWrite        = agent.AuthorizedFileWrite
+	AuthorizedFileEdit         = agent.AuthorizedFileEdit
+	ArtifactInput              = agent.ArtifactInput
+	ArtifactRead               = agent.ArtifactRead
+	ArtifactRef                = agent.ArtifactRef
+	ProcessProgress            = agent.ProcessProgress
+	ProcessObservation         = agent.ProcessObservation
+	ExecutionRef               = agent.ExecutionRef
+	StopObservation            = agent.StopObservation
+	TodoEffect                 = agent.TodoEffect
+	AuthorizedTodo             = agent.AuthorizedTodo
+	Executor                   = tools.Executor
+	Outcome                    = tools.Outcome
+	AgentDeps                  = einorun.Deps
+	SessionStore               = store.Store
+	Commit                     = store.Commit
+	ExpectedCommit             = store.ExpectedCommit
+	CommitReceipt              = store.CommitReceipt
+	Header                     = store.Header
+	StoredSession              = store.StoredSession
+	CommitReader               = store.CommitReader
+	Record                     = store.Record
+	BranchUpdate               = store.BranchUpdate
 )
 
 func CreateAgentSession(ctx context.Context, opts SessionOptions) (*AgentSession, error) {
@@ -160,10 +209,25 @@ func AsError(err error) (*Error, bool) { return product.AsError(err) }
 
 func DefaultLimits() Limits { return config.DefaultLimits() }
 
-func NewBudget(limits Limits) *BudgetLedger { return agent.NewBudget(limits) }
+func NewBudget(limits Limits) *BudgetLedger    { return agent.NewBudget(limits) }
+func NewResourceScheduler() *ResourceScheduler { return tools.NewResourceScheduler() }
 
-func NewExecutor(gen string, defs []ToolDefinition, sink ExecutionSink, auth ToolAuthorizer, budg *BudgetLedger) (*Executor, error) {
-	return tools.NewExecutor(gen, defs, sink, auth, budg)
+func NewCatalog(resolver CredentialResolver) *Catalog { return llm.NewCatalog(resolver) }
+
+func NewBuiltinDefinitions(options BuiltinOptions) []ToolDefinition {
+	return tools.NewBuiltinDefinitions(options)
+}
+
+func DefaultOutputLimits() OutputLimits { return tools.DefaultOutputLimits() }
+func PreviewHead(text string, maxLines, maxBytes int) Preview {
+	return tools.PreviewHead(text, maxLines, maxBytes)
+}
+func PreviewTail(text string, maxLines, maxBytes int) Preview {
+	return tools.PreviewTail(text, maxLines, maxBytes)
+}
+
+func NewExecutor(gen string, defs []ToolDefinition, sink ExecutionSink, auth ToolAuthorizer, budg *BudgetLedger, options ...ExecutorOption) (*Executor, error) {
+	return tools.NewExecutor(gen, defs, sink, auth, budg, options...)
 }
 
 func NewAgent(ctx context.Context, deps AgentDeps) (adk.TypedResumableAgent[*schema.AgenticMessage], error) {

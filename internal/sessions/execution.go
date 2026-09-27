@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	product "github.com/ww1489/seasprak/internal/errors"
+	"sort"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
@@ -30,7 +32,11 @@ func (rt *runtime) runSegment(frame *execution, inputID string) {
 	frame.input = agent.InputRef{InputID: inputID, TraceID: frame.scope.TraceID, Kind: "prompt"}
 	err := rt.beginActivity(frame)
 	if err == nil {
-		err = rt.executeSegment(frame, inputID)
+		if trace := rt.manager.View().Traces[frame.scope.TraceID]; trace != nil && trace.Kind == "command" {
+			err = rt.executeCommandSegment(frame, inputID)
+		} else {
+			err = rt.executeSegment(frame, inputID)
+		}
 	}
 	err = errors.Join(err, rt.endActivity(frame))
 	_ = rt.do(context.Background(), func(rt *runtime) error { rt.segmentFinished(frame, err); return nil })
@@ -59,7 +65,7 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 		}
 		baseTools = append(baseTools, wrapped)
 	}
-	ag, err := einorun.NewAgent(ctx, einorun.Deps{Model: rt.opts.Model, Tools: baseTools, Sink: rt, Budget: frame.budget, Boundary: rt, Instruction: rt.opts.Instruction, Scope: scope, RemainingActivity: frame.activity.remaining,
+	ag, err := einorun.NewAgent(ctx, einorun.Deps{Model: &turnModel{frame: frame}, Tools: baseTools, Sink: rt, Budget: frame.budget, Boundary: rt, Instruction: rt.opts.Instruction, Scope: scope, RemainingActivity: frame.activity.remaining,
 		EmptyInventoryCall: func(ctx context.Context, callID, name, arguments string) error {
 			_, err := exec.RejectUnavailable(ctx, einorun.ScopeFromContext(ctx, scope), callID, name, arguments)
 			return err
@@ -112,7 +118,7 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 			if err != nil {
 				return nil, err
 			}
-			return &adk.GenInputResult[agent.InputRef, *schema.AgenticMessage]{RunCtx: einorun.WithExecutionScope(ctx, scope), Input: &adk.TypedAgentInput[*schema.AgenticMessage]{EnableStreaming: llm.UsesObservedTransport(rt.opts.Model), Messages: value.([]*schema.AgenticMessage)}, Consumed: items[:1], Remaining: items[1:], RunOpts: []adk.AgentRunOption{adk.WithAfterToolCallsHook(einorun.FinishAfterTools(rt, scope))}}, nil
+			return &adk.GenInputResult[agent.InputRef, *schema.AgenticMessage]{RunCtx: einorun.WithExecutionScope(ctx, scope), Input: &adk.TypedAgentInput[*schema.AgenticMessage]{EnableStreaming: llm.UsesObservedTransport(frame.currentModel), Messages: value.([]*schema.AgenticMessage)}, Consumed: items[:1], Remaining: items[1:], RunOpts: []adk.AgentRunOption{adk.WithAfterToolCallsHook(einorun.FinishAfterTools(rt, scope))}}, nil
 		},
 		GenResume: func(ctx context.Context, _ *adk.TurnLoop[agent.InputRef, *schema.AgenticMessage], interrupted, unhandled, newItems []agent.InputRef) (*adk.GenResumeResult[agent.InputRef, *schema.AgenticMessage], error) {
 			if frame.resume == nil || len(interrupted) != 1 || interrupted[0] != frame.resume.Input || len(unhandled) != 0 || len(newItems) != 0 {
@@ -262,6 +268,7 @@ func (rt *runtime) matchesExecution(scope agent.ExecutionScope) bool {
 	}
 	current := rt.active.scope
 	current.TurnID, scope.TurnID = "", ""
+	current.SelectionRevision, scope.SelectionRevision = 0, 0
 	return current == scope
 }
 
@@ -362,7 +369,7 @@ func (rt *runtime) CommitFact(ctx context.Context, scope agent.ExecutionScope, f
 					}
 				}
 				hash := sha256.Sum256([]byte(call.Name + "\n" + version + "\n" + call.Arguments + "\n" + scope.Generation))
-				calls = append(calls, agent.ToolRecord{Scope: scope, Call: agent.FrozenCall{CallID: agent.MustID(), ProviderCallID: call.CallID, Name: call.Name, Arguments: call.Arguments, Generation: scope.Generation, Hash: hex.EncodeToString(hash[:])}})
+				calls = append(calls, agent.ToolRecord{Scope: scope, Call: agent.FrozenCall{CallID: agent.MustID(), ProviderCallID: call.CallID, Name: call.Name, Arguments: call.Arguments, Generation: scope.Generation, SelectionRevision: scope.SelectionRevision, Hash: hex.EncodeToString(hash[:])}})
 			}
 			if body.AttemptID != "" {
 				msg.ID = rt.manager.View().ModelAttempts[body.AttemptID].MessageID
@@ -382,11 +389,13 @@ func (rt *runtime) CommitFact(ctx context.Context, scope agent.ExecutionScope, f
 			}
 			return rt.saveFrozenExecution(ctx, scope, frozen)
 		case "tool_intent":
-			if rt.active.activity == nil {
+			if scope.TraceID != "" && rt.active.activity == nil {
 				return activityExhausted()
 			}
-			if err := rt.active.activity.allowed(); err != nil {
-				return err
+			if scope.TraceID != "" {
+				if err := rt.active.activity.allowed(); err != nil {
+					return err
+				}
 			}
 			if err := ctx.Err(); err != nil {
 				return err
@@ -456,6 +465,33 @@ func modelFinish(msg *schema.AgenticMessage) string {
 func assistantMessage(scope agent.ExecutionScope, msg *schema.AgenticMessage) agent.AgentMessage {
 	return agent.AgentMessage{ID: agent.MustID(), Kind: agent.KindAssistant, Status: agent.StatusComplete, Source: agent.SourceRef{Kind: agent.SourceModel}, Scope: agent.MessageScope{SessionID: scope.SessionID, TraceID: scope.TraceID, TurnID: scope.TurnID, InvocationID: scope.InvocationID}, Standard: msg}
 }
+func (rt *runtime) ToolSelected(ctx context.Context, scope agent.ExecutionScope, name string) (bool, error) {
+	value, err := rt.call(ctx, func(rt *runtime) (any, error) {
+		if !rt.matchesExecution(scope) {
+			return nil, product.NewError(product.CodeStateConflict, "tool execution is not active")
+		}
+		if scope.TurnID == "" {
+			scope.TurnID = rt.active.turnID
+		}
+		turn, exists := rt.manager.View().Turns[scope.TurnID]
+		if !exists {
+			return nil, product.NewError(product.CodeStateConflict, "tool turn is not active")
+		}
+		for _, selected := range turn.ToolNames {
+			if selected == name {
+				return true, nil
+			}
+		}
+		// Legacy journals have no selection snapshot. They retain the fixed
+		// generation rather than inventing a restored dynamic inventory.
+		return turn.SelectionRevision == 0, nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return value.(bool), nil
+}
+
 func (rt *runtime) LookupTool(ctx context.Context, scope agent.ExecutionScope, providerID string) (agent.ToolRecord, error) {
 	value, err := rt.call(ctx, func(rt *runtime) (any, error) {
 		if !rt.matchesExecution(scope) {
@@ -469,6 +505,13 @@ func (rt *runtime) LookupTool(ctx context.Context, scope agent.ExecutionScope, p
 			if call.Scope.TraceID == scope.TraceID && call.Scope.InvocationID == scope.InvocationID && call.Scope.TurnID == scope.TurnID && call.Call.ProviderCallID == providerID {
 				if !acceptedAttemptForCall(view, call) {
 					return nil, product.NewError(product.CodeStateConflict, "tool attempt was not accepted")
+				}
+				if view.ReconciliationUnresolved(call.Call.CallID) {
+					return nil, product.NewError(product.CodeReconciliationRequired, "tool result has conflicting evidence")
+				}
+				if effective, ok := view.EffectiveObservation(call.Call.CallID); ok {
+					observation := effective.Observation
+					call.Observation = &observation
 				}
 				return call, nil
 			}
@@ -525,17 +568,111 @@ func (rt *runtime) PrepareNextTurn(ctx context.Context, scope agent.ExecutionSco
 				return nil, product.NewError(product.CodeStateConflict, "previous turn is unfinished")
 			}
 		}
-		// Allocation is not a durable turn start. BeginTurnID persists this ID
-		// together with logical occupancy before any model request is allowed.
-		turn := agent.TurnRecord{ID: agent.MustID(), TraceID: scope.TraceID, InvocationID: scope.InvocationID}
+		view := rt.manager.View()
+		trace := view.Traces[scope.TraceID]
+		if trace == nil {
+			return nil, product.NewError(product.CodeNotFound, "trace not found")
+		}
+		modelSelection := rt.findTurnSelection(view, scope, "model")
+		if modelSelection != nil {
+			if modelSelection.State == "pending" {
+				activated, err := rt.manager.ActivateSelection(ctx, modelSelection.ID)
+				if err != nil {
+					return nil, err
+				}
+				modelSelection = &activated
+			}
+			selected := rt.modelSlots[modelSelection.ID]
+			if selected == nil {
+				return nil, product.NewError(product.CodeResourceUnavailable, "selected model instance is unavailable")
+			}
+			rt.active.currentModel = selected
+		}
+		toolSelection := rt.findTurnSelection(view, scope, "tools")
+		if toolSelection != nil {
+			if toolSelection.State == "pending" {
+				activated, err := rt.manager.ActivateSelection(ctx, toolSelection.ID)
+				if err != nil {
+					return nil, err
+				}
+				toolSelection = &activated
+			}
+			rt.active.activeToolNames = make(map[string]struct{}, len(toolSelection.ToolNames))
+			for _, name := range toolSelection.ToolNames {
+				rt.active.activeToolNames[name] = struct{}{}
+			}
+			rt.active.activeToolSelection = toolSelection.Revision
+		} else if rt.active.activeToolNames == nil {
+			rt.active.activeToolNames = make(map[string]struct{}, len(rt.opts.ToolInfos))
+			for _, info := range rt.opts.ToolInfos {
+				if info != nil {
+					rt.active.activeToolNames[info.Name] = struct{}{}
+				}
+			}
+		}
+		if rt.active.currentModel == nil {
+			selected, err := rt.modelForTrace(trace)
+			if err != nil {
+				return nil, err
+			}
+			rt.active.currentModel = selected
+		}
+		selectionRevision := rt.manager.View().LastSeq
+		turn := agent.TurnRecord{ID: agent.MustID(), TraceID: scope.TraceID, InvocationID: scope.InvocationID, SelectionRevision: selectionRevision, ModelConfigVersion: modelVersion(rt.active.currentModel), ToolNames: sortedToolNames(rt.active.activeToolNames)}
 		rt.active.turnID = turn.ID
-		rt.active.turnSelectionRevision = rt.manager.View().LastSeq
-		return agent.TurnPlan{TurnID: turn.ID, SelectionRevision: rt.active.turnSelectionRevision}, nil
+		rt.active.turnSelectionRevision = selectionRevision
+		rt.active.scope.SelectionRevision = selectionRevision
+		return agent.TurnPlan{TurnID: turn.ID, SelectionRevision: selectionRevision, ModelConfigVersion: turn.ModelConfigVersion, ToolInfos: selectedToolInfos(rt.opts.ToolInfos, rt.active.activeToolNames), ToolsSelected: true}, nil
 	})
 	if err != nil {
 		return agent.TurnPlan{}, err
 	}
 	return value.(agent.TurnPlan), nil
+}
+
+func (rt *runtime) findTurnSelection(view state.View, scope agent.ExecutionScope, kind string) *state.Selection {
+	var selected *state.Selection
+	for _, candidate := range view.Selections {
+		if candidate.Kind != kind || (candidate.State != "pending" && candidate.State != "active") || candidate.Scope.SessionID != scope.SessionID || candidate.Scope.BranchID != scope.BranchID || candidate.Scope.TraceID != scope.TraceID || candidate.Scope.Generation != scope.Generation || candidate.ApplyAt != "next_turn" {
+			continue
+		}
+		if candidate.Scope.InvocationID != "" && candidate.Scope.InvocationID != scope.InvocationID {
+			continue
+		}
+		copy := candidate
+		if selected == nil || copy.Revision > selected.Revision {
+			selected = &copy
+		}
+	}
+	return selected
+}
+
+func selectedToolInfos(infos []*schema.ToolInfo, names map[string]struct{}) []*schema.ToolInfo {
+	out := make([]*schema.ToolInfo, 0, len(names))
+	for _, info := range infos {
+		if info != nil {
+			if _, ok := names[info.Name]; ok {
+				out = append(out, info)
+			}
+		}
+	}
+	return out
+}
+
+func sortedToolNames(names map[string]struct{}) []string {
+	out := make([]string, 0, len(names))
+	for name := range names {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func modelVersion(candidate model.AgenticModel) string {
+	if configured, ok := candidate.(interface{ Configuration() llm.ModelConfig }); ok {
+		return configured.Configuration().Version
+	}
+	return ""
 }
 func (rt *runtime) ShouldStop(ctx context.Context, scope agent.ExecutionScope) (bool, string, error) {
 	value, err := rt.call(context.WithoutCancel(ctx), func(rt *runtime) (any, error) {

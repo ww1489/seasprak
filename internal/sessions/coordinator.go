@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/ww1489/seasprak/internal/agent"
 	product "github.com/ww1489/seasprak/internal/errors"
@@ -30,6 +31,9 @@ type execution struct {
 	activity              *activityLease
 	turnID                string // owned by the session mailbox
 	turnSelectionRevision uint64 // fixed when PrepareNextTurn selects this turn
+	currentModel          model.AgenticModel
+	activeToolNames       map[string]struct{}
+	activeToolSelection   uint64
 	loop                  *adk.TurnLoop[agent.InputRef, *schema.AgenticMessage]
 	pauseID               string
 	checkpoint            *checkpointResult
@@ -43,19 +47,21 @@ type toolChunkPosition struct {
 	seq      uint64
 }
 type runtime struct {
-	clock       activityClock
-	opts        Options
-	manager     *state.Manager
-	mailbox     chan command
-	done        chan struct{}
-	subs        map[int]*subscription
-	nextSub     int
-	closing     bool
-	closeErr    error // read only after done is closed
-	generation  string
-	active      *execution
-	cursor      uint64
-	modelChunks map[string]uint64 // mailbox-owned temporary stream positions
+	clock          activityClock
+	opts           Options
+	manager        *state.Manager
+	mailbox        chan command
+	done           chan struct{}
+	subs           map[int]*subscription
+	nextSub        int
+	closing        bool
+	closeErr       error // read only after done is closed
+	generation     string
+	active         *execution
+	cursor         uint64
+	modelChunks    map[string]uint64             // mailbox-owned temporary stream positions
+	modelSlots     map[string]model.AgenticModel // process-local pending model instances
+	defaultModelID string
 }
 
 func (rt *runtime) writable() error {
@@ -188,8 +194,14 @@ func (rt *runtime) schedule() {
 			return
 		}
 		tr = rt.manager.View().Traces[tr.ID]
+		selectedModel, modelErr := rt.modelForTrace(tr)
+		if modelErr != nil {
+			_ = rt.manager.SaveTraceError(context.Background(), tr.ID, modelErr.Error())
+			_ = rt.manager.SetTraceState(context.Background(), tr.ID, "failed", false)
+			continue
+		}
 		ctx, cancel := context.WithCancel(context.Background())
-		frame := &execution{scope: agent.ExecutionScope{SessionID: rt.opts.SessionID, BranchID: v.BranchID, TraceID: tr.ID, InvocationID: tr.InvocationID, ExecutionID: agent.MustID(), Generation: tr.Generation}, ctx: ctx, cancel: cancel, done: make(chan struct{}), budget: agent.NewBudget(tr.Limits)}
+		frame := &execution{scope: agent.ExecutionScope{SessionID: rt.opts.SessionID, BranchID: v.BranchID, TraceID: tr.ID, InvocationID: tr.InvocationID, ExecutionID: agent.MustID(), Generation: tr.Generation}, ctx: ctx, cancel: cancel, done: make(chan struct{}), budget: agent.NewBudget(tr.Limits), currentModel: selectedModel}
 		frame.budget.Restore(tr.Usage)
 		rt.setBudgetPersistence(frame)
 		rt.active = frame
@@ -214,7 +226,16 @@ func (rt *runtime) setBudgetPersistence(frame *execution) {
 			if err := frame.activity.allowed(); err != nil {
 				return err
 			}
-			return rt.manager.SaveTraceBudget(context.Background(), frame.scope.TraceID, usage)
+			if err := rt.manager.SaveTraceBudget(context.Background(), frame.scope.TraceID, usage); err != nil {
+				return err
+			}
+			if usage.ModelCallID != "" {
+				turn := agent.TurnRecord{ID: usage.ModelCallID, TraceID: frame.scope.TraceID, InvocationID: frame.scope.InvocationID, SelectionRevision: frame.turnSelectionRevision, ModelConfigVersion: modelVersion(frame.currentModel), ToolNames: sortedToolNames(frame.activeToolNames)}
+				if err := rt.manager.SaveTurn(context.Background(), turn); err != nil {
+					return err
+				}
+			}
+			return nil
 		})
 	})
 }

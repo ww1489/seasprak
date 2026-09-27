@@ -183,6 +183,10 @@ func (rt *runtime) checkToolPolicyState(ctx context.Context, scope agent.Executi
 		if rt.opts.Operations.Artifacts != nil {
 			return agent.DecisionAllow, nil
 		}
+	case "todo-operations":
+		if rt.opts.Operations.Todos != nil {
+			return agent.DecisionAllow, nil
+		}
 	}
 	return agent.DecisionDeny, product.NewError(product.CodeResourceUnavailable, "required controlled execution backend is not available")
 }

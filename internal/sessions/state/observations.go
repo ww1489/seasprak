@@ -31,6 +31,7 @@ type Reconciliation struct {
 	NewObservationID     string   `json:"newObservationId"`
 	GrantRef             string   `json:"grantRef,omitempty"`
 	QueryID              string   `json:"queryId,omitempty"`
+	TrustedNoStart       bool     `json:"trustedNoStart,omitempty"`
 	EvidenceRefs         []string `json:"evidenceRefs"`
 	EvidenceSource       string   `json:"evidenceSource"`
 	ConfirmedEffects     []string `json:"confirmedEffects,omitempty"`
@@ -117,9 +118,10 @@ func applyObservation(v *View, r store.Record) error {
 	return nil
 }
 
-// CommitReconciliation appends the next observation, reconciliation result and
-// operation completion in one journal commit. It never rewrites the original
-// ToolRecord or refunds the original claim/budget.
+// CommitReconciliation appends the next observation, reconciliation result,
+// optional trusted no-start resource release and operation completion in one
+// journal commit. It never rewrites the original ToolRecord or refunds its
+// claim/budget.
 func (m *Manager) CommitReconciliation(ctx context.Context, operationID string, expectedRevision uint64, next ObservationRevision, result Reconciliation) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -144,6 +146,14 @@ func (m *Manager) CommitReconciliation(ctx context.Context, operationID string, 
 		record("operation", operationID, nextOperation),
 	}
 	call := m.view.Calls[next.CallID]
+	if result.TrustedNoStart {
+		trace := m.view.Traces[call.Scope.TraceID]
+		if trace == nil {
+			return product.NewError(product.CodeStateConflict, "release requires stopped execution proof")
+		}
+		release := ResourceHoldRelease{ID: "release:" + result.ID, CallID: next.CallID, ReconciliationID: result.ID, ObservationID: next.ID, ExecutionID: trace.ExecutionID}
+		controls = append(controls, record("resource_hold_release", release.ID, release))
+	}
 	payload := struct {
 		CallID           string `json:"callId"`
 		ObservationID    string `json:"observationId"`

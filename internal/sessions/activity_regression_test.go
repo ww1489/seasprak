@@ -227,6 +227,100 @@ func TestActivityBlockedRenewalExpiresOutsideMailbox(t *testing.T) {
 	}
 }
 
+func TestActivityRenewalCommitChecksOldDeadlineWithoutTimerDelivery(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		at      time.Duration
+		expired bool
+	}{
+		{name: "just_before_deadline", at: time.Second - time.Nanosecond},
+		{name: "exact_deadline", at: time.Second, expired: true},
+		{name: "after_deadline", at: 1100 * time.Millisecond, expired: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entered, release := make(chan struct{}), make(chan struct{})
+			var backend *activityStore
+			s, m, clock, model := activitySession(t, 3*time.Second, func(st store.Store) store.Store {
+				backend = &activityStore{Store: st, committed: make(chan state.ActivityBudget, 10), hook: func(a state.ActivityBudget) error {
+					if a.Revision == 2 {
+						close(entered)
+						<-release
+					}
+					return nil
+				}}
+				return backend
+			})
+			// Unblock persistence before session cleanup even if an assertion fails.
+			defer func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			}()
+			r := activitySubmit(t, s)
+			ctx := activityStarted(t, model)
+			frame := activityFrame(t, s)
+			initial := <-backend.committed
+			if initial.Reserved != time.Second {
+				t.Fatalf("initial reservation=%+v", initial)
+			}
+			clock.advance(500 * time.Millisecond)
+			awaitActivitySignal(t, entered)
+			// Move time without dispatching the old watchdog. Append must check
+			// its old deadline itself before installing the replacement lease.
+			clock.mu.Lock()
+			clock.now = clock.now.Add(tc.at - 500*time.Millisecond)
+			clock.mu.Unlock()
+			if ctx.Err() != nil {
+				t.Fatal("watchdog unexpectedly delivered during blocked append")
+			}
+			close(release)
+			if err := s.rt.do(context.Background(), func(*runtime) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
+			tr := m.View().Traces[r.TraceID]
+			if tr.ExecutionStopped || tr.Activity.Revision != 2 || tr.Activity.Settled != 500*time.Millisecond || tr.Activity.Reserved != time.Second || tr.Limits.ActivityBudget != 3*time.Second {
+				t.Fatalf("renewal lost committed facts or claimed exit: %+v", tr)
+			}
+			select {
+			case <-frame.done:
+				t.Fatal("renewal pretended the blocked model exited")
+			default:
+			}
+			seq := m.View().LastSeq
+			if tc.expired {
+				if ctx.Err() == nil {
+					t.Error("late renewal revived execution while the old watchdog was undelivered")
+				}
+				pe, ok := product.AsError(frame.activity.allowed())
+				if !ok || pe.Code != product.CodeBudgetExhausted {
+					t.Errorf("late renewal lost budget exhaustion: error=%v", pe)
+				}
+				// Budget persistence checks the cancelled execution context first.
+				if err := frame.budget.OccupyModel(); !errors.Is(err, context.Canceled) {
+					t.Errorf("late renewal admitted a new request: error=%v", err)
+				}
+			} else if err := frame.activity.allowed(); err != nil || ctx.Err() != nil {
+				t.Errorf("on-time renewal rejected: gate=%v context=%v", err, ctx.Err())
+			}
+			if model.calls.Load() != 1 || frame.budget.Snapshot().TransportRequests != 1 || tr.Usage.TransportRequests != 1 || m.View().LastSeq != seq {
+				t.Error("renewal or rejected request increased model calls, request usage, or commits")
+			}
+			model.release <- struct{}{}
+			activityWait(t, frame)
+			tr = m.View().Traces[r.TraceID]
+			wantState := "completed"
+			if tc.expired {
+				wantState = "failed"
+			}
+			if !tr.ExecutionStopped || tr.State != wantState || tr.Activity.Revision != 3 || tr.Activity.Settled != tc.at || tr.Activity.Reserved != 0 || model.calls.Load() != 1 {
+				t.Fatalf("real exit did not settle committed renewal: %+v calls=%d", tr, model.calls.Load())
+			}
+		})
+	}
+}
+
 func TestActivityRenewalFailureKeepsOccupancyUntilRealExit(t *testing.T) {
 	var backend *activityStore
 	s, m, clock, model := activitySession(t, 3*time.Second, func(st store.Store) store.Store {

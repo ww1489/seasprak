@@ -26,6 +26,22 @@ type ValidatedModel struct {
 	scope agent.ExecutionScope
 }
 
+type resolvedModelKey struct{}
+
+func (m *ValidatedModel) resolveModel(ctx context.Context) (model.AgenticModel, error) {
+	if ctx != nil {
+		if resolved, ok := ctx.Value(resolvedModelKey{}).(model.AgenticModel); ok && resolved != nil {
+			return resolved, nil
+		}
+	}
+	if resolver, ok := m.inner.(interface {
+		ResolveModel(context.Context, agent.ExecutionScope) (model.AgenticModel, error)
+	}); ok {
+		return resolver.ResolveModel(ctx, ScopeFromContext(ctx, m.scope))
+	}
+	return m.inner, nil
+}
+
 func NewValidatedModel(inner model.AgenticModel, sink agent.ExecutionSink, budg *agent.BudgetLedger, scope agent.ExecutionScope) *ValidatedModel {
 	return &ValidatedModel{inner: inner, sink: sink, budg: budg, scope: scope}
 }
@@ -48,7 +64,11 @@ func (m *ValidatedModel) Generate(ctx context.Context, input []*schema.AgenticMe
 	if err := contextErr(ctx); err != nil {
 		return nil, m.fail(ctx, nil, "failed", err)
 	}
-	msg, err := m.inner.Generate(ctx, input, opts...)
+	inner, err := m.resolveModel(ctx)
+	if err != nil {
+		return nil, m.fail(ctx, nil, "failed", err)
+	}
+	msg, err := inner.Generate(ctx, input, opts...)
 	if err != nil {
 		return nil, m.fail(ctx, msg, "failed", err)
 	}
@@ -76,7 +96,11 @@ func (m *ValidatedModel) Stream(ctx context.Context, input []*schema.AgenticMess
 	if err := contextErr(ctx); err != nil {
 		return nil, m.fail(ctx, nil, "failed", err)
 	}
-	reader, err := m.inner.Stream(ctx, input, opts...)
+	inner, err := m.resolveModel(ctx)
+	if err != nil {
+		return nil, m.fail(ctx, nil, "failed", err)
+	}
+	reader, err := inner.Stream(ctx, input, opts...)
 	if reader != nil {
 		defer reader.Close()
 	}
@@ -154,6 +178,11 @@ func attemptFromContext(ctx context.Context) (agent.ModelAttemptIdentity, bool) 
 }
 
 func (m *ValidatedModel) requestContext(ctx context.Context) (context.Context, error) {
+	inner, err := m.resolveModel(ctx)
+	if err != nil {
+		return ctx, err
+	}
+	ctx = context.WithValue(ctx, resolvedModelKey{}, inner)
 	identity := agent.ModelAttemptIdentity{ID: agent.MustID(), ModelCallID: ScopeFromContext(ctx, m.scope).TurnID, MessageID: agent.MustID(), StreamID: agent.MustID()}
 	if m.budg != nil {
 		identity.ModelCallID = m.budg.Snapshot().ModelCallID
@@ -161,7 +190,7 @@ func (m *ValidatedModel) requestContext(ctx context.Context) (context.Context, e
 	if identity.ModelCallID == "" {
 		identity.ModelCallID = agent.MustID()
 	}
-	if configured, ok := m.inner.(interface{ Configuration() llm.ModelConfig }); ok {
+	if configured, ok := inner.(interface{ Configuration() llm.ModelConfig }); ok {
 		identity.ModelConfigVersion = configured.Configuration().Version
 	}
 	payload, err := json.Marshal(identity)
@@ -174,7 +203,7 @@ func (m *ValidatedModel) requestContext(ctx context.Context) (context.Context, e
 	ctx = context.WithValue(ctx, attemptContextKey{}, identity)
 	usage := &attemptUsage{identity: identity, items: map[uint64]agent.ModelRequestUsage{}}
 	ctx = llm.WithUsageObservation(context.WithValue(ctx, attemptUsageKey{}, usage), usage)
-	if !llm.UsesObservedTransport(m.inner) {
+	if !llm.UsesObservedTransport(inner) {
 		if m.budg != nil {
 			return ctx, m.budg.OccupyModel()
 		}

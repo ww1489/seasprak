@@ -148,6 +148,10 @@ func (s *AgentSession) Resume(ctx context.Context, cmd ResumeCommand) (state.Ope
 		if err != nil {
 			return nil, err
 		}
+		checkpointModel, err := rt.modelForCheckpoint(cp, view)
+		if err != nil {
+			return nil, err
+		}
 		tr := view.Traces[cmd.TraceID]
 		executionID := agent.MustID()
 		receipt, err := rt.manager.CommitResume(ctx, operation, cp.ID, executionID)
@@ -158,7 +162,7 @@ func (s *AgentSession) Resume(ctx context.Context, cmd ResumeCommand) (state.Ope
 		scope := cp.Scope
 		scope.ExecutionID = executionID
 		frame := &execution{scope: scope, ctx: workerCtx, cancel: cancel, done: make(chan struct{}), budget: agent.NewBudget(tr.Limits),
-			turnID: cp.Scope.TurnID, turnSelectionRevision: cp.SelectionRevision, resume: &cp, resumeID: receipt.OperationID}
+			turnID: cp.Scope.TurnID, turnSelectionRevision: cp.SelectionRevision, resume: &cp, resumeID: receipt.OperationID, currentModel: checkpointModel}
 		frame.budget.Restore(tr.Usage)
 		rt.setBudgetPersistence(frame)
 		rt.active = frame

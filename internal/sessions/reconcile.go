@@ -87,7 +87,7 @@ func (rt *runtime) validateReconcile(view state.View, cmd ReconcileCommand) (sta
 	if err != nil {
 		return state.ObservationRevision{}, state.TraceState{}, err
 	}
-	if latest.ID != cmd.ObservationID || (cmd.ObservationVersion != 0 && latest.Version != cmd.ObservationVersion) || latest.Version == 0 || latest.Observation.SideEffect != "unknown" && latest.Observation.Status != "outcome_unknown" {
+	if latest.ID != cmd.ObservationID || (cmd.ObservationVersion != 0 && latest.Version != cmd.ObservationVersion) || latest.Version == 0 || (latest.Observation.SideEffect != "unknown" && latest.Observation.Status != "outcome_unknown" && !view.ReconciliationUnresolved(cmd.CallID)) {
 		return state.ObservationRevision{}, state.TraceState{}, product.NewError(product.CodeStateConflict, "reconciliation observation is not unresolved")
 	}
 	return latest, *tr, nil
@@ -151,7 +151,7 @@ func (s *AgentSession) Reconcile(ctx context.Context, cmd ReconcileCommand) (sta
 				return nil, err
 			}
 		}
-		return reconcileAccepted{receipt: receipt, status: status, initial: latest, request: ReconcileQueryRequest{SessionID: rt.opts.SessionID, TraceID: cmd.TraceID, InvocationID: cmd.InvocationID, CallID: cmd.CallID, ObservationID: latest.ID, ObservationVersion: latest.Version, EvidenceRef: cmd.EvidenceRef, OriginalGrantRef: frozenGrant(view, cmd.CallID)}, executionStopped: trace.ExecutionStopped, done: false}, nil
+		return reconcileAccepted{receipt: receipt, status: status, initial: latest, request: ReconcileQueryRequest{SessionID: rt.opts.SessionID, TraceID: cmd.TraceID, InvocationID: cmd.InvocationID, CallID: cmd.CallID, ObservationID: latest.ID, ObservationVersion: latest.Version, EvidenceRef: cmd.EvidenceRef, OriginalGrantRef: frozenGrant(view, cmd.CallID)}, executionStopped: trace.ExecutionStopped, executionID: trace.ExecutionID, traceState: trace.State, done: false}, nil
 	})
 	if err != nil {
 		return state.OperationReceipt{}, err
@@ -181,6 +181,16 @@ func (s *AgentSession) Reconcile(ctx context.Context, cmd ReconcileCommand) (sta
 	result.QueryID = cmd.QueryID
 	result.GrantRef = accepted.request.OriginalGrantRef
 	value, err = s.rt.call(context.WithoutCancel(ctx), func(rt *runtime) (any, error) {
+		view := rt.manager.View()
+		trace := view.Traces[cmd.TraceID]
+		if trace == nil || trace.InvocationID != cmd.InvocationID || trace.State != accepted.traceState || trace.ExecutionStopped != accepted.executionStopped || trace.ExecutionID != accepted.executionID {
+			return nil, product.NewError(product.CodeStateConflict, "reconciliation trace changed while evidence was queried")
+		}
+		if view.ReconciliationUnresolved(cmd.CallID) {
+			if err := rt.restoreResourceHolds(); err != nil {
+				return nil, err
+			}
+		}
 		status, err := rt.manager.GetOperation(accepted.receipt.OperationID)
 		if err != nil {
 			return nil, err
@@ -209,6 +219,8 @@ type reconcileAccepted struct {
 	initial          state.ObservationRevision
 	request          ReconcileQueryRequest
 	executionStopped bool
+	executionID      string
+	traceState       string
 	done             bool
 }
 
@@ -257,9 +269,19 @@ func reconcileResult(previous state.ObservationRevision, evidence ReconcileEvide
 	if evidence.TrustedNoStart && queryID == "" {
 		return state.Reconciliation{}, state.ObservationRevision{}, false, product.NewError(product.CodePermissionDenied, "no-start requires a trusted reconciliation query")
 	}
+	unknown := append([]string(nil), evidence.RemainingUnknown...)
+	if evidence.TrustedNoStart && (evidence.ConfirmedExecution || len(evidence.ConfirmedEffects) > 0) {
+		unknown = append(unknown, "no-start and confirmed execution conflict")
+		evidence.ConflictRestrictions = append(evidence.ConflictRestrictions, "conflicting execution evidence requires further reconciliation")
+	}
+	if !evidence.TrustedNoStart && !evidence.ConfirmedExecution && len(unknown) == 0 {
+		unknown = []string{"effect remains unknown"}
+	}
 	observation := previous.Observation
 	release := false
 	switch {
+	case len(unknown) > 0 || len(evidence.ConflictRestrictions) > 0:
+		observation = agent.ToolObservation{Status: "outcome_unknown", Content: "reconciliation did not establish a terminal effect", SideEffect: "unknown", Executed: true}
 	case evidence.TrustedNoStart:
 		observation = agent.ToolObservation{Status: "cancelled", Content: "trusted no-start evidence", SideEffect: "none", Executed: false}
 		release = true
@@ -268,15 +290,12 @@ func reconcileResult(previous state.ObservationRevision, evidence ReconcileEvide
 	default:
 		observation = agent.ToolObservation{Status: "outcome_unknown", Content: "reconciliation did not establish a terminal effect", SideEffect: "unknown", Executed: true}
 	}
-	unknown := append([]string(nil), evidence.RemainingUnknown...)
-	if !evidence.TrustedNoStart && !evidence.ConfirmedExecution && len(unknown) == 0 {
-		unknown = []string{"effect remains unknown"}
-	}
 	nextID := "observation:" + agent.MustID()
 	reconciliationID := "reconciliation:" + agent.MustID()
 	next := state.ObservationRevision{ID: nextID, CallID: previous.CallID, Version: previous.Version + 1, PreviousID: previous.ID, Observation: observation, DetailsRef: evidence.EvidenceSource, ArtifactRefs: append([]string(nil), evidence.EvidenceRefs...)}
 	result := state.Reconciliation{ID: reconciliationID, CallID: previous.CallID, ObservationID: previous.ID, ObservationVersion: previous.Version, NewObservationID: next.ID, EvidenceRefs: append([]string(nil), evidence.EvidenceRefs...), EvidenceSource: evidence.EvidenceSource, ConfirmedEffects: append([]string(nil), evidence.ConfirmedEffects...), RemainingUnknown: unknown, ConflictRestrictions: append([]string(nil), evidence.ConflictRestrictions...), CanResume: false, ResumeReason: "resume compatibility must be revalidated"}
 	if release {
+		result.TrustedNoStart = true
 		result.ResumeReason = "trusted no-start recorded; explicit resume is not automatic"
 	}
 	return result, next, release, nil

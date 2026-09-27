@@ -173,6 +173,8 @@ func (rt *runtime) commitActivity(frame *execution, sample time.Time, elapsed ti
 	l := frame.activity
 	l.mu.Lock()
 	revision := l.record.Revision
+	wasCommitted := l.committed
+	oldDeadline := l.sample.Add(l.record.Reserved)
 	l.mu.Unlock()
 	record, err := rt.manager.ReserveActivity(context.Background(), frame.scope.TraceID, frame.scope.ExecutionID, revision, elapsed)
 	if err != nil {
@@ -186,7 +188,10 @@ func (rt *runtime) commitActivity(frame *execution, sample time.Time, elapsed ti
 	if l.closed {
 		return nil
 	} // Real exit raced a successful append; endActivity settles it.
-	if frame.ctx.Err() != nil || !l.clock.Now().Before(sample.Add(record.Reserved)) {
+	// Timer delivery may lag behind the clock. Retain the successful append
+	// for settlement, but never let renewal bridge an expired old reservation.
+	now := l.clock.Now()
+	if frame.ctx.Err() != nil || (wasCommitted && !now.Before(oldDeadline)) || !now.Before(sample.Add(record.Reserved)) {
 		l.cancelLocked(frame, activityExhausted())
 		return l.err
 	}

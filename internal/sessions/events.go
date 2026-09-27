@@ -34,6 +34,7 @@ type Snapshot struct {
 	Turns            map[string]agent.TurnRecord
 	Calls            map[string]agent.ToolRecord
 	Operations       map[string]state.Operation
+	Selections       map[string]state.Selection
 	Reconciliations  map[string]state.Reconciliation
 	RepairRequired   bool
 }

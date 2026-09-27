@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"reflect"
 
+	"github.com/ww1489/seasprak/internal/agent"
 	einorun "github.com/ww1489/seasprak/internal/agent/eino"
 	product "github.com/ww1489/seasprak/internal/errors"
 	"github.com/ww1489/seasprak/internal/llm"
@@ -56,7 +57,11 @@ func (rt *runtime) validateResume(ctx context.Context, traceID string, view stat
 			return fail("saved generation manifest is unavailable or incompatible")
 		}
 	}
-	configured, hasConfiguration := rt.opts.Model.(interface{ Configuration() llm.ModelConfig })
+	checkpointModel, err := rt.modelForCheckpoint(cp, view)
+	if err != nil {
+		return fail("checkpoint model instance is unavailable")
+	}
+	configured, hasConfiguration := checkpointModel.(interface{ Configuration() llm.ModelConfig })
 	if !hasConfiguration || cp.ModelConfigVersion == "" || configured.Configuration().Version != cp.ModelConfigVersion || cp.ThinkingRef != "" || cp.ExtensionStateCommit != 0 {
 		return fail("checkpoint model or extension state is unsupported")
 	}
@@ -139,6 +144,43 @@ func (rt *runtime) validateResume(ctx context.Context, traceID string, view stat
 	return cp, nil
 }
 
+// checkpointIndependentDefault permits only a committed next-trace model
+// default. Neither next-turn selections nor activation of any selection can
+// change the frozen execution through this exception.
+func checkpointIndependentDefault(cp state.CheckpointRef, commit store.Commit, rec store.Record, view state.View) bool {
+	var selected state.Selection
+	if json.Unmarshal(rec.Payload, &selected) != nil || selected.ID == "" || selected.ID != rec.ID || selected.Kind != "model" || selected.ApplyAt != "next_trace" || selected.Scope != (agent.ExecutionScope{SessionID: cp.Scope.SessionID, BranchID: cp.Scope.BranchID, Generation: cp.Scope.Generation}) {
+		return false
+	}
+	persisted, ok := view.Selections[selected.ID]
+	if !ok {
+		return false
+	}
+	persisted.State = selected.State
+	if !reflect.DeepEqual(persisted, selected) {
+		return false
+	}
+	op, ok := view.Operations[selected.OperationID]
+	if !ok || op.Kind != "select_default_model" || op.SessionID != cp.Scope.SessionID || op.Receipt.Target != "next_trace" || op.Receipt.AcceptedCommit != selected.Revision {
+		return false
+	}
+	switch selected.State {
+	case "pending":
+		return selected.Revision == commit.CommitSeq
+	case "superseded":
+		if selected.Revision >= commit.CommitSeq {
+			return false
+		}
+		for _, replacement := range commit.ControlRecords {
+			var next state.Selection
+			if replacement.Type == "selection" && json.Unmarshal(replacement.Payload, &next) == nil && next.State == "pending" && next.Supersedes == selected.ID && checkpointIndependentDefault(cp, commit, replacement, view) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func validateCheckpointProgress(cp state.CheckpointRef, stored store.StoredSession, view state.View) error {
 	if cp.HistoryCommit == 0 || cp.ProjectionRevision != cp.HistoryCommit || cp.LeafID != view.LeafID || cp.SelectionRevision == 0 {
 		return incompatibleResume("checkpoint history projection differs")
@@ -170,6 +212,10 @@ func validateCheckpointProgress(cp state.CheckpointRef, stored store.StoredSessi
 			case "operation", "trace", "execution_policy", "idempotency", "generation_ref", "queue_hold":
 				// These are control-only changes. Current trace, policy, generation,
 				// stop proof and checkpoint identity were checked above.
+			case "selection":
+				if !checkpointIndependentDefault(cp, commit, rec, view) {
+					return incompatibleResume("selection changed checkpoint execution")
+				}
 			case "approval_binding":
 				var binding state.ApprovalBinding
 				if commit.CommitSeq != cp.HistoryCommit+1 || json.Unmarshal(rec.Payload, &binding) != nil || binding.CheckpointID != cp.ID || binding.ID != cp.ID+":"+binding.InteractionID {

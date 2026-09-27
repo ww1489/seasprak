@@ -75,6 +75,19 @@ func NewExecutor(gen string, defs []Definition, sink agent.ExecutionSink, auth a
 }
 
 func (e *Executor) Run(ctx context.Context, scope agent.ExecutionScope, callID, name, arguments string) (Outcome, error) {
+	return e.run(ctx, scope, callID, name, arguments, "model", "")
+}
+
+// RunDirect executes a trusted direct entry point through the same preparation,
+// claim, ticket, backend and observation pipeline as a model tool call.
+func (e *Executor) RunDirect(ctx context.Context, scope agent.ExecutionScope, operationID, name, arguments string) (Outcome, error) {
+	if operationID == "" {
+		return Outcome{}, product.NewError(product.CodeInvalidArgument, "direct operation identity is required")
+	}
+	return e.run(ctx, scope, operationID, name, arguments, "direct", operationID)
+}
+
+func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, name, arguments, origin, operationID string) (Outcome, error) {
 	if err := ctx.Err(); err != nil {
 		return Outcome{}, err
 	}
@@ -105,6 +118,19 @@ func (e *Executor) Run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	def, known := e.defs[name]
 	if !known {
 		return e.reject(ctx, envelope, scope, call, Outcome{Status: "denied", Content: "unknown tool", SideEffect: "none"}, accepted)
+	}
+	if origin == "model" && !accepted {
+		if selector, ok := e.sink.(interface {
+			ToolSelected(context.Context, agent.ExecutionScope, string) (bool, error)
+		}); ok {
+			selected, err := selector.ToolSelected(ctx, scope, name)
+			if err != nil {
+				return Outcome{}, err
+			}
+			if !selected {
+				return e.reject(ctx, envelope, scope, call, Outcome{Status: "denied", Content: "tool is not active in the current selection", SideEffect: "none"}, accepted)
+			}
+		}
 	}
 	if !accepted {
 		call = e.freeze(callID, name, arguments, def.Version)
@@ -140,13 +166,13 @@ func (e *Executor) Run(ctx context.Context, scope agent.ExecutionScope, callID, 
 		actualTimeout = description.Timeout
 	}
 	frozen := agent.FrozenExecution{
-		ID: "execution:" + call.CallID, CallID: call.CallID, Scope: scope, Origin: "model", Tool: name,
-		ToolVersion: def.Version, SchemaHash: argumentHash(def.Schema), Generation: call.Generation,
-		ProviderCallID: call.ProviderCallID, OriginalArgumentsHash: argumentHash([]byte(call.Arguments)),
+		ID: "execution:" + call.CallID, CallID: call.CallID, Scope: scope, Origin: origin, Tool: name,
+		ToolVersion: def.Version, SchemaHash: argumentHash(def.Schema), Generation: call.Generation, SelectionRevision: call.SelectionRevision,
+		ProviderCallID: call.ProviderCallID, OperationID: operationID, EntryPoint: origin, OriginalArgumentsHash: argumentHash([]byte(call.Arguments)),
 		FinalArgumentsHash: argumentHash(final), ArgumentsRef: "arguments:" + call.CallID,
 		FinalArguments: append(json.RawMessage(nil), final...), Resources: description.Resources,
 		Effect: description.Effect, Concurrency: description.Concurrency, BackendID: description.BackendID,
-		Argv: description.Argv, Cwd: description.Cwd, EnvironmentRef: description.EnvironmentRef,
+		Argv: description.Argv, Shell: description.Shell, Cwd: description.Cwd, EnvironmentRef: description.EnvironmentRef,
 		StdinRef: description.StdinRef, Mounts: description.Mounts, TempRootRef: description.TempRootRef,
 		OutputLimitBytes: description.OutputLimitBytes, Timeout: actualTimeout, PolicyRef: policyRef, RequestedGrantRef: description.RequestedGrantRef,
 	}
@@ -299,6 +325,10 @@ func (e *Executor) backendAvailable(def Definition, frozen agent.FrozenExecution
 		}
 	case "artifact-store":
 		if e.operations.Artifacts != nil {
+			return nil
+		}
+	case "todo-operations":
+		if e.operations.Todos != nil {
 			return nil
 		}
 	}
@@ -454,10 +484,17 @@ func (e *Executor) invokeAuthorized(ctx context.Context, def Definition, frozen 
 		}
 	case "process-operations":
 		observation, err := e.operations.Process.Execute(ctx, agent.AuthorizedProcess{Authorization: auth,
-			Argv: append([]string(nil), frozen.Argv...), Cwd: frozen.Cwd, EnvironmentRef: frozen.EnvironmentRef,
+			Argv: append([]string(nil), frozen.Argv...), Shell: frozen.Shell, Cwd: frozen.Cwd, EnvironmentRef: frozen.EnvironmentRef,
 			StdinRef: frozen.StdinRef, Mounts: append([]agent.ExecutionMount(nil), frozen.Mounts...),
 			TempRootRef: frozen.TempRootRef, OutputLimitBytes: frozen.OutputLimitBytes}, processOutput{output: output})
 		out.Content, out.Executed, out.SideEffect = observation.Content, observation.Started, observation.SideEffect
+		if err == nil && observation.ContentRef != "" && e.operations.Artifacts != nil {
+			ref, saveErr := e.operations.Artifacts.Save(ctx, agent.ArtifactInput{Authorization: auth, ContentRef: observation.ContentRef, MediaType: "text/plain", Name: frozen.Tool + ".log"})
+			if saveErr != nil {
+				return Outcome{Status: "failed", Content: "controlled artifact save failed", SideEffect: "unknown", Executed: observation.Started}
+			}
+			out.Content = ref.ID
+		}
 		if out.SideEffect == "" {
 			out.SideEffect = "none"
 			if err != nil || !observation.Terminated {
@@ -480,6 +517,8 @@ func (e *Executor) invokeAuthorized(ctx context.Context, def Definition, frozen 
 		out = e.invokeFile(ctx, auth, frozen)
 	case "artifact-store":
 		out = e.invokeArtifact(ctx, auth, frozen)
+	case "todo-operations":
+		out = e.invokeTodos(ctx, auth, frozen)
 	default:
 		return deniedOutcome(product.NewError(product.CodeResourceUnavailable, "controlled execution backend is unavailable"))
 	}
@@ -492,21 +531,107 @@ func (e *Executor) invokeAuthorized(ctx context.Context, def Definition, frozen 
 func (e *Executor) invokeFile(ctx context.Context, auth agent.AuthorizedExecution, frozen agent.FrozenExecution) Outcome {
 	var command struct {
 		Operation, Path, ContentRef, PatchRef, ExpectedVersion string
+		Root, Pattern, Query, Cursor                           string
+		Offset, Limit                                          int64
 	}
 	if err := json.Unmarshal(frozen.FinalArguments, &command); err != nil {
 		return Outcome{Status: "failed", Content: "file request is invalid", SideEffect: "none"}
 	}
-	var effect agent.FileEffect
+	if command.Operation == "" {
+		switch frozen.Tool {
+		case "ls":
+			command.Operation = "list"
+		case "read_file":
+			command.Operation = "read"
+		case "write_file":
+			command.Operation = "write"
+		case "edit_file":
+			command.Operation = "edit"
+		case "glob", "grep":
+			command.Operation = "search"
+			if frozen.Tool == "glob" {
+				command.Query = command.Pattern
+			}
+		default:
+			return Outcome{Status: "failed", Content: "file operation is unavailable", SideEffect: "none"}
+		}
+	}
 	var err error
 	switch command.Operation {
+	case "list":
+		result, callErr := e.operations.Files.List(ctx, agent.ListRequest{Root: command.Root, Cursor: command.Cursor})
+		err = callErr
+		if err == nil {
+			return encodeFileResult(result)
+		}
+	case "read":
+		result, callErr := e.operations.Files.Read(ctx, agent.ReadRequest{Identity: command.Path, Version: command.ExpectedVersion, Offset: command.Offset, Limit: command.Limit})
+		err = callErr
+		if err == nil {
+			content, contentErr := e.readFileContent(ctx, auth, result, command.Offset, command.Limit)
+			if contentErr != nil {
+				return Outcome{Status: "failed", Content: "controlled file output could not be opened", SideEffect: "none"}
+			}
+			return Outcome{Status: "succeeded", Content: content, SideEffect: "none", Executed: true}
+		}
+	case "search":
+		result, callErr := e.operations.Files.Search(ctx, agent.SearchRequest{Root: command.Root, Query: command.Query, Cursor: command.Cursor, Limit: int(command.Limit)})
+		err = callErr
+		if err == nil {
+			return encodeFileResult(result)
+		}
 	case "write":
-		effect, err = e.operations.Files.Write(ctx, agent.AuthorizedFileWrite{Authorization: auth, Path: command.Path, ContentRef: command.ContentRef, ExpectedVersion: command.ExpectedVersion})
+		effect, callErr := e.operations.Files.Write(ctx, agent.AuthorizedFileWrite{Authorization: auth, Path: command.Path, ContentRef: command.ContentRef, ExpectedVersion: command.ExpectedVersion})
+		return fileEffectOutcome(effect, callErr, command.Path)
 	case "edit":
-		effect, err = e.operations.Files.Edit(ctx, agent.AuthorizedFileEdit{Authorization: auth, Path: command.Path, PatchRef: command.PatchRef, ExpectedVersion: command.ExpectedVersion})
+		effect, callErr := e.operations.Files.Edit(ctx, agent.AuthorizedFileEdit{Authorization: auth, Path: command.Path, PatchRef: command.PatchRef, ExpectedVersion: command.ExpectedVersion})
+		return fileEffectOutcome(effect, callErr, command.Path)
 	default:
 		return Outcome{Status: "failed", Content: "file operation is unavailable", SideEffect: "none"}
 	}
+	out := Outcome{Status: "failed", Content: "controlled file operation failed", SideEffect: "none"}
+	if err != nil {
+		out.Content = "controlled file operation failed"
+	}
+	return out
+}
+
+func (e *Executor) readFileContent(ctx context.Context, auth agent.AuthorizedExecution, result agent.ReadResult, offset, limit int64) (string, error) {
+	if result.ContentRef == "" || e.operations.Artifacts == nil {
+		return result.ContentRef, nil
+	}
+	reader, err := e.operations.Artifacts.Open(ctx, agent.ArtifactRead{Authorization: auth, Ref: agent.ArtifactRef{ID: result.ContentRef, Available: true}, Offset: offset, Limit: limit})
+	if err != nil {
+		return "", err
+	}
+	defer reader.Close()
+	maxBytes := int64(50 << 10)
+	if limit > 0 && limit < maxBytes {
+		maxBytes = limit
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if int64(len(data)) > maxBytes {
+		data = data[:maxBytes]
+	}
+	return string(data), nil
+}
+
+func encodeFileResult(value any) Outcome {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return Outcome{Status: "failed", Content: "controlled file result could not be encoded", SideEffect: "none"}
+	}
+	return Outcome{Status: "succeeded", Content: string(raw), SideEffect: "none", Executed: true}
+}
+
+func fileEffectOutcome(effect agent.FileEffect, err error, fallback string) Outcome {
 	out := Outcome{Status: "succeeded", Content: effect.Identity, Executed: effect.Confirmed, SideEffect: effect.SideEffect}
+	if out.Content == "" {
+		out.Content = fallback
+	}
 	if out.SideEffect == "" {
 		out.SideEffect = "unknown"
 	}
@@ -515,6 +640,23 @@ func (e *Executor) invokeFile(ctx context.Context, auth agent.AuthorizedExecutio
 	}
 	if out.SideEffect == "unknown" && !out.Executed {
 		out.Status = "outcome_unknown"
+	}
+	return out
+}
+func (e *Executor) invokeTodos(ctx context.Context, auth agent.AuthorizedExecution, frozen agent.FrozenExecution) Outcome {
+	if e.operations.Todos == nil {
+		return Outcome{Status: "failed", Content: "controlled TODO backend is unavailable", SideEffect: "none"}
+	}
+	effect, err := e.operations.Todos.Update(ctx, agent.AuthorizedTodo{Authorization: auth, InvocationID: frozen.Scope.InvocationID, Content: append(json.RawMessage(nil), frozen.FinalArguments...)})
+	out := Outcome{Status: "succeeded", Content: effect.Content, SideEffect: "confirmed", Executed: effect.Confirmed}
+	if effect.Version != "" && out.Content == "" {
+		out.Content = effect.Version
+	}
+	if err != nil {
+		return Outcome{Status: "failed", Content: "controlled TODO update failed", SideEffect: "unknown", Executed: true}
+	}
+	if !effect.Confirmed {
+		out.Status, out.SideEffect = "outcome_unknown", "unknown"
 	}
 	return out
 }

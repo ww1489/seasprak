@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/ww1489/seasprak/internal/llm"
 )
 
@@ -31,6 +32,7 @@ type ExecutionScope struct {
 	Generation         string
 	ExecutionID        string
 	TurnID             string
+	SelectionRevision  uint64
 }
 
 type Fact struct {
@@ -102,12 +104,15 @@ const (
 )
 
 type TurnRecord struct {
-	ID                string
-	TraceID           string
-	InvocationID      string
-	Ended             bool
-	CallIDs           []string
-	TransportRequests int
+	ID                 string
+	TraceID            string
+	InvocationID       string
+	SelectionRevision  uint64
+	ModelConfigVersion string
+	ToolNames          []string
+	Ended              bool
+	CallIDs            []string
+	TransportRequests  int
 }
 
 type ToolObservation struct {
@@ -130,12 +135,14 @@ type ToolCallSource interface {
 }
 
 type FrozenCall struct {
-	ProviderCallID string
-	CallID         string
-	Name           string
-	Arguments      string
-	Generation     string
-	Hash           string
+	ProviderCallID    string
+	CallID            string
+	OperationID       string
+	Name              string
+	Arguments         string
+	Generation        string
+	SelectionRevision uint64
+	Hash              string
 }
 
 // ToolAuthorizer judges a frozen call. Ask is rejected until approval exists.
@@ -144,8 +151,11 @@ type ToolAuthorizer interface {
 }
 
 type TurnPlan struct {
-	TurnID            string
-	SelectionRevision uint64
+	TurnID             string
+	SelectionRevision  uint64
+	ModelConfigVersion string
+	ToolInfos          []*schema.ToolInfo
+	ToolsSelected      bool
 }
 
 type TurnFact struct {

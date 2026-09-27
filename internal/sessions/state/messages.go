@@ -30,8 +30,31 @@ func (m *Manager) AppendMessage(ctx context.Context, msg agent.AgentMessage) err
 func (m *Manager) SaveTurn(ctx context.Context, tr agent.TurnRecord) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if old, ok := m.view.Turns[tr.ID]; ok && old.Ended {
-		return nil
+	if old, ok := m.view.Turns[tr.ID]; ok {
+		if old.Ended {
+			return nil
+		}
+		if tr.TraceID == "" {
+			tr.TraceID = old.TraceID
+		}
+		if tr.InvocationID == "" {
+			tr.InvocationID = old.InvocationID
+		}
+		if tr.SelectionRevision == 0 {
+			tr.SelectionRevision = old.SelectionRevision
+		}
+		if tr.ModelConfigVersion == "" {
+			tr.ModelConfigVersion = old.ModelConfigVersion
+		}
+		if tr.ToolNames == nil {
+			tr.ToolNames = append([]string(nil), old.ToolNames...)
+		}
+		if tr.CallIDs == nil {
+			tr.CallIDs = append([]string(nil), old.CallIDs...)
+		}
+		if tr.TransportRequests == 0 {
+			tr.TransportRequests = old.TransportRequests
+		}
 	}
 	kind := "turn_start"
 	if tr.Ended {
@@ -104,10 +127,14 @@ func (m *Manager) FinishTools(ctx context.Context, turn agent.TurnRecord) error 
 	parent := m.view.LeafID
 	for _, id := range turn.CallIDs {
 		call, ok := m.view.Calls[id]
-		if !ok || call.Observation == nil {
+		if !ok || call.Observation == nil || m.view.ReconciliationUnresolved(id) {
 			return product.NewError(product.CodeReconciliationRequired, "tool result is unresolved")
 		}
-		result := &schema.FunctionToolResult{CallID: call.Call.ProviderCallID, Name: call.Call.Name, Content: []*schema.FunctionToolResultContentBlock{{Type: schema.FunctionToolResultContentBlockTypeText, Text: &schema.UserInputText{Text: call.Observation.Content}}}}
+		content := call.Observation.Content
+		if effective, ok := m.view.EffectiveObservation(id); ok {
+			content = effective.Observation.Content
+		}
+		result := &schema.FunctionToolResult{CallID: call.Call.ProviderCallID, Name: call.Call.Name, Content: []*schema.FunctionToolResultContentBlock{{Type: schema.FunctionToolResultContentBlockTypeText, Text: &schema.UserInputText{Text: content}}}}
 		msg := agent.AgentMessage{ID: agent.MustID(), Kind: agent.KindToolResult, Status: agent.StatusComplete, Source: agent.SourceRef{Kind: agent.SourceTool}, Scope: agent.MessageScope{SessionID: m.sessionID, TraceID: turn.TraceID, TurnID: turn.ID, InvocationID: turn.InvocationID, ToolCallID: id}, Standard: &schema.AgenticMessage{Role: schema.AgenticRoleTypeUser, ContentBlocks: []*schema.ContentBlock{schema.NewContentBlock(result)}}}
 		entry := record("message", msg.ID, msg)
 		entry.ParentID = parent

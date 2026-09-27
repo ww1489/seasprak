@@ -35,6 +35,7 @@ type FrozenExecution struct {
 	Concurrency           string              `json:"concurrency"`
 	BackendID             string              `json:"backendId"`
 	Argv                  []string            `json:"argv,omitempty"`
+	Shell                 string              `json:"shell,omitempty"`
 	Cwd                   string              `json:"cwd,omitempty"`
 	EnvironmentRef        string              `json:"environmentRef,omitempty"`
 	StdinRef              string              `json:"stdinRef,omitempty"`

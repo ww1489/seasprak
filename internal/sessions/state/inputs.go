@@ -16,6 +16,10 @@ func (m *Manager) Accept(ctx context.Context, cmd agent.InputCommand, target age
 	return m.AcceptWithLimits(ctx, cmd, target, config.DefaultLimits())
 }
 func (m *Manager) AcceptWithLimits(ctx context.Context, cmd agent.InputCommand, target agent.TargetAgent, limits config.Limits) (agent.InputReceipt, error) {
+	return m.AcceptWithLimitsAndSelection(ctx, cmd, target, limits, "")
+}
+
+func (m *Manager) AcceptWithLimitsAndSelection(ctx context.Context, cmd agent.InputCommand, target agent.TargetAgent, limits config.Limits, modelSelectionID string) (agent.InputReceipt, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	digest, err := digestCommand(cmd)
@@ -39,7 +43,7 @@ func (m *Manager) AcceptWithLimits(ctx context.Context, cmd agent.InputCommand, 
 	var trace TraceState
 	if traceID == "" {
 		traceID = agent.MustID()
-		trace = TraceState{ID: traceID, State: "queued", Kind: kind, Target: target, Generation: target.Generation, Limits: limits.WithDefaults()}
+		trace = TraceState{ID: traceID, State: "queued", Kind: kind, Target: target, Generation: target.Generation, ModelSelectionID: modelSelectionID, Limits: limits.WithDefaults()}
 	} else {
 		trace = *m.view.Traces[traceID]
 		target = trace.Target
@@ -84,6 +88,17 @@ func (m *Manager) classify(cmd agent.InputCommand, target agent.TargetAgent) (st
 			return "follow_up", tr.ID, nil
 		}
 		return "prompt", "", nil
+	case "command":
+		if cmd.TargetTraceID != "" {
+			return "", "", product.NewError(product.CodeInvalidArgument, "direct command cannot target a trace")
+		}
+		if m.view.HasUnresolvedEffects() {
+			return "", "", product.NewError(product.CodeReconciliationRequired, "unresolved tool effects block new work")
+		}
+		if active := m.view.Traces[m.view.ActiveTrace]; active != nil && active.State == "paused" {
+			return "", "", product.NewError(product.CodeReconciliationRequired, "interrupted execution blocks new work")
+		}
+		return "command", "", nil
 	case "steering", "follow_up":
 		tr := m.view.Traces[cmd.TargetTraceID]
 		if cmd.TargetTraceID == "" {

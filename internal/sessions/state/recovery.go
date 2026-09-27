@@ -44,10 +44,38 @@ func (v View) EffectiveObservation(callID string) (ObservationRevision, bool) {
 	return latest, latest.Version != 0
 }
 
+// ReconciliationUnresolved checks the latest reconciliation and any later
+// evidence without erasing the original observation or a contradictory fact.
+func (v View) ReconciliationUnresolved(callID string) bool {
+	var latest Reconciliation
+	var effective ObservationRevision
+	for _, result := range v.Reconciliations {
+		if result.CallID != callID {
+			continue
+		}
+		if observation, ok := v.Observations[result.NewObservationID]; ok && observation.Version > effective.Version {
+			effective, latest = observation, result
+		}
+	}
+	if effective.Version == 0 {
+		return false
+	}
+	if len(latest.RemainingUnknown) > 0 || len(latest.ConflictRestrictions) > 0 {
+		return true
+	}
+	if after, ok := v.latestObservation(callID); ok && after.Version > effective.Version && after.Observation != effective.Observation {
+		return true
+	}
+	return false
+}
+
 func (v View) TraceHasUnresolvedEffects(id string) bool {
 	for _, call := range v.Calls {
 		if call.Scope.TraceID != id {
 			continue
+		}
+		if v.ReconciliationUnresolved(call.Call.CallID) {
+			return true
 		}
 		if latest, ok := v.EffectiveObservation(call.Call.CallID); ok {
 			if unresolvedObservation(latest.Observation) {
@@ -67,6 +95,9 @@ func (v View) TraceHasUnresolvedEffects(id string) bool {
 // unknown result and does not prevent accepting work into the existing queue.
 func (v View) HasUnresolvedEffects() bool {
 	for _, call := range v.Calls {
+		if v.ReconciliationUnresolved(call.Call.CallID) {
+			return true
+		}
 		if latest, ok := v.EffectiveObservation(call.Call.CallID); ok {
 			if unresolvedObservation(latest.Observation) {
 				return true

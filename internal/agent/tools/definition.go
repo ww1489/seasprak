@@ -16,6 +16,7 @@ type ExecutionDescription struct {
 	Concurrency       string
 	BackendID         string
 	Argv              []string
+	Shell             string
 	Cwd               string
 	EnvironmentRef    string
 	StdinRef          string
@@ -73,6 +74,7 @@ type Operations struct {
 	Files     agent.FileOperations
 	Process   agent.ProcessOperations
 	Artifacts agent.ArtifactStore
+	Todos     agent.TodoOperations
 }
 
 type ExecutorOption func(*Executor)

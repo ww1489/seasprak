@@ -39,7 +39,7 @@ func makeReconcileSession(t *testing.T, query ReconcileQuery, stopped ...bool) (
 	if err := manager.SaveTurn(context.Background(), turn); err != nil {
 		t.Fatal(err)
 	}
-	call := agent.ToolRecord{Call: agent.FrozenCall{CallID: "call", ProviderCallID: "provider", Name: "work", Arguments: `{}`, Generation: "gen"}, Scope: agent.ExecutionScope{SessionID: "reconcile-session", BranchID: "main", TraceID: input.TraceID, InvocationID: tr.InvocationID, Generation: "gen", TurnID: turn.ID}}
+	call := agent.ToolRecord{Call: agent.FrozenCall{CallID: "call", ProviderCallID: "provider", Name: "work", Arguments: `{}`, Generation: "gen"}, Scope: agent.ExecutionScope{SessionID: "reconcile-session", BranchID: "main", TraceID: input.TraceID, InvocationID: tr.InvocationID, Generation: "gen", ExecutionID: "original-execution", TurnID: turn.ID}}
 	message := agent.AgentMessage{ID: "assistant", Kind: agent.KindAssistant, Status: agent.StatusComplete, Source: agent.SourceRef{Kind: agent.SourceModel}, Scope: agent.MessageScope{SessionID: "reconcile-session", TraceID: input.TraceID, InvocationID: tr.InvocationID, TurnID: turn.ID}, Standard: &schema.AgenticMessage{Role: schema.AgenticRoleTypeAssistant, ContentBlocks: []*schema.ContentBlock{schema.NewContentBlock(&schema.FunctionToolCall{CallID: "provider", Name: "work", Arguments: `{}`})}}}
 	if err := manager.SaveAssistant(context.Background(), message, []agent.ToolRecord{call}); err != nil {
 		t.Fatal(err)

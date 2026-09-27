@@ -8,22 +8,24 @@ import (
 )
 
 type TraceState struct {
-	ID           string            `json:"id"`
-	State        string            `json:"state"`
-	Kind         string            `json:"kind"`
-	Target       agent.TargetAgent `json:"target"`
-	Generation   string            `json:"generation"`
-	Settled      bool              `json:"settled"`
-	Hold         bool              `json:"hold"`
-	Started      bool              `json:"started"`
-	InvocationID string            `json:"invocationId,omitempty"`
-	ExecutionID  string            `json:"executionId,omitempty"`
-	CheckpointID string            `json:"checkpointId,omitempty"`
-	Limits       config.Limits     `json:"limits"`
-	Usage        agent.Usage       `json:"usage"`
-	Activity     ActivityBudget    `json:"activity"`
-	HoldOnStop   []string          `json:"holdOnStop,omitempty"`
-	Error        string            `json:"error,omitempty"`
+	ID               string            `json:"id"`
+	State            string            `json:"state"`
+	Kind             string            `json:"kind"`
+	Target           agent.TargetAgent `json:"target"`
+	Generation       string            `json:"generation"`
+	Settled          bool              `json:"settled"`
+	Hold             bool              `json:"hold"`
+	Started          bool              `json:"started"`
+	InvocationID     string            `json:"invocationId,omitempty"`
+	ExecutionID      string            `json:"executionId,omitempty"`
+	CheckpointID     string            `json:"checkpointId,omitempty"`
+	ModelSelectionID string            `json:"modelSelectionId,omitempty"`
+	ToolSelectionID  string            `json:"toolSelectionId,omitempty"`
+	Limits           config.Limits     `json:"limits"`
+	Usage            agent.Usage       `json:"usage"`
+	Activity         ActivityBudget    `json:"activity"`
+	HoldOnStop       []string          `json:"holdOnStop,omitempty"`
+	Error            string            `json:"error,omitempty"`
 
 	// ExecutionStopped is durable proof of an exited execution, not known effects.
 	ExecutionStopped bool `json:"executionStopped,omitempty"`
@@ -72,9 +74,13 @@ type View struct {
 	ApprovalBindings   map[string]ApprovalBinding
 	ApprovalDecisions  map[string]ApprovalDecision
 	ApprovalClaims     map[string]ApprovalClaim
+	Selections         map[string]Selection
 	Checkpoints        map[string]CheckpointRef
 	ResumedExecutions  map[string]ResumedExecution
 	RepairRequired     bool
+
+	// Scheduling releases are independent of the original claim and budget.
+	ResourceHoldReleases map[string]ResourceHoldRelease
 }
 type idemRecord struct {
 	Digest  string

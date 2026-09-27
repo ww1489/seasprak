@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"sync/atomic"
 	"time"
@@ -194,6 +195,7 @@ type ProcessOperations interface {
 type AuthorizedProcess struct {
 	Authorization    AuthorizedExecution `json:"-"`
 	Argv             []string            `json:"argv"`
+	Shell            string              `json:"shell,omitempty"`
 	Cwd              string              `json:"cwd,omitempty"`
 	EnvironmentRef   string              `json:"environmentRef,omitempty"`
 	StdinRef         string              `json:"stdinRef,omitempty"`
@@ -247,6 +249,21 @@ type StopObservation struct {
 	SideEffect string
 }
 
+type TodoOperations interface {
+	Update(context.Context, AuthorizedTodo) (TodoEffect, error)
+}
+
+type AuthorizedTodo struct {
+	Authorization AuthorizedExecution `json:"-"`
+	InvocationID  string              `json:"invocationId"`
+	Content       json.RawMessage     `json:"content"`
+}
+type TodoEffect struct {
+	Version   string
+	Content   string
+	Confirmed bool
+}
+
 // ArtifactStore stores untrusted business output by reference; trusted ticket
 // metadata stays outside the artifact body.
 type ArtifactStore interface {
@@ -258,6 +275,7 @@ type ArtifactInput struct {
 	ContentRef, MediaType, Name string
 }
 type ArtifactRead struct {
+	Authorization AuthorizedExecution `json:"-"`
 	Ref           ArtifactRef
 	Offset, Limit int64
 }

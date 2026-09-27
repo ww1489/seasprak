@@ -42,7 +42,7 @@ func NewManager(store store.Store, id string) (*Manager, error) {
 	return &Manager{store: store, sessionID: id, view: v}, nil
 }
 func emptyView() *View {
-	return &View{BranchID: "main", Traces: map[string]*TraceState{}, Inputs: map[string]*InputState{}, Idem: map[string]idemRecord{}, Turns: map[string]agent.TurnRecord{}, Calls: map[string]agent.ToolRecord{}}
+	return &View{BranchID: "main", Traces: map[string]*TraceState{}, Inputs: map[string]*InputState{}, Idem: map[string]idemRecord{}, Turns: map[string]agent.TurnRecord{}, Calls: map[string]agent.ToolRecord{}, Operations: map[string]Operation{}, Observations: map[string]ObservationRevision{}, Reconciliations: map[string]Reconciliation{}, ModelAttempts: map[string]ModelAttempt{}, AttemptResults: map[string]ModelAttemptTransition{}, AttemptDetails: map[string]ModelAttemptDetailsRecord{}, FrozenExecutions: map[string]FrozenExecution{}, Interactions: map[string]Interaction{}, Approvals: map[string]Approval{}, ApprovalBindings: map[string]ApprovalBinding{}, ApprovalDecisions: map[string]ApprovalDecision{}, ApprovalClaims: map[string]ApprovalClaim{}, Selections: map[string]Selection{}, Checkpoints: map[string]CheckpointRef{}, ResumedExecutions: map[string]ResumedExecution{}}
 }
 func clone[T any](v T) T {
 	raw, err := json.Marshal(v)

@@ -59,5 +59,11 @@ func (rt *runtime) recordLateObservation(ctx context.Context, scope agent.Execut
 		return nil
 	}
 	next := state.ObservationRevision{ID: agent.MustID(), CallID: incoming.Call.CallID, Version: previous.Version + 1, PreviousID: previous.ID, Observation: *incoming.Observation}
-	return rt.manager.AppendObservation(ctx, previous.Version, next, nil)
+	if err := rt.manager.AppendObservation(ctx, previous.Version, next, nil); err != nil {
+		return err
+	}
+	if rt.manager.View().ReconciliationUnresolved(incoming.Call.CallID) {
+		return rt.restoreResourceHolds()
+	}
+	return nil
 }

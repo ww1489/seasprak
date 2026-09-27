@@ -76,7 +76,7 @@ func (s *AgentSession) SubmitInput(ctx context.Context, cmd agent.InputCommand) 
 			target.Name = cmd.TargetAgent
 		}
 		before := rt.manager.View().LastSeq
-		receipt, err := rt.manager.AcceptWithLimits(ctx, cmd, target, rt.opts.Limits)
+		receipt, err := rt.manager.AcceptWithLimitsAndSelection(ctx, cmd, target, rt.opts.Limits, rt.defaultModelID)
 		if err != nil {
 			return nil, err
 		}
@@ -131,5 +131,5 @@ func (s *AgentSession) Snapshot(ctx context.Context) (Snapshot, error) {
 
 func (rt *runtime) snapshot(v state.View, resume map[string]ResumeEligibility) Snapshot {
 	interactions, approvals := rt.snapshotApprovals(v)
-	return Snapshot{Revision: v.LastSeq, SessionID: rt.opts.SessionID, Cursor: v.Cursor, ActiveTrace: v.ActiveTrace, Traces: v.Traces, Inputs: v.Inputs, Messages: v.Messages, Turns: v.Turns, Calls: v.Calls, Operations: v.Operations, Reconciliations: v.Reconciliations, RepairRequired: v.RepairRequired, Resume: resume, Interactions: interactions, Approvals: approvals, FrozenExecutions: v.FrozenExecutions}
+	return Snapshot{Revision: v.LastSeq, SessionID: rt.opts.SessionID, Cursor: v.Cursor, ActiveTrace: v.ActiveTrace, Traces: v.Traces, Inputs: v.Inputs, Messages: v.Messages, Turns: v.Turns, Calls: v.Calls, Operations: v.Operations, Selections: v.Selections, Reconciliations: v.Reconciliations, RepairRequired: v.RepairRequired, Resume: resume, Interactions: interactions, Approvals: approvals, FrozenExecutions: v.FrozenExecutions}
 }

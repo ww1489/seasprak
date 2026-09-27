@@ -25,10 +25,12 @@ func toolArgumentHash(raw []byte) string {
 func (rt *runtime) saveFrozenExecution(ctx context.Context, scope agent.ExecutionScope, frozen agent.FrozenExecution) error {
 	v := rt.manager.View()
 	call, ok := v.Calls[frozen.CallID]
-	if !ok || call.Claimed || call.Observation != nil || !acceptedAttemptForCall(v, call) ||
-		!rt.matchesCallScope(scope, call) || frozen.Scope != call.Scope || frozen.ID != "execution:"+call.Call.CallID ||
-		frozen.Origin != "model" || frozen.ProviderCallID != call.Call.ProviderCallID ||
-		frozen.Tool != call.Call.Name || frozen.Generation != call.Call.Generation ||
+	modelOrigin := frozen.Origin == "model" && acceptedAttemptForCall(v, call)
+	directOrigin := frozen.Origin == "direct" && frozen.OperationID != "" && call.Call.OperationID == frozen.OperationID
+	if !ok || call.Claimed || call.Observation != nil || (!modelOrigin && !directOrigin) ||
+		!rt.matchesCallScope(scope, call) || frozen.Scope != call.Scope || frozen.ID != "execution:"+frozen.CallID ||
+		(frozen.Origin != "model" && frozen.Origin != "direct") || frozen.ProviderCallID != call.Call.ProviderCallID ||
+		frozen.Tool != call.Call.Name || frozen.Generation != call.Call.Generation || frozen.OperationID != call.Call.OperationID ||
 		frozen.OriginalArgumentsHash != toolArgumentHash([]byte(call.Call.Arguments)) ||
 		frozen.FinalArgumentsHash != toolArgumentHash(frozen.FinalArguments) || frozen.PolicyRef != v.ExecutionPolicy.Ref {
 		return product.NewError(product.CodePermissionDenied, "frozen execution does not match the accepted call or policy")
@@ -103,8 +105,10 @@ func (rt *runtime) restoreResourceHolds() error {
 		}
 		holdID := tools.ResourceHoldID(rt.opts.SessionID, id)
 		known := false
-		if reconciled, ok := v.EffectiveObservation(id); ok {
-			known = reconciled.Observation.SideEffect != "unknown" && reconciled.Observation.Status != "outcome_unknown"
+		if _, ok := v.EffectiveObservation(id); ok {
+			// Reconciled no-start only releases a hold after an explicit durable
+			// release. Later contradictory evidence makes that release ineffective.
+			known = v.ResourceHoldReleased(id)
 		} else if call.Observation != nil {
 			known = call.Observation.SideEffect != "unknown" && call.Observation.Status != "outcome_unknown"
 		}

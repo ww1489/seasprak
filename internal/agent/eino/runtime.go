@@ -76,6 +76,11 @@ func (h *boundaryHandler) BeforeModelRewriteState(ctx context.Context, state *ad
 			return ctx, state, err
 		}
 		scope.TurnID = plan.TurnID
+		scope.SelectionRevision = plan.SelectionRevision
+		if plan.ToolsSelected {
+			state.ToolInfos = append([]*schema.ToolInfo(nil), plan.ToolInfos...)
+			state.DeferredToolInfos = nil
+		}
 	}
 	if h.budget != nil {
 		var err error

@@ -7,7 +7,33 @@ import (
 	"math"
 	"mime"
 	"sync"
+
+	"github.com/cloudwego/eino/schema"
 )
+
+// applyCollectedUsage projects final cumulative totals only. Field-presence
+// details remain in UsageSnapshot; SDK default zero values are not evidence.
+func applyCollectedUsage(msg *schema.AgenticMessage, capture *usageCapture) {
+	if msg == nil || msg.ResponseMeta == nil {
+		return
+	}
+	msg.ResponseMeta.TokenUsage = nil
+	u := capture.Snapshot().Usage
+	if !u.InputTotal.Known || !u.OutputTotal.Known || u.InputTotal.Value > int64(math.MaxInt)-u.OutputTotal.Value {
+		return
+	}
+	tokens := &schema.TokenUsage{PromptTokens: int(u.InputTotal.Value), CompletionTokens: int(u.OutputTotal.Value), TotalTokens: int(u.InputTotal.Value + u.OutputTotal.Value)}
+	if u.CacheRead.Known && u.CacheRead.Value <= int64(math.MaxInt) {
+		tokens.PromptTokenDetails.CachedTokens = int(u.CacheRead.Value)
+	}
+	if u.CacheWrite.Known && u.CacheWrite.Value <= int64(math.MaxInt) {
+		tokens.PromptTokenDetails.CacheWriteTokens = int(u.CacheWrite.Value)
+	}
+	if u.Reasoning.Known && u.Reasoning.Value <= int64(math.MaxInt) {
+		tokens.CompletionTokensDetails.ReasoningTokens = int(u.Reasoning.Value)
+	}
+	msg.ResponseMeta.TokenUsage = tokens
+}
 
 // UsageSnapshot contains only normalized measurements and fixed diagnostics.
 // Complete refers to body consumption, not model finish/response acceptance.
@@ -15,21 +41,25 @@ type UsageSnapshot struct {
 	Usage      UsageRecord
 	Diagnostic string
 	Complete   bool
+	// MessageStopped records Anthropic's explicit terminal event, not reader EOF.
+	MessageStopped bool
 }
 
 // UsageCollector belongs to exactly one HTTP response. It retains at most one
 // bounded JSON document/SSE frame in memory; raw bytes never leave this object.
 type UsageCollector struct {
-	mu         sync.Mutex
-	protocol   string
-	limit      int
-	format     string
-	buffer     []byte
-	snapshot   UsageSnapshot
-	disabled   bool
-	ended      bool
-	previousCR bool
-	chat       *chatCollection // Optional fail-closed Chat metadata, under mu.
+	mu           sync.Mutex
+	protocol     string
+	limit        int
+	format       string
+	buffer       []byte
+	snapshot     UsageSnapshot
+	disabled     bool
+	ended        bool
+	previousCR   bool
+	previousLF   bool
+	discardFrame bool            // Skip an oversized frame, but keep observing later terminal events.
+	chat         *chatCollection // Optional fail-closed Chat metadata, under mu.
 }
 
 // NewUsageCollector requires an explicit positive buffer limit supplied by
@@ -107,13 +137,16 @@ func (c *UsageCollector) disable(reason string) {
 	}
 	clear(c.buffer)
 	c.buffer = nil
-	c.snapshot = UsageSnapshot{Diagnostic: reason}
+	c.snapshot = UsageSnapshot{Diagnostic: reason, MessageStopped: c.snapshot.MessageStopped}
 	c.disabled = true
 }
 func (c *UsageCollector) consume(data []byte, readErr error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.disabled || c.ended {
+	// Anthropic terminal evidence must survive disabled usage statistics. Reuse
+	// the same bounded SSE framing; never buffer or decode oversized frames.
+	terminalOnly := c.protocol == "anthropic-messages" && c.format == "sse"
+	if c.ended || (c.disabled && !terminalOnly) {
 		return
 	}
 	// Byte-wise framing avoids a transient allocation proportional to Read size.
@@ -128,24 +161,49 @@ func (c *UsageCollector) consume(data []byte, readErr error) {
 				b = '\n'
 			}
 		}
-		if len(c.buffer) >= c.limit {
-			c.disable("usage_buffer_limit")
-			break
+		frameEnd := c.format == "sse" && b == '\n' && c.previousLF
+		c.previousLF = b == '\n'
+		if c.discardFrame {
+			if frameEnd {
+				c.discardFrame = false
+			}
+			continue
+		}
+		limit := c.limit
+		if c.disabled && terminalOnly {
+			// A fixed small allowance is sufficient for message_stop even when
+			// the configured statistics limit is smaller than that event.
+			limit = max(c.limit, 128)
+		}
+		if len(c.buffer) >= limit {
+			if !c.disabled {
+				c.disable("usage_buffer_limit")
+			} else {
+				clear(c.buffer)
+				c.buffer = nil
+			}
+			if !terminalOnly {
+				break
+			}
+			c.discardFrame = !frameEnd
+			continue
 		}
 		c.buffer = append(c.buffer, b)
-		if c.format == "sse" && b == '\n' {
-			n := len(c.buffer)
-			if n >= 2 && c.buffer[n-2] == '\n' {
-				c.parseSSE(c.buffer)
-				clear(c.buffer)
-				c.buffer = c.buffer[:0]
-				if c.disabled {
-					break
-				}
+		if frameEnd {
+			c.parseSSE(c.buffer)
+			clear(c.buffer)
+			c.buffer = c.buffer[:0]
+			if c.disabled && !terminalOnly {
+				break
 			}
 		}
 	}
 	if c.disabled {
+		if readErr != nil {
+			clear(c.buffer)
+			c.buffer = nil
+			c.ended = true
+		}
 		return
 	}
 	if readErr != nil {
@@ -160,6 +218,9 @@ func (c *UsageCollector) close() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.disabled || c.ended {
+		clear(c.buffer)
+		c.buffer = nil
+		c.ended = true
 		return
 	}
 	// JSON decoders can stop at a complete value without asking for EOF.
@@ -272,12 +333,20 @@ func (c *UsageCollector) parseJSON(data []byte) {
 		Gemini *geminiUsage `json:"usageMetadata"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil {
-		c.disable("invalid_usage_frame")
+		if !c.disabled {
+			c.disable("invalid_usage_frame")
+		}
 		return
 	}
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
 		c.disable("unsupported_usage_format")
+		return
+	}
+	if c.protocol == "anthropic-messages" && envelope.Type == "message_stop" {
+		c.snapshot.MessageStopped = true
+	}
+	if c.disabled {
 		return
 	}
 	u := envelope.Usage

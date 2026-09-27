@@ -29,6 +29,23 @@ type ModelAttempt struct {
 	UsageRef           string               `json:"usageRef,omitempty"`
 }
 
+// Selection is a durable control fact. It intentionally contains only stable
+// names, versions and scope; trusted model instances stay in the process.
+type Selection struct {
+	ID           string               `json:"id"`
+	Scope        agent.ExecutionScope `json:"scope"`
+	Kind         string               `json:"kind"`
+	State        string               `json:"state"`
+	ApplyAt      string               `json:"applyAt"`
+	ModelName    string               `json:"modelName,omitempty"`
+	ModelVersion string               `json:"modelVersion,omitempty"`
+	ToolNames    []string             `json:"toolNames,omitempty"`
+	ToolVersions []string             `json:"toolVersions,omitempty"`
+	Revision     uint64               `json:"revision"`
+	Supersedes   string               `json:"supersedes,omitempty"`
+	OperationID  string               `json:"operationId,omitempty"`
+}
+
 // State keeps the historical JSON record names while the execution layer owns
 // the single immutable descriptor used by preparation, policy and tickets.
 type ExecutionResource = agent.ExecutionResource
@@ -90,6 +107,7 @@ type CheckpointRef struct {
 // transitions; saving these facts alone grants no approval or resume permission.
 type Records struct {
 	ModelAttempts    []ModelAttempt
+	Selections       []Selection
 	FrozenExecutions []FrozenExecution
 	Interactions     []Interaction
 	Approvals        []Approval
@@ -105,6 +123,9 @@ func (m *Manager) SaveRecords(ctx context.Context, expectedRevision uint64, reco
 	var controls []store.Record
 	for _, r := range records.ModelAttempts {
 		controls = append(controls, record("model_attempt", r.ID, r))
+	}
+	for _, r := range records.Selections {
+		controls = append(controls, record("selection", r.ID, r))
 	}
 	for _, r := range records.FrozenExecutions {
 		controls = append(controls, record("frozen_execution", r.ID, r))
@@ -149,6 +170,8 @@ func applyP2Record(v *View, r store.Record) error {
 			return err
 		}
 		return putImmutable(&v.ModelAttempts, r.ID, value.ID, value)
+	case "selection":
+		return applySelection(v, r)
 	case "frozen_execution":
 		var value FrozenExecution
 		if err := json.Unmarshal(r.Payload, &value); err != nil {
