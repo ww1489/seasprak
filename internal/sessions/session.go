@@ -106,7 +106,11 @@ func (s *AgentSession) Snapshot(ctx context.Context) (Snapshot, error) {
 		for id := range v.Traces {
 			err := rt.writable()
 			if err == nil {
-				_, err = rt.validateResume(ctx, id, v)
+				if v.Traces[id].Kind == "command" {
+					_, err = rt.validateCommandResume(ctx, id, v)
+				} else {
+					_, err = rt.validateResume(ctx, id, v)
+				}
 			}
 			status := ResumeEligibility{CanResume: err == nil}
 			if err != nil {

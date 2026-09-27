@@ -10,10 +10,11 @@ import (
 )
 
 type ResumedExecution struct {
-	ID           string               `json:"id"`
-	CheckpointID string               `json:"checkpointId"`
-	OperationID  string               `json:"operationId"`
-	Scope        agent.ExecutionScope `json:"scope"`
+	ID             string               `json:"id"`
+	CheckpointID   string               `json:"checkpointId,omitempty"`
+	DirectResumeID string               `json:"directResumeId,omitempty"`
+	OperationID    string               `json:"operationId"`
+	Scope          agent.ExecutionScope `json:"scope"`
 }
 
 func applyResumedExecution(v *View, record store.Record) error {
@@ -22,6 +23,17 @@ func applyResumedExecution(v *View, record store.Record) error {
 		return err
 	}
 	cp, ok := v.Checkpoints[segment.CheckpointID]
+	if segment.DirectResumeID != "" {
+		b, exists := v.DirectResumes[segment.DirectResumeID]
+		tr := v.Traces[b.Scope.TraceID]
+		op, accepted := v.Operations[segment.OperationID]
+		expected := b.Scope
+		expected.ExecutionID = segment.ID
+		if !exists || segment.CheckpointID != "" || !accepted || op.Kind != "resume" || op.Receipt.Target != b.Scope.TraceID || op.Receipt.AcceptedCommit != v.LastSeq+1 || segment.ID == b.Scope.ExecutionID || segment.Scope != expected || tr == nil || tr.State != "paused" || !tr.ExecutionStopped || tr.DirectResumeID != b.ID || v.ValidateDirectBinding(b) != nil {
+			return product.NewError(product.CodeIncompatibleVersion, "invalid direct resumed execution")
+		}
+		return putImmutable(&v.ResumedExecutions, record.ID, segment.ID, segment)
+	}
 	op, accepted := v.Operations[segment.OperationID]
 	expected := cp.Scope
 	expected.ExecutionID = segment.ID

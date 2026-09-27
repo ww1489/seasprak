@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/ww1489/seasprak/internal/agent"
 	product "github.com/ww1489/seasprak/internal/errors"
@@ -75,6 +76,23 @@ func (m *Manager) SetTraceState(ctx context.Context, id, state string, settled b
 				next := *in
 				next.State = "undelivered"
 				controls = append(controls, record("input", in.ID, next))
+				if in.Kind == "command" {
+					var envelope struct {
+						OperationID string `json:"operationId"`
+					}
+					if json.Unmarshal(in.Content, &envelope) != nil {
+						return product.NewError(product.CodeStateConflict, "command input is invalid")
+					}
+					op, exists := m.view.Operations[envelope.OperationID]
+					if !exists || op.Kind != "direct_command" {
+						return product.NewError(product.CodeStateConflict, "command operation is missing")
+					}
+					if !terminal(op.State) {
+						op.State = state
+						op.Revision++
+						controls = append(controls, record("operation", envelope.OperationID, op))
+					}
+				}
 			}
 		}
 		if state == "failed" {

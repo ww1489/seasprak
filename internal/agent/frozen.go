@@ -45,6 +45,9 @@ type FrozenExecution struct {
 	Timeout               time.Duration       `json:"timeout,omitempty"`
 	PolicyRef             string              `json:"policyRef"`
 	RequestedGrantRef     string              `json:"requestedGrantRef,omitempty"`
+
+	BackendCapabilitiesHash string `json:"backendCapabilitiesHash,omitempty"`
+	SandboxMode             string `json:"sandboxMode,omitempty"`
 }
 
 type ExecutionResource struct {

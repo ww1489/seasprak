@@ -78,7 +78,12 @@ func (m *Manager) SaveCommand(ctx context.Context, scope agent.ExecutionScope, i
 	in := m.view.Inputs[inputID]
 	op, ok := m.view.Operations[operationID]
 	call, hasCall := m.view.Calls[operationID]
-	if in == nil || in.Kind != "command" || in.State != "pending" || in.TraceID != scope.TraceID || !ok || op.Kind != "direct_command" || op.Receipt.Target != name || !hasCall || call.Scope != scope || call.Call.OperationID != operationID || !terminal(next) || !operationTransition(op.State, next) {
+	callMatches := call.Scope == scope
+	if segment, resumed := m.view.ResumedExecutions[scope.ExecutionID]; resumed && segment.DirectResumeID != "" {
+		b := m.view.DirectResumes[segment.DirectResumeID]
+		callMatches = segment.Scope == scope && b.Scope == call.Scope && b.CallID == operationID
+	}
+	if in == nil || in.Kind != "command" || in.State != "pending" || in.TraceID != scope.TraceID || !ok || op.Kind != "direct_command" || op.Receipt.Target != name || !hasCall || !callMatches || call.Call.OperationID != operationID || !terminal(next) || !operationTransition(op.State, next) {
 		return product.NewError(product.CodeStateConflict, "command result does not match its pending execution")
 	}
 	consumed := *in

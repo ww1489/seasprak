@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/url"
 
@@ -28,8 +29,13 @@ func CompileSchemas(defs []Definition) (map[string]*jsonschema.Schema, error) {
 		if _, ok := compiled[def.Name]; ok {
 			return nil, product.NewError(product.CodeInvalidArgument, "duplicate tool name")
 		}
-		var doc any
-		if err := json.Unmarshal(def.Schema, &doc); err != nil {
+		// DecodeNumbers preserves numeric constraints; Valid rejects trailing
+		// JSON because DecodeNumbers intentionally decodes only one value.
+		if !json.Valid(def.Schema) {
+			return nil, product.NewError(product.CodeInvalidArgument, "tool schema is invalid")
+		}
+		doc, err := DecodeNumbers(bytes.NewReader(def.Schema))
+		if err != nil {
 			return nil, product.NewError(product.CodeInvalidArgument, "tool schema is invalid")
 		}
 		name := "file:///" + url.PathEscape(def.Name) + ".schema.json"

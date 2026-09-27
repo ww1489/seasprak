@@ -1,5 +1,15 @@
 # 逐条需求覆盖表
 
+## 2026-09-27 已确认变更的覆盖边界（实现待验）
+
+本轮用户最终选择只简化用户直接 shell，撤回此前全面取消审批的选项。下表原有工具安全条款仍用于模型/受控工具；不将用户 shell 计入统一 CallExecution、审批、预算或持久化去重的覆盖范围。
+
+- 用户 shell 的需求落点为 PRD 05 §4.6、12 开头范围说明；设计落点为开发 05 §2.1、03 开头说明、06 API、09 恢复边界；P2 Step 16.1/22 验收真实宿主调用、来源不可伪造、两次显式执行各启动一次、Open/Resume 零启动、超时/取消/退出码和 command 消息。状态：已确认，待实现与验证。
+- 日志落点为 PRD 05 §4.6、08 输出规则；开发 05 §7、07 输出规则、12 限额；P2 Step 16 验收短输出直返、超长脱敏保存和头尾预览、Save/Open/引用提交失败不改变原执行结果且不重跑，不新增审批/结果票据。状态：已确认，待实现与验证。
+- SEC-A24 等“后端不可用零裸执行”仍约束模型受限后端；明确的用户宿主 shell 不属于自动降级。用户 shell 不宣称 stateRoot 写保护；产物自动读取仍保留 Session/内容校验。
+- 旧 direct 审批恢复已有历史证据仅证明旧契约；此次文档变更不提高完成度，不重建待办。macOS 延期待实际环境运行，不记通过。
+
+
 状态：文档设计覆盖，不代表产品测试通过。P0～P1 已补假模型/工具闭环、提交失败、幂等重放、串行调度、取消关闭、完整响应接纳、预算、持久事件和存储故障等回归测试，并通过本机竞态检查。此结果只对应具体测试，不将本表全部需求或真实平台/供应商认证标为通过。
 
 技术链接指向实际章节锚点；测试 ID 是后续实现必须建立的案例。断言摘取原需求/验收，完整上下文以原条款为准。关系正确性需结合图和主定义人工审查，不能仅凭链接存在判断已实现。
@@ -128,7 +138,7 @@
 | [TOOL-02](../pi-eino-prd/05-tool-system.md#21-用户故事与验收) | [05 §outputs](05-tools-and-operations.md#outputs)；[09 §corruption](09-persistence-and-recovery.md#corruption) | CallExecution、Operations / D11-D12；SessionStore、CheckpointRef / D19-D22 | V-TOOL/TOOL-02：非法 JSON、必填缺失、类型/范围/枚举错误及多余危险字段均在副作用前处理；返回字段级原因，不替模型猜写入目标 |
 | [TOOL-03](../pi-eino-prd/05-tool-system.md#21-用户故事与验收) | [05 §pipeline](05-tools-and-operations.md#pipeline)；[10 §workflows](10-extensions-and-workflows.md#workflows)；[10 §subagents](10-extensions-and-workflows.md#subagents) | CallExecution、Operations / D11-D12；ExtensionRegistry、Workflow / D23-D25 | V-TOOL/TOOL-03：主 Agent、子 Agent、工作流节点和直接 SDK 调用均经过同一策略语义；工具换名或被工作流包装不能扩大权限 |
 | [TOOL-04](../pi-eino-prd/05-tool-system.md#21-用户故事与验收) | [05 §pipeline](05-tools-and-operations.md#pipeline) | CallExecution、Operations / D11-D12 | V-TOOL/TOOL-04：pre-execute 区分 allow/deny/cancel/ask；ask 只接受 allowed-once 批准，其他审批结果不执行；等待期间 Trace 为 waiting_input，重复回复不二次执行 |
-| [TOOL-05](../pi-eino-prd/05-tool-system.md#21-用户故事与验收) | [05 §pipeline](05-tools-and-operations.md#pipeline) | CallExecution、Operations / D11-D12 | V-TOOL/TOOL-05：开始、进度、结束均关联同一调用；非零退出码不得记为成功；晚到进度不改变已提交结果 |
+| [TOOL-05](../pi-eino-prd/05-tool-system.md#21-用户故事与验收) | [05 §pipeline](05-tools-and-operations.md#pipeline) | CallExecution、Operations / D11-D12 | V-TOOL/TOOL-05：开始、实际输出、结束均关联同一调用；非零退出码不得记为成功；晚到输出不改变已提交结果；P2 保留 SDK 实际输出回调，不要求动态百分比/阶段进度或原生 Streamable 验收 |
 | [TOOL-06](../pi-eino-prd/05-tool-system.md#21-用户故事与验收) | [05 §outputs](05-tools-and-operations.md#outputs)；[03 §cancel](03-runtime-and-scheduling.md#cancel)；[03 §trace-state](03-runtime-and-scheduling.md#trace-state) | CallExecution、Operations / D11-D12；InputSource、FinishTurn / D05-D08 | V-TOOL/TOOL-06：取消传播到工具及其子进程/子执行；确认停止后不再发起新工具；无法确定副作用时保留 `outcome_unknown`；没有取消意图时 Trace 为 `paused`，取消轨迹按 M03 收尾 |
 | [TOOL-07](../pi-eino-prd/05-tool-system.md#21-用户故事与验收) | [05 §concurrency](05-tools-and-operations.md#concurrency)；[07 §budget](07-context-and-skills.md#budget) | CallExecution、Operations / D11-D12；ContextSource、SkillBackend / D15-D16 | V-TOOL/TOOL-07：同一文件两次修改按声明顺序执行；未声明并发安全的工具默认串行；并行只读调用仍受并发数和资源预算限制 |
 | [TOOL-08](../pi-eino-prd/05-tool-system.md#21-用户故事与验收) | [05 §pipeline](05-tools-and-operations.md#pipeline)；[11 §protected-data](11-security-and-sandbox.md#protected-data)；[01 §assembly](01-architecture.md#assembly) | CallExecution、Operations / D11-D12；Authorizer、SandboxProvider / D26-D28；CreateAgentSession / D01-D02 | V-TOOL/TOOL-08：write/edit 与 shell 文件修改采用同一解析策略和真实工作区/临时目录；越界按 DSH 式拒绝/单次升级处理；读取范围单独声明，工作区写限制不等于读取隔离 |

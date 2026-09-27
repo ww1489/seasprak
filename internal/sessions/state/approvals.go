@@ -14,14 +14,15 @@ import (
 	"github.com/ww1489/seasprak/internal/sessions/store"
 )
 
-// ApprovalBinding records one server-owned interrupt target in one immutable
-// checkpoint. Re-interruption appends another binding instead of changing it.
+// ApprovalBinding names either a server-owned Eino interrupt target or an
+// original direct command wait. The two recovery representations are disjoint.
 type ApprovalBinding struct {
-	ID            string `json:"id"`
-	InteractionID string `json:"interactionId"`
-	ApprovalID    string `json:"approvalId"`
-	CheckpointID  string `json:"checkpointId"`
-	TargetRef     string `json:"targetRef"`
+	ID             string `json:"id"`
+	InteractionID  string `json:"interactionId"`
+	ApprovalID     string `json:"approvalId"`
+	CheckpointID   string `json:"checkpointId,omitempty"`
+	DirectResumeID string `json:"directResumeId,omitempty"`
+	TargetRef      string `json:"targetRef"`
 }
 
 type ApprovalDecision struct {
@@ -39,6 +40,20 @@ type ApprovalClaim struct {
 	CallID      string    `json:"callId"`
 	ExecutionID string    `json:"executionId"`
 	ClaimedAt   time.Time `json:"claimedAt"`
+}
+
+func validApprovalBinding(v *View, binding ApprovalBinding) bool {
+	in := v.Interactions[binding.InteractionID]
+	approval := v.Approvals[binding.ApprovalID]
+	if in.Kind != "approval" || in.ApprovalID != approval.ID || approval.InteractionID != in.ID {
+		return false
+	}
+	if binding.DirectResumeID != "" {
+		b, exists := v.DirectResumes[binding.DirectResumeID]
+		return exists && binding.CheckpointID == "" && binding.TargetRef == "" && binding.ID == b.ID+":"+in.ID && b.InteractionID == in.ID && b.ApprovalID == approval.ID && v.ValidateDirectBinding(b) == nil
+	}
+	cp, exists := v.Checkpoints[binding.CheckpointID]
+	return exists && binding.ID == cp.ID+":"+in.ID && binding.TargetRef != "" && containsID(cp.InteractionIDs, in.ID) && containsID(cp.CallIDs, approval.CallID) && approvalCheckpointCall(v, cp, v.Calls[approval.CallID])
 }
 
 func validApprovalDecision(decision string) bool {
@@ -237,8 +252,12 @@ func (m *Manager) RespondApproval(ctx context.Context, cmd OperationCommand, dec
 	if !exists || in.Kind != "approval" || approval.InteractionID != in.ID || tr == nil || tr.State != "paused" || !tr.ExecutionStopped || tr.Settled {
 		return OperationReceipt{}, product.NewError(product.CodeStateConflict, "interaction has no safely stopped checkpoint")
 	}
-	binding, bound := m.view.ApprovalBindings[tr.CheckpointID+":"+in.ID]
-	if !bound || binding.ApprovalID != approval.ID || binding.TargetRef == "" {
+	bindingID := tr.CheckpointID + ":" + in.ID
+	if tr.DirectResumeID != "" {
+		bindingID = tr.DirectResumeID + ":" + in.ID
+	}
+	binding, bound := m.view.ApprovalBindings[bindingID]
+	if !bound || binding.ApprovalID != approval.ID || !validApprovalBinding(m.view, binding) {
 		return OperationReceipt{}, product.NewError(product.CodeStateConflict, "interaction is not associated with the current checkpoint")
 	}
 	if _, decided := m.view.ApprovalDecisions[approval.ID]; decided {
@@ -280,7 +299,7 @@ func validateApprovalClaim(v *View, claim ApprovalClaim) error {
 	binding := v.ApprovalBindings[decision.BindingID]
 	segment, resumed := v.ResumedExecutions[claim.ExecutionID]
 	tr := v.Traces[approval.Scope.TraceID]
-	if !exists || !answered || !resumed || claim.CallID != approval.CallID || decision.Decision != "allowed-once" || decision.Principal == "" || decision.ApprovalID != approval.ID || binding.ApprovalID != approval.ID || binding.CheckpointID != segment.CheckpointID || tr == nil || tr.State != "running" || tr.Settled || tr.ExecutionStopped || tr.ExecutionID != claim.ExecutionID {
+	if !exists || !answered || !resumed || claim.CallID != approval.CallID || decision.Decision != "allowed-once" || decision.Principal == "" || decision.ApprovalID != approval.ID || binding.ApprovalID != approval.ID || !validApprovalBinding(v, binding) || binding.CheckpointID != segment.CheckpointID || binding.DirectResumeID != segment.DirectResumeID || tr == nil || tr.State != "running" || tr.Settled || tr.ExecutionStopped || tr.ExecutionID != claim.ExecutionID {
 		return product.NewError(product.CodePermissionDenied, "execution has no matching one-time approval")
 	}
 	if err := approvalTime(approval, claim.ClaimedAt); err != nil {
@@ -294,7 +313,12 @@ func validateApprovalClaim(v *View, claim ApprovalClaim) error {
 		return err
 	}
 	cp := v.Checkpoints[segment.CheckpointID]
-	if call.Observation != nil || !containsID(cp.CallIDs, claim.CallID) || !approvalCheckpointCall(v, cp, call) {
+	original := containsID(cp.CallIDs, claim.CallID) && approvalCheckpointCall(v, cp, call)
+	if segment.DirectResumeID != "" {
+		b, exists := v.DirectResumes[segment.DirectResumeID]
+		original = exists && b.CallID == claim.CallID && b.Scope == call.Scope && v.ValidateDirectBinding(b) == nil
+	}
+	if call.Observation != nil || !original {
 		return product.NewError(product.CodePermissionDenied, "approval is not for a resumable original call")
 	}
 	return approvalPolicy(v, frozen)
@@ -373,11 +397,7 @@ func applyApprovalRecord(v *View, r store.Record) error {
 		if err := json.Unmarshal(r.Payload, &binding); err != nil {
 			return err
 		}
-		in := v.Interactions[binding.InteractionID]
-		approval := v.Approvals[binding.ApprovalID]
-		cp, exists := v.Checkpoints[binding.CheckpointID]
-		call := v.Calls[approval.CallID]
-		if !exists || binding.ID != binding.CheckpointID+":"+binding.InteractionID || in.Kind != "approval" || in.ApprovalID != approval.ID || approval.InteractionID != in.ID || binding.TargetRef == "" || !containsID(cp.InteractionIDs, in.ID) || !containsID(cp.CallIDs, approval.CallID) || !approvalCheckpointCall(v, cp, call) {
+		if !validApprovalBinding(v, binding) {
 			return product.NewError(product.CodeIncompatibleVersion, "invalid approval checkpoint binding")
 		}
 		return putImmutable(&v.ApprovalBindings, r.ID, binding.ID, binding)
@@ -390,7 +410,7 @@ func applyApprovalRecord(v *View, r store.Record) error {
 		binding := v.ApprovalBindings[answer.BindingID]
 		op := v.Operations[answer.OperationID]
 		frozen, call, err := approvalDescription(v, approval)
-		if err != nil || call.Claimed || call.Observation != nil || approval.State != "asked" || !validApprovalDecision(answer.Decision) || answer.Principal == "" || answer.Principal != op.Principal || op.Kind != "respond_interaction" || op.SessionID != approval.Scope.SessionID || op.Receipt.Target != answer.InteractionID || op.Receipt.AcceptedCommit != v.LastSeq+1 || answer.InteractionID != approval.InteractionID || binding.ApprovalID != approval.ID || binding.InteractionID != answer.InteractionID || binding.TargetRef == "" || approvalTime(approval, answer.DecidedAt) != nil || approvalPolicy(v, frozen) != nil {
+		if err != nil || call.Claimed || call.Observation != nil || approval.State != "asked" || !validApprovalDecision(answer.Decision) || answer.Principal == "" || answer.Principal != op.Principal || op.Kind != "respond_interaction" || op.SessionID != approval.Scope.SessionID || op.Receipt.Target != answer.InteractionID || op.Receipt.AcceptedCommit != v.LastSeq+1 || answer.InteractionID != approval.InteractionID || binding.ApprovalID != approval.ID || binding.InteractionID != answer.InteractionID || !validApprovalBinding(v, binding) || approvalTime(approval, answer.DecidedAt) != nil || approvalPolicy(v, frozen) != nil {
 			return product.NewError(product.CodeIncompatibleVersion, "invalid approval decision")
 		}
 		return putImmutable(&v.ApprovalDecisions, r.ID, answer.ApprovalID, answer)

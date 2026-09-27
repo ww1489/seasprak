@@ -56,6 +56,11 @@ func startApprovalSession(t *testing.T, decisionHook func(context.Context, agent
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Close(context.Background()) })
+	// Approval semantics do not depend on real-time activity renewal scheduling.
+	// Expiry tests explicitly advance or replace this clock.
+	if err := s.rt.do(t.Context(), func(rt *runtime) error { rt.clock = newManualActivityClock(); return nil }); err != nil {
+		t.Fatal(err)
+	}
 	input, err := s.SubmitInput(t.Context(), agent.InputCommand{Kind: "prompt", Content: json.RawMessage(`{"text":"hello"}`)})
 	if err != nil {
 		t.Fatal(err)

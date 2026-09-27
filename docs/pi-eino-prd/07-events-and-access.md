@@ -1,5 +1,7 @@
 # 第 7 章：事件、控制钩子与前端接入
 
+**2026-09-27 已确认，待实现：**用户直接 shell 是受信宿主显式入口，不产生模型工具请求、审批交互或可 Resume checkpoint，不受通用控制命令的持久化执行幂等承诺覆盖；两次显式调用是两次执行，SDK 不自动重试。保留 command 输出、退出码、超时、主动取消及真实退出状态，日志保存失败独立提示而不覆盖命令结果。模型工具和其他受控操作仍遵循本章审批/恢复/权限规则。未来 HTTP 接入不能仅凭客户端 origin/user 字段进入宿主 shell；远程入口认证及暴露方式留 P3，不由本次文档变更自动开放。
+
 状态：完整讨论稿。对应教程 [M07 事件驱动](https://dg-ai-notes.pages.dev/modules/ch07-event-driven)。前端实现不纳入产品范围、使用最小 Web 页面验证已确认；工作区、默认基础能力、安全与取消后队列已获确认；HTTP/SSE 具体路径和 DTO 仍是可评审建议。状态机引用[执行状态契约](03-agent-loop.md)，消息结构引用[第 6 章](06-messages.md)。
 
 对象名称与[第 2 章的职责划分](02-architecture-boundaries.md#23-与-pi-对齐的对象名称与职责)一致：AgentSession 协调会话操作和事件发布，SessionManager 负责持久提交；HTTP/SSE 仅映射这些公开能力。
@@ -214,7 +216,7 @@ Eino `MessageStream` 有独占消费约束。建议由 Agent 统一消费并报�
 | `message.finalized` | 完整或 incomplete 的消息已提交，附状态与原因 | 持久；不承诺每个 token 均已保存 |
 | `tool.requested / tool.started / tool.finished` | 完整调用被接受、实际执行开始、本次执行观察结束 | 持久关键事实；许可占用不等于 started，缺少 started 不证明未执行；finished 可带 outcome_unknown；拒绝可直接由 requested 到 finished(denied) |
 | `tool.state_changed` | 执行未知、停止待确认或核对结果已提交 | 持久；核对记录关联原调用，不代表再次执行或第二条工具结果消息 |
-| `tool.progress` | 命令输出/进度更新 | 临时；最终结果摘要或附件引用进入消息 |
+| `tool.progress` | 命令实际输出/可选更新；本次 P2 不要求动态百分比或阶段进度 | 临时；保留已有 SDK 实际输出回调，最终结果摘要或附件引用进入消息；不代表原生 Streamable 验收 |
 | `interaction.requested / interaction.resolved` | 可回答的澄清、确认或审批请求 | 持久；关联 interactionId、traceId、工具调用/作用域及有效期 |
 | `approval.asked / approval.decided / security.review_decided` | DSH 式一次审批及启用后的自动审核决定；后者为本产品最小审计增强 | 关联冻结执行描述；决定先提交，再按 M12 占用许可和启动；占用/核对属于原调用记录，不强制新增公共事件族 |
 | `security.policy_changed` | 已提交的常驻安全模式/策略变更 | 持久；模型状态快照按 M08 追加；不能暗自扩大旧批准 |

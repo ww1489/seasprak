@@ -1,5 +1,7 @@
 # 03 执行循环与调度
 
+**2026-09-27 来源边界修订，待实现：**本章 Agent Turn、工具预算、审批等待、资源效果去重与恢复调度不承载用户直接 shell。用户 shell 由受信宿主显式启动，不调用 BeginTurn/ClaimTool，不纳入 Agent 活动预算或自动重放队列；再次显式提交是新执行。保留超时、主动取消和真实退出状态，不把 context 取消当成已停止。工作区只是初始目录，不能宣称该入口与 Agent 受控工具之间具备文件隔离或共享排他保护；外部修改仍由模型工具的版本/前置条件检查发现。模型工具的调度与取消保护保持不变，详见 [05 §2.1](05-tools-and-operations.md)。
+
 对应 PRD M03、SYS-01/02/03/05/09/10/17。AgentSession 决定产品状态，Agent 的 Eino 适配承接执行，不实现第二个 Runner.Run 轮询版 ReAct。
 
 <a id="inputs"></a>
@@ -64,7 +66,7 @@ D05-状态图：waiting_input/paused 仍占有顶层执行范围，不发布 set
 | WrapModel | 04 的 attempt 聚合与完整响应接纳门；不能在此无记录地改历史 |
 | AfterModelRewriteState | 完整消息与无工具轮次的处理；所有提交按身份去重 |
 | WithAfterToolCallsHook | state 已回填整个工具批次后，结束 Turn 并执行轮后契约 |
-| 四种工具 wrapper | 每条执行路径进入 05 的统一安全管道 |
+| Invokable / EnhancedInvokable 同步工具 wrapper | 本次 P2 两条执行路径进入 05 的统一安全管道；原生 Streamable / EnhancedStreamable 保持装配拒绝，不修改 Eino 或维护 fork |
 | OnAgentEvents + Wait | 收敛真实错误、CancelError、Interrupt、checkpoint 结果及剩余输入 |
 
 TurnLoop 的一次调度不等于产品 Turn。普通有工具续轮在同一 DeepAgent 内完成；只有自然结束后的续输入、受控暂停/恢复等需要新的内部执行段。

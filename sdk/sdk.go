@@ -153,6 +153,8 @@ type (
 	BuiltinOptions             = tools.BuiltinOptions
 	OutputLimits               = tools.OutputLimits
 	Preview                    = tools.Preview
+	BackendCapabilities        = agent.BackendCapabilities
+	BackendCapabilityReporter  = agent.BackendCapabilityReporter
 	FileOperations             = agent.FileOperations
 	ListRequest                = agent.ListRequest
 	ListResult                 = agent.ListResult

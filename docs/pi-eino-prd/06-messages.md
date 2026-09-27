@@ -74,7 +74,7 @@ pi 的 `Message` 包含以下三类。本产品沿用它们的语义，不另造
 | 内部类型 | 为什么需要单独保存 | 默认模型视图 |
 | --- | --- | --- |
 | 三类标准消息 | 保留输入、模型回复、工具结果及调用关系 | 保留对应 Agentic 内容块 |
-| 命令执行记录 | 用户直接执行命令，保存 command/output/exitCode/取消与截断信息；区别于模型发起的工具调用 | 格式化为 user 上下文；明确排除时跳过 |
+| 命令执行记录 | 用户直接 shell 的 command/output/exitCode/取消与截断信息；仅为历史，不创建工具调用/审批/恢复票据，不因重放而执行；日志保存失败单独标记 | 格式化为 user 上下文；明确排除时跳过 |
 | 通用 CustomMessage | 保存 customType、content、可选 details、display；content 是已经适合模型读取的用户输入内容块 | 转换为 user；details 留给应用消费，display 不参与转换判断 |
 | BranchSummary / CompactionSummary | 保存摘要正文、程序文件附录及来源/覆盖范围；完整文件集合保留在结构化记录中 | 以有明确摘要标识的 user 内容参与上下文；分别标明“另一分支探索”和“主线历史压缩”，只投影允许且有界的附录，详见 M08/M09 |
 

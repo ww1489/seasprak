@@ -72,6 +72,9 @@ func callPrepare(ctx context.Context, prepare func(context.Context, json.RawMess
 		}
 	}()
 	out, err = prepare(ctx, raw)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
 	if err != nil {
 		return nil, product.NewError(product.CodeInvalidArgument, "tool argument preparation failed")
 	}
@@ -83,7 +86,11 @@ func callValidation(ctx context.Context, validate func(context.Context, json.Raw
 			err = product.NewError(product.CodeInternal, "tool argument validation failed")
 		}
 	}()
-	if err := validate(ctx, raw); err != nil {
+	err = validate(ctx, raw)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if err != nil {
 		return product.NewError(product.CodeInvalidArgument, "tool argument validation failed")
 	}
 	return nil
@@ -132,7 +139,10 @@ func runBeforeHooks(ctx context.Context, hooks []func(context.Context, agent.Fro
 					err = product.NewError(product.CodeInternal, "tool call hook failed")
 				}
 			}()
-			if hookErr := hook(ctx, frozen.Clone()); hookErr != nil {
+			hookErr := hook(ctx, frozen.Clone())
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				err = ctxErr
+			} else if hookErr != nil {
 				err = product.NewError(product.CodePermissionDenied, "tool call hook denied execution")
 			}
 		}()

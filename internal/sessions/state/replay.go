@@ -68,6 +68,8 @@ func applyControl(v *View, r store.Record) error {
 		return applyExecutionPolicy(v, r)
 	case "approval_binding", "approval_decision", "approval_claim":
 		return applyApprovalRecord(v, r)
+	case "direct_resume":
+		return applyDirectResume(v, r)
 	case "resumed_execution":
 		return applyResumedExecution(v, r)
 	case "model_attempt", "selection", "frozen_execution", "interaction", "approval", "checkpoint_ref":

@@ -34,7 +34,11 @@ func (rt *runtime) RequestToolApproval(ctx context.Context, scope agent.Executio
 		if err != nil {
 			return nil, err
 		}
-		if decision != agent.DecisionAsk || rt.opts.Principal == "" || resumeBuildFingerprint(rt.opts) == "" {
+		fingerprint := resumeBuildFingerprint(rt.opts)
+		if frozen.Origin == "direct" {
+			fingerprint = directBuildFingerprint(rt.opts)
+		}
+		if decision != agent.DecisionAsk || rt.opts.Principal == "" || fingerprint == "" {
 			return nil, product.NewError(product.CodePermissionDenied, "execution is not awaiting a supported approval")
 		}
 		in, err := rt.manager.RequestApproval(ctx, rt.manager.View().LastSeq, frozen.ID, "Approve this operation once?", rt.approvalNow())
@@ -157,10 +161,17 @@ func (rt *runtime) toolApprovalDecision(v state.View, frozen agent.FrozenExecuti
 		}
 		binding := v.ApprovalBindings[answer.BindingID]
 		consumption, consumed := v.ApprovalClaims[approval.ID]
-		if rt.active.resume == nil || binding.CheckpointID != rt.active.resume.ID || claimed != consumed || (consumed && (consumption.ExecutionID != rt.active.scope.ExecutionID || consumption.CallID != frozen.CallID)) {
+		bound := rt.active.resume != nil && binding.CheckpointID == rt.active.resume.ID && binding.DirectResumeID == ""
+		if frozen.Origin == "direct" {
+			bound = rt.active.directResume != nil && binding.DirectResumeID == rt.active.directResume.ID && binding.CheckpointID == "" && rt.active.directResume.CallID == frozen.CallID && rt.active.directResume.FrozenHash == frozen.Hash
+		}
+		if !bound || claimed != consumed || (consumed && (consumption.ExecutionID != rt.active.scope.ExecutionID || consumption.CallID != frozen.CallID)) {
 			return agent.DecisionDeny, product.NewError(product.CodePermissionDenied, "approval is not for the current resumed execution")
 		}
 		return agent.DecisionAllow, nil
+	}
+	if frozen.Origin == "direct" && rt.opts.Principal != "" && directBuildFingerprint(rt.opts) != "" {
+		return agent.DecisionAsk, nil
 	}
 	if _, hasBlobs := rt.opts.Store.(store.CheckpointBlobs); hasBlobs && rt.opts.Principal != "" && resumeBuildFingerprint(rt.opts) != "" {
 		return agent.DecisionAsk, nil
@@ -215,6 +226,9 @@ func (rt *runtime) snapshotApprovals(v state.View) (map[string]state.Interaction
 		tr := v.Traces[in.Scope.TraceID]
 		in.TargetRef = "" // Framework targets are never public response inputs.
 		if tr != nil {
+			if binding, bound := v.ApprovalBindings[tr.DirectResumeID+":"+id]; bound && binding.DirectResumeID != "" {
+				in.State = "ready"
+			}
 			if binding, bound := v.ApprovalBindings[tr.CheckpointID+":"+id]; bound {
 				in.State, in.CheckpointRef = "ready", binding.CheckpointID
 			}

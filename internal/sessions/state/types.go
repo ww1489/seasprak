@@ -19,6 +19,7 @@ type TraceState struct {
 	InvocationID     string            `json:"invocationId,omitempty"`
 	ExecutionID      string            `json:"executionId,omitempty"`
 	CheckpointID     string            `json:"checkpointId,omitempty"`
+	DirectResumeID   string            `json:"directResumeId,omitempty"`
 	ModelSelectionID string            `json:"modelSelectionId,omitempty"`
 	ToolSelectionID  string            `json:"toolSelectionId,omitempty"`
 	Limits           config.Limits     `json:"limits"`
@@ -77,6 +78,7 @@ type View struct {
 	Selections         map[string]Selection
 	Checkpoints        map[string]CheckpointRef
 	ResumedExecutions  map[string]ResumedExecution
+	DirectResumes      map[string]DirectResumeBinding
 	RepairRequired     bool
 
 	// Scheduling releases are independent of the original claim and budget.

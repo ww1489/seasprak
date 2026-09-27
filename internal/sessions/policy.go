@@ -11,6 +11,19 @@ import (
 
 func initializeExecutionPolicy(opts Options, manager *state.Manager) error {
 	current := manager.View().ExecutionPolicy
+	if !opts.ReadOnly {
+		requested := current
+		if opts.Policy != nil {
+			requested = *opts.Policy
+		}
+		policy, err := state.NormalizeExecutionPolicy(requested)
+		if err != nil {
+			return err
+		}
+		if err := opts.Operations.ValidateCapabilities(context.Background(), policy.SandboxMode); err != nil {
+			return err
+		}
+	}
 	if current.Revision != 0 {
 		if opts.Policy == nil {
 			return nil
@@ -54,6 +67,13 @@ func (rt *runtime) setExecutionPolicy(ctx context.Context, expected uint64, p ag
 		if err := rt.writable(); err != nil {
 			return err
 		}
+		policy, err := state.NormalizeExecutionPolicy(p)
+		if err != nil {
+			return err
+		}
+		if err := rt.opts.Operations.ValidateCapabilities(ctx, policy.SandboxMode); err != nil {
+			return err
+		}
 		return rt.manager.SetExecutionPolicy(ctx, expected, p)
 	})
 }
@@ -76,6 +96,19 @@ func (rt *runtime) ExecutionPolicyRef(ctx context.Context, scope agent.Execution
 			return nil, product.NewError(product.CodeResourceUnavailable, "execution policy is unavailable")
 		}
 		return p.Ref, nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return value.(string), nil
+}
+
+func (rt *runtime) ExecutionSandboxMode(ctx context.Context, scope agent.ExecutionScope) (string, error) {
+	value, err := rt.call(ctx, func(rt *runtime) (any, error) {
+		if !rt.matchesExecution(scope) {
+			return nil, product.NewError(product.CodeStateConflict, "execution is no longer active")
+		}
+		return rt.manager.View().ExecutionPolicy.SandboxMode, nil
 	})
 	if err != nil {
 		return "", err
@@ -152,6 +185,14 @@ func (rt *runtime) checkToolPolicyState(ctx context.Context, scope agent.Executi
 	}
 	if p.SandboxMode == "read-only" && frozen.Effect != "read" && frozen.Effect != "none" {
 		return agent.DecisionDeny, product.NewError(product.CodePermissionDenied, "read-only policy denies declared side effects")
+	}
+	if frozen.BackendID == "process-operations" || frozen.BackendID == "file-operations" {
+		if frozen.SandboxMode != p.SandboxMode {
+			return agent.DecisionDeny, product.NewError(product.CodeResourceUnavailable, "controlled backend mode differs from current policy")
+		}
+		if err := rt.opts.Operations.ValidateFrozenCapabilities(ctx, frozen); err != nil {
+			return agent.DecisionDeny, err
+		}
 	}
 	if frozen.RequestedGrantRef != "" {
 		if p.ApprovalPolicy == "never" {

@@ -73,7 +73,17 @@ func TestApprovalWaitsForDurableCheckpointWithoutExecuting(t *testing.T) {
 				t.Fatalf("approved checkpoint cannot explicitly resume: %v", err)
 			}
 			waitResumeCondition(t, func() bool { return terminal(manager.View().Traces[input.TraceID].State) })
-			tr = manager.View().Traces[input.TraceID]
+			resumed := manager.View()
+			tr = resumed.Traces[input.TraceID]
+			if tr.ExecutionID == "" || tr.ExecutionID == v.Traces[input.TraceID].ExecutionID || len(v.Calls) != 1 || len(resumed.Calls) != 1 {
+				t.Fatalf("resume did not retain one call in a new execution segment: before=%+v after=%+v", v.Traces[input.TraceID], tr)
+			}
+			for id, original := range v.Calls {
+				current := resumed.Calls[id]
+				if current.Scope != original.Scope || current.Call != original.Call || !current.Claimed || current.Observation == nil || !current.Observation.Executed || current.Observation.Status != "succeeded" {
+					t.Fatalf("resumed selection check lost the original call/Turn or result: before=%+v after=%+v", original, current)
+				}
+			}
 			if tr.State != "completed" || runs.Load() != 1 || model.Calls() != 2 || tr.Usage.ToolExecutions != 1 {
 				t.Fatalf("approved execution changed counts: trace=%+v runs=%d models=%d", tr, runs.Load(), model.Calls())
 			}

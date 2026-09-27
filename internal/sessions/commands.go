@@ -155,10 +155,16 @@ func (rt *runtime) executeCommandSegment(frame *execution, inputID string) error
 		return err
 	}
 	call := agent.ToolRecord{Scope: frame.scope, Call: agent.FrozenCall{CallID: envelope.OperationID, ProviderCallID: envelope.OperationID, OperationID: envelope.OperationID, Name: envelope.Name, Arguments: string(envelope.Arguments), Generation: frame.scope.Generation}}
-	if err := rt.do(context.Background(), func(rt *runtime) error { return rt.manager.SaveDirectCall(context.Background(), call) }); err != nil {
-		return err
+	if frame.directResume == nil {
+		if err := rt.do(context.Background(), func(rt *runtime) error { return rt.manager.SaveDirectCall(context.Background(), call) }); err != nil {
+			return err
+		}
 	}
 	out, runErr := exec.RunDirect(frame.ctx, frame.scope, envelope.OperationID, envelope.Name, string(envelope.Arguments))
+	var wait *agent.ApprovalWait
+	if errors.As(runErr, &wait) {
+		return runErr
+	}
 	result, _ := json.Marshal(out)
 	commitErr := rt.do(context.Background(), func(rt *runtime) error {
 		next := "completed"
@@ -169,6 +175,9 @@ func (rt *runtime) executeCommandSegment(frame *execution, inputID string) error
 			if errRef == "" {
 				errRef = out.Status
 			}
+		}
+		if errors.Is(runErr, context.Canceled) || frame.ctx.Err() != nil {
+			next = "cancelled"
 		}
 		return rt.manager.SaveCommand(context.Background(), frame.scope, inputID, envelope.OperationID, envelope.Name, envelope.Arguments, result, next, errRef)
 	})

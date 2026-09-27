@@ -101,6 +101,11 @@ func (rt *runtime) matchesCallScope(scope agent.ExecutionScope, call agent.ToolR
 	if call.Scope == scope && rt.matchesExecution(scope) {
 		return true
 	}
+	if direct := rt.active.directResume; direct != nil && call.Call.CallID == direct.CallID && call.Scope == direct.Scope {
+		original := call.Scope
+		original.ExecutionID = rt.active.scope.ExecutionID
+		return scope == call.Scope || (scope == original && rt.matchesExecution(scope))
+	}
 	resume := rt.active.resume
 	if resume == nil || !sameLogicalScope(call.Scope, resume.Scope) {
 		return false
@@ -143,6 +148,9 @@ func (s *AgentSession) Resume(ctx context.Context, cmd ResumeCommand) (state.Ope
 		view := rt.manager.View()
 		if cmd.ExpectedRevision != view.LastSeq {
 			return nil, product.NewError(product.CodeStateConflict, "session revision changed")
+		}
+		if tr := view.Traces[cmd.TraceID]; tr != nil && tr.Kind == "command" {
+			return rt.resumeCommand(ctx, cmd, operation, view)
 		}
 		cp, err := rt.validateResume(ctx, cmd.TraceID, view)
 		if err != nil {

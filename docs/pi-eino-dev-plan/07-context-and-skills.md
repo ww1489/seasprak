@@ -69,7 +69,7 @@ D16-skill 时序：复用 Eino skill Backend.List/Get，Backend 是不可变 gen
 | 类型 | 默认方向 | 行/字节边界与续读 |
 | --- | --- | --- |
 | read_file | 选定范围从头保留完整行 | 同时受行/字节上限；首行过长返回片段读入口，不伪装空文件 |
-| execute stdout/stderr | 保留尾部 | 最后一行可取 UTF-8 安全尾片并标 partialLine；完整日志产物先保存 |
+| execute stdout/stderr | 保留头尾，合计不超过限额 | UTF-8 安全部分行标 partialLine；超长时尽力保存脱敏完整日志，保存失败仍返回预览和原结果，不重跑 |
 | grep | 命中数量、总字节，再单行限字符 | 保留源路径/行号；超长行给片段读信息 |
 | 结构化工具 | 选择声明的摘要字段 | details/artifact 引用，不截坏 JSON |
 

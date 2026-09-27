@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	goruntime "runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,9 +17,12 @@ import (
 	"github.com/ww1489/seasprak/internal/testkit"
 )
 
-func outputSession(t *testing.T, id string, model *testkit.FakeModel, callback func(context.Context, json.RawMessage, agent.ToolOutputSink) (string, error)) *AgentSession {
+func outputSession(t *testing.T, id string, model *testkit.FakeModel, callback func(context.Context, json.RawMessage, agent.ToolOutputSink) (string, error), interfaces ...string) *AgentSession {
 	t.Helper()
 	def := tools.Definition{Name: "work", Version: "1", Schema: json.RawMessage(`{"type":"object"}`), Execution: tools.ExecutionDescription{BackendID: "trusted-run", Effect: "read"}, RunWithOutput: callback}
+	if len(interfaces) != 0 {
+		def.ToolInterface = interfaces[0]
+	}
 	s, err := CreateAgentSession(t.Context(), Options{SessionID: id, Workspace: t.TempDir(), StateRoot: "memory", Profile: ProfileMemory, Model: model, Tools: []tools.Definition{def}})
 	if err != nil {
 		t.Fatal(err)
@@ -39,6 +43,13 @@ func outputModel() *testkit.FakeModel {
 }
 
 func TestCancelledUncooperativeToolDoesNotStopBeforeReturnOrPublishLateText(t *testing.T) {
+	for _, kind := range []string{"invokable", "enhanced-invokable"} {
+		t.Run(kind, func(t *testing.T) { testCancelledUncooperativeTool(t, kind) })
+	}
+}
+
+func testCancelledUncooperativeTool(t *testing.T, kind string) {
+	var runs atomic.Int32
 	release := make(chan struct{})
 	defer func() {
 		select {
@@ -50,13 +61,14 @@ func TestCancelledUncooperativeToolDoesNotStopBeforeReturnOrPublishLateText(t *t
 	entered := make(chan agent.ToolOutputSink, 1)
 	model := outputModel()
 	s := outputSession(t, "cancel-output", model, func(ctx context.Context, _ json.RawMessage, sink agent.ToolOutputSink) (string, error) {
+		runs.Add(1)
 		if err := sink.WriteOutput(ctx, agent.ToolOutputChunk{Text: "before cancel"}); err != nil {
 			return "", err
 		}
 		entered <- sink
 		<-release // deliberately ignores context cancellation
 		return "backend exited", nil
-	})
+	}, kind)
 	sub := s.SubscribeEvents(config.DefaultLimits())
 	defer sub.Close()
 	receipt := submitOutput(t, s)
@@ -70,8 +82,14 @@ func TestCancelledUncooperativeToolDoesNotStopBeforeReturnOrPublishLateText(t *t
 	if delta.Text != "before cancel" {
 		t.Fatalf("initial output=%+v", delta)
 	}
+	frame := activityFrame(t, s)
 	cancelDone := make(chan error, 1)
 	go func() { cancelDone <- s.Cancel(context.Background(), receipt.TraceID) }()
+	select {
+	case <-frame.ctx.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancellation did not reach execution")
+	}
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		v, err := s.Snapshot(t.Context())
@@ -89,6 +107,14 @@ func TestCancelledUncooperativeToolDoesNotStopBeforeReturnOrPublishLateText(t *t
 	}
 	if v.Traces[receipt.TraceID].State != "cancelling" || v.Traces[receipt.TraceID].Settled || v.Traces[receipt.TraceID].ExecutionStopped || model.Calls() != 1 {
 		t.Fatalf("stopped before backend exit: %+v model=%d", v.Traces[receipt.TraceID], model.Calls())
+	}
+	if runs.Load() != 1 || len(v.Calls) != 1 || v.Traces[receipt.TraceID].Usage.ToolExecutions != 1 {
+		t.Fatalf("wrong in-flight invocation count: runs=%d calls=%d usage=%+v", runs.Load(), len(v.Calls), v.Traces[receipt.TraceID].Usage)
+	}
+	for _, call := range v.Calls {
+		if !call.Claimed || call.Observation != nil {
+			t.Fatalf("observation published before backend exit: %+v", call)
+		}
 	}
 	select {
 	case err := <-cancelDone:
@@ -113,6 +139,14 @@ func TestCancelledUncooperativeToolDoesNotStopBeforeReturnOrPublishLateText(t *t
 	}
 	if v.Traces[receipt.TraceID].State != "cancelled" || !v.Traces[receipt.TraceID].ExecutionStopped || model.Calls() != 1 {
 		t.Fatalf("wrong cancellation outcome: %+v model=%d", v.Traces[receipt.TraceID], model.Calls())
+	}
+	if runs.Load() != 1 || v.Traces[receipt.TraceID].Usage.ToolExecutions != 1 || len(v.Calls) != 1 {
+		t.Fatalf("runs=%d trace=%+v calls=%d", runs.Load(), v.Traces[receipt.TraceID], len(v.Calls))
+	}
+	for _, call := range v.Calls {
+		if !call.Claimed || call.Observation == nil || !call.Observation.Executed || call.Observation.Status != "succeeded" || call.Observation.Content != "backend exited" || call.Observation.SideEffect != "none" {
+			t.Fatalf("cancellation lost actual backend observation: %+v", call)
+		}
 	}
 }
 

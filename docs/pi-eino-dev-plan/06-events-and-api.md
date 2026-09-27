@@ -71,7 +71,9 @@ func (s *AgentSession) Subscribe(context.Context, SubscribeOptions) (Subscriptio
 func (s *AgentSession) Close(context.Context) error
 ```
 
-另提供 GetTrace/GetOperation/ListMessages/ListBranches、ForkBranch/NavigateBranch/Compact、SetDefaultModel/SelectNextTurnModel/SetActiveTools、ReloadResources、ExecuteCommand、InvokeCommand。它们使用相同 CommandMeta（幂等键、预期版本、受信 caller），不通过直接写 Store 实现。`ExecuteWorkflow` 不再作为第三种公开产品入口；独立工作流通过 SubmitInput 指定 targetAgent 执行。
+2026-09-27 最新确认：ExecuteCommand 的用户 shell 场景采用独立宿主入口，不进入工具审批、Agent 预算、执行票据或持久化执行去重；保留 command/output/exitCode、超时和主动取消，不制造工具调用或可 Resume checkpoint。每次显式调用是新执行，调用方不能依赖通用 CommandMeta 幂等键防止重复启动；SDK 不自动重试。旧 direct 审批记录不得经此入口自动恢复；模型 RespondApproval/Resume 保持原契约。新语义尚未实现，旧接口迁移与外部消费者验证列入 Step 16.1/22。
+
+另提供 GetTrace/GetOperation/ListMessages/ListBranches、ForkBranch/NavigateBranch/Compact、SetDefaultModel/SelectNextTurnModel/SetActiveTools、ReloadResources、ExecuteCommand、InvokeCommand。除上述用户 shell 入口外，它们使用相同 CommandMeta（幂等键、预期版本、受信 caller），不通过直接写 Store 实现。`ExecuteWorkflow` 不再作为第三种公开产品入口；独立工作流通过 SubmitInput 指定 targetAgent 执行。
 
 Subscription 提供只读 Events channel 和幂等 Close。SDK callback 便利层逐订阅调用并隔离 panic/error；达到缓冲边界注销或要求 resync。关闭后不再投新事件，正在执行的 callback 可结束。SessionSnapshot 包含 durable cursor、active trace/turn、interactions、pending/undelivered/held queue、operation 和聚合消息视图，按权限脱敏。
 
@@ -108,7 +110,7 @@ Subscription 提供只读 Events channel 和幂等 Close。SDK callback 便利�
 | GET /v1/sessions/{sid}/capabilities | 无 | 模型/工具/后端/限制、可选择 Agent 和版本 |
 | GET /v1/sessions/{sid}/workflows | 无 | 已装配定义、输入输出、导入诊断及恢复能力 |
 | POST /v1/sessions/{sid}/commands/{name} | schema 参数 | 202；权限/空闲条件按登记 |
-| POST /v1/sessions/{sid}/executions/commands | command、cwd、shell 配置引用 | 202；直接命令仍走工具管道 |
+| POST /v1/sessions/{sid}/executions/commands | command、cwd、shell 配置引用 | P3 适配待设计；不得把宿主用户 shell 入口直接开放给未受信远程调用方，不能用客户端来源字段绕过模型工具权限 |
 | GET /v1/sessions/{sid}/artifacts/{aid} | range | 授权读取；未知/变更明确报错 |
 | GET /v1/sessions/{sid}/snapshot | 无 | 一致快照、durableSeq、临时流位置 |
 | GET /v1/sessions/{sid}/events | cursor / traceId | text/event-stream |
@@ -155,7 +157,7 @@ ReconcileCommand 包含 invocationId/toolCallId/observationId/expectedRevision�
 
 持久事件包括 input.accepted/consumed/cancelled、trace.state_changed/settled、agent_start/end、turn_start/end、message.finalized、tool.requested/started/finished/state_changed、interaction.requested/resolved、approval.asked/decided、security.policy_changed/review_decided、context.compacted、session.branch_changed、extension.generation_changed/error、tools.selection_changed、model.changed、compaction.started/finished/failed、retry.started/finished、queue.changed。
 
-message.started/delta/snapshot、tool.progress 为临时事件；diagnostic 区分持久故障和临时信息。一次审批用同一 interaction/approval 映射，不弹两次问题。tool.started 需要实际启动事实，许可占用不提前发 started。
+message.started/delta/snapshot、tool.progress 为临时事件；diagnostic 区分持久故障和临时信息。本次 P2 保留 SDK 实际输出回调，不要求动态百分比或阶段进度；图中“工具进度”和 tool.progress 是事件语义，不要求启用原生 Streamable / EnhancedStreamable，也不替代最终观察或后端停止证据。模型流式消息契约不变。一次审批用同一 interaction/approval 映射，不弹两次问题。tool.started 需要实际启动事实，许可占用不提前发 started。
 
 顺序：accepted 先于 consumed；model 来源先提交助手工具请求，workflow_node/direct 先提交对应节点/受信调用事实，再产生工具结局，后两者不伪造模型请求或配对消息；finalized 后无新 delta；有模型 Turn 时 turn_end 在批次结算后；终态消息、效果、队列去向和 Trace 终态先一致提交，随后 settled。agent_end 只关闭执行段。回放可重复，按 eventId 去重，不承诺网络 exactly-once。
 

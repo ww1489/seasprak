@@ -156,14 +156,15 @@ func TestEnhancedToolRejectsBeforeBackendForSameReasons(t *testing.T) {
 			auth             interfaceAuthorizer
 			budget           bool
 			wantCode         string
+			wantStatus       string
 			wantClaims       int
 			wantSaves        int
 			wantStarts       int32
 		}{
-			{name: "denied", auth: interfaceAuthorizer{decision: agent.DecisionDeny}, wantSaves: 1},
-			{name: "ask-unavailable", auth: interfaceAuthorizer{decision: agent.DecisionAsk, err: product.NewError(product.CodeResourceUnavailable, "approval unavailable")}, wantCode: product.CodeResourceUnavailable, wantSaves: 1},
-			{name: "ask-without-grant", auth: interfaceAuthorizer{decision: agent.DecisionAsk}, wantCode: product.CodeResourceUnavailable, wantSaves: 1},
-			{name: "budget", auth: interfaceAuthorizer{decision: agent.DecisionAllow}, budget: true, wantCode: product.CodeBudgetExhausted, wantSaves: 1},
+			{name: "denied", auth: interfaceAuthorizer{decision: agent.DecisionDeny}, wantSaves: 1, wantStatus: "denied"},
+			{name: "ask-unavailable", auth: interfaceAuthorizer{decision: agent.DecisionAsk, err: product.NewError(product.CodeResourceUnavailable, "approval unavailable")}, wantCode: product.CodeResourceUnavailable, wantSaves: 1, wantStatus: "denied"},
+			{name: "ask-without-grant", auth: interfaceAuthorizer{decision: agent.DecisionAsk}, wantCode: product.CodeResourceUnavailable, wantSaves: 1, wantStatus: "denied"},
+			{name: "budget", auth: interfaceAuthorizer{decision: agent.DecisionAllow}, budget: true, wantCode: product.CodeBudgetExhausted, wantSaves: 1, wantStatus: "failed"},
 			{name: "observation-failure", auth: interfaceAuthorizer{decision: agent.DecisionAllow}, failCommit: "tool_observation", wantClaims: 1, wantStarts: 1},
 		} {
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
@@ -192,6 +193,7 @@ func TestEnhancedToolRejectsBeforeBackendForSameReasons(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				beforeUsage := budg.Snapshot()
 				_, runErr := node.Invoke(t.Context(), &schema.AgenticMessage{Role: schema.AgenticRoleTypeAssistant, ContentBlocks: []*schema.ContentBlock{schema.NewContentBlock(&schema.FunctionToolCall{CallID: "original", Name: "work", Arguments: args})}})
 				if tc.wantCode != "" {
 					var pe *product.Error
@@ -208,6 +210,26 @@ func TestEnhancedToolRejectsBeforeBackendForSameReasons(t *testing.T) {
 				claims, saves, obs := sink.counts(t)
 				if backend.calls.Load() != tc.wantStarts || claims != tc.wantClaims || saves != tc.wantSaves || (tc.wantSaves == 1 && obs.Executed) {
 					t.Fatalf("calls=%d claims=%d saves=%d observation=%+v", backend.calls.Load(), claims, saves, obs)
+				}
+				if tc.wantSaves == 1 && (obs.Status != tc.wantStatus || obs.SideEffect != "none") {
+					t.Fatalf("observation=%+v, want %s/none", obs, tc.wantStatus)
+				}
+				if tc.wantClaims == 0 && budg.Snapshot() != beforeUsage {
+					t.Fatalf("rejected call changed usage: before=%+v after=%+v", beforeUsage, budg.Snapshot())
+				}
+				sink.mu.Lock()
+				defer sink.mu.Unlock()
+				for _, fact := range sink.facts {
+					if fact.Kind != "tool_observation" {
+						continue
+					}
+					var record agent.ToolRecord
+					if err := json.Unmarshal(fact.Payload, &record); err != nil {
+						t.Fatal(err)
+					}
+					if record.Call.CallID != "product-original" || record.Call.ProviderCallID != "original" || record.Call.Name != "work" || record.Call.Arguments != args || record.Scope.SessionID != "session" || record.Scope.Generation != "gen" {
+						t.Fatalf("observation changed accepted identity: %+v", record)
+					}
 				}
 			})
 		}

@@ -119,11 +119,13 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	if !known {
 		return e.reject(ctx, envelope, scope, call, Outcome{Status: "denied", Content: "unknown tool", SideEffect: "none"}, accepted)
 	}
-	if origin == "model" && !accepted {
+	if origin == "model" {
 		if selector, ok := e.sink.(interface {
 			ToolSelected(context.Context, agent.ExecutionScope, string) (bool, error)
 		}); ok {
-			selected, err := selector.ToolSelected(ctx, scope, name)
+			// Acceptance records the model response, not permission to execute.
+			// Keep the original Turn with the current execution identity on resume.
+			selected, err := selector.ToolSelected(ctx, envelope, name)
 			if err != nil {
 				return Outcome{}, err
 			}
@@ -179,6 +181,19 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	if !accepted {
 		frozen.Scope = envelope
 	}
+	if frozen.BackendID == "process-operations" || frozen.BackendID == "file-operations" {
+		frozen.SandboxMode = "workspace-write"
+		if source, ok := e.sink.(agent.ExecutionSandboxModeSource); ok {
+			frozen.SandboxMode, err = source.ExecutionSandboxMode(ctx, envelope)
+			if err != nil {
+				return Outcome{}, err
+			}
+		}
+		frozen.BackendCapabilitiesHash, err = e.operations.CapabilityHash(ctx, frozen.BackendID, frozen.SandboxMode)
+		if err != nil {
+			return e.rejectWithError(ctx, envelope, scope, call, deniedOutcome(err), accepted, err)
+		}
+	}
 	frozen.Hash, err = frozen.Digest()
 	if err != nil {
 		return Outcome{}, err
@@ -187,7 +202,7 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	// trusted Run path keeps its historical fact sequence; production always
 	// commits the descriptor before hooks and authorization.
 	_, sessionSource := e.sink.(agent.ExecutionPolicySource)
-	commitFrozen := sessionSource || len(def.PrepareArguments) != 0 || def.ResolveExecution != nil || len(def.BeforeCall) != 0
+	commitFrozen := sessionSource || frozen.BackendCapabilitiesHash != "" || len(def.PrepareArguments) != 0 || def.ResolveExecution != nil || len(def.BeforeCall) != 0
 	if commitFrozen {
 		if err := e.commitFrozen(ctx, envelope, frozen); err != nil {
 			return Outcome{}, err
@@ -206,7 +221,7 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	}
 	if decision == agent.DecisionAsk {
 		if requester, ok := e.sink.(agent.ApprovalRequester); ok && authErr == nil {
-			if err := e.backendAvailable(def, frozen); err != nil {
+			if err := e.backendAvailable(ctx, def, frozen); err != nil {
 				return e.rejectWithError(ctx, envelope, scope, call, deniedOutcome(err), accepted, err)
 			}
 			wait, err := requester.RequestToolApproval(ctx, envelope, frozen)
@@ -241,7 +256,7 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	if frozen.BackendID == "trusted-run" && def.Run == nil && def.RunWithOutput == nil {
 		return e.reject(ctx, envelope, scope, call, Outcome{Status: "failed", Content: "tool runner is nil", SideEffect: "none"}, accepted)
 	}
-	if err := e.backendAvailable(def, frozen); err != nil {
+	if err := e.backendAvailable(ctx, def, frozen); err != nil {
 		return e.rejectWithError(ctx, envelope, scope, call, deniedOutcome(err), accepted, err)
 	}
 	lease, err := e.acquire(ctx, envelope, frozen)
@@ -266,6 +281,9 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	runCtx, cancel := context.WithTimeout(ctx, frozen.Timeout)
 	defer cancel()
 	deadline, _ := runCtx.Deadline()
+	if err := e.backendAvailable(runCtx, def, frozen); err != nil {
+		return e.rejectWithError(ctx, envelope, scope, call, deniedOutcome(err), accepted, err)
+	}
 	receipt, err := e.budg.ClaimTool(runCtx, e.sink, envelope, call, frozen)
 	if err != nil {
 		if isBudgetOrCancel(err) {
@@ -281,6 +299,9 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	if v, ok := e.sink.(agent.ExecutionTicketValidator); ok {
 		validator = v
 	}
+	if frozen.BackendID == "file-operations" || frozen.BackendID == "process-operations" {
+		validator = backendTicketValidator{operations: e.operations, next: validator}
+	}
 	ticket, err := e.tickets.Issue(receipt, frozen, deadline, validator)
 	if err != nil {
 		retain = true // A durable claim without a start observation is unresolved.
@@ -290,6 +311,15 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	if err := runCtx.Err(); err != nil {
 		out = Outcome{Status: "cancelled", Content: err.Error(), SideEffect: "none"}
 		if _, saveErr := e.saveObservation(ctx, envelope, scope, call, out, true, true); saveErr != nil {
+			return out, errors.Join(err, saveErr)
+		}
+		return out, err
+	}
+	if err := e.operations.ValidateFrozenCapabilities(runCtx, frozen); err != nil {
+		out = deniedOutcome(err)
+		_, saveErr := e.saveObservation(ctx, envelope, scope, call, out, true, true)
+		if saveErr != nil {
+			retain = true
 			return out, errors.Join(err, saveErr)
 		}
 		return out, err
@@ -309,7 +339,10 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	return out, nil
 }
 
-func (e *Executor) backendAvailable(def Definition, frozen agent.FrozenExecution) error {
+func (e *Executor) backendAvailable(ctx context.Context, def Definition, frozen agent.FrozenExecution) error {
+	if err := e.operations.ValidateFrozenCapabilities(ctx, frozen); err != nil {
+		return err
+	}
 	switch frozen.BackendID {
 	case "trusted-run":
 		if (def.Run != nil || def.RunWithOutput != nil) && len(frozen.Argv) == 0 && frozen.Cwd == "" && len(frozen.Mounts) == 0 && frozen.StdinRef == "" && frozen.TempRootRef == "" {

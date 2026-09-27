@@ -38,6 +38,7 @@ type execution struct {
 	pauseID               string
 	checkpoint            *checkpointResult
 	input                 agent.InputRef
+	directResume          *state.DirectResumeBinding
 	resume                *state.CheckpointRef
 	resumeID              string
 	toolChunks            map[string]toolChunkPosition // mailbox-owned, one execution segment only
@@ -272,6 +273,21 @@ func (rt *runtime) segmentFinished(frame *execution, runErr error) {
 	}
 	if runErr == nil && frame.ctx.Err() != nil {
 		runErr = frame.ctx.Err()
+	}
+	var commandWait *agent.ApprovalWait
+	if tr.Kind == "command" && errors.As(runErr, &commandWait) && !rt.closing && frame.ctx.Err() == nil && tr.State == "running" {
+		binding, err := rt.commandWaitBinding(frame, commandWait, v)
+		if err == nil {
+			err = rt.manager.CommitCommandWait(context.Background(), binding)
+		}
+		if err == nil {
+			frame.cancel()
+			frame.toolChunks = nil
+			rt.active = nil
+			close(frame.done)
+			return
+		}
+		runErr = err
 	}
 	if frame.resumeID != "" && rt.manager.Fault() == nil {
 		next := "completed"

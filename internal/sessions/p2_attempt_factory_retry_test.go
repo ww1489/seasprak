@@ -167,7 +167,14 @@ func TestP2AttemptChatFactoryRetriesWithoutRepeatingTools(t *testing.T) {
 				t.Error("message.started missing before first HTTP")
 			}
 			close(release)
-			activityWait(t, frame)
+			waitResumeCondition(t, func() bool {
+				select {
+				case <-frame.done:
+					return true
+				default:
+					return false
+				}
+			})
 			if err := session.rt.do(t.Context(), func(rt *runtime) error {
 				if len(rt.modelChunks) != 0 {
 					t.Error("terminal stream state retained")

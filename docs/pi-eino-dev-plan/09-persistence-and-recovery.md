@@ -136,7 +136,9 @@ D21-恢复点时序：asked 可以先保存但交互在 checkpoint 关联前不�
 三种动作分开：
 1. Open：恢复历史、控制视图及 queued/hold 的原版本引用，不执行。
 2. 新 prompt：在允许状态下受理为新 Trace，固定目标/generation 及依赖引用；执行时使用原绑定并复核当前权限，不重新选版。
-3. Resume：原非终态 Trace 的兼容 checkpoint；不新建 Trace，不重放已完成副作用。
+3. Resume：原非终态 Trace 的兼容模型 checkpoint 或已验证的 direct 专用恢复绑定；不新建 Trace，不重放已完成副作用。
+
+**用户 shell 的恢复边界（2026-09-27 最新确认，待实现）：**用户直接 shell 不生成审批等待、工具 claim 或恢复绑定，不参与模型 checkpoint 和持久化执行去重；command 历史只用于展示/上下文，不是可重放执行队列。Open、Resume、回放、结果或日志保存失败均不得启动或自动重跑命令。旧 direct 审批/恢复记录须保持历史可读，不得静默解释为新用户请求；迁移时明确拒绝不相容恢复，不再扩展旧 direct 恢复能力。模型工具的审批、原调用去重、unknown 核对及全部 blob/Turn/版本校验保持不变。详细迁移和验收见 P2 计划 Step 16.1。
 
 Resume 前依次校验当前状态/权限、未知效果冲突、blob 完整性、工作区和 backend 映射、build/Eino/序列化兼容、generation 可重建、原 targetAgent 与工作流定义/绑定、有效模型/工具选择和扩展状态、日志与 checkpoint 的进度一致性。
 
