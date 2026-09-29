@@ -7,14 +7,14 @@
 - Gemini：`components/model/agenticgemini/v0.2.5`，源码目录 `components/model/agenticgemini`。
 - Claude：`components/model/agenticclaude/v0.1.7`，源码目录 `components/model/agenticclaude`。
 - 2026-09-28 核实两个标签均指向上述基线。补丁来自 `eino-ext-p2-fixes` 隔离副本的未提交修改；该基线 hash 标识原始上游，而不是声称本地修复已经在该提交中。
-- **待验**：私有包 Windows 离线测试及构建已通过；独立补丁审查、产品接线后的完整验收和跨平台交付仍由主线程完成。审查若要求修复，必须同步这些私有副本及回归测试，不能只修改隔离源码。
+- **状态口径（2026-09-29）**：下文保留 2026-09-28 的阶段测试记录，不将早期“待验”视为当前缺陷清单。当前源码含后续缓存、流式参数和响应精度恢复补丁；本轮离线收尾结果统一记录于 `docs/p2-verification.md`。macOS 与 live 按维护者要求延期，不计通过。后续修复必须同步私有副本及产品回归测试，不能只修改隔离源码。
 - 产品直接引用本仓库 `internal/llm/einoext/agenticgemini` 和 `internal/llm/einoext/agenticclaude`；无独立嵌套模块，无本地路径 `replace`，不发布远程 fork。
 
 ## 复制范围与许可证
 
 保留两个包根目录的全部生产 Go 文件，以维持原有构造、转换、流处理、选项、扩展和注册责任。供应商转换仍分别属于各适配器，不进入产品工厂或会话层。额外迁移各包新增的 `protocol_roundtrip_test.go`，并同步审查期间新增的 Gemini `signature_parts_test.go`。
 
-- Gemini 生产文件：`consts.go`、`content_block_extra.go`、`conv.go`、`extension.go`、`message_extra.go`、`model.go`、`option.go`、`register.go`。
+- Gemini 生产文件：`consts.go`、`content_block_extra.go`、`conv.go`、`extension.go`、`function_stream.go`、`message_extra.go`、`model.go`、`option.go`、`register.go`、`response_restore.go`。
 - Claude 生产文件：`consts.go`、`content_block_extra.go`、`convertor.go`、`event_convertor.go`、`extension.go`、`message_extra.go`、`model.go`、`option.go`、`register.go`、`utils.go`。
 - 排除上游其他测试（包括依赖 mockey 的旧测试和 live 测试）、示例、上游模块 go.mod/go.sum、工作区文件、凭据、二进制及 Git 元数据；没有删除或替换 seasprak 原有产品红测。
 - 根 `LICENSE` 原文复制自上游根目录。已核实根 `LICENSE-APACHE` 同为 Apache-2.0 正文；源树没有额外 NOTICE。所有生产文件原有版权与许可头保留，修改文件增加明确的本地修改说明；`NOTICE` 为本项目补充的来源说明。
@@ -35,7 +35,9 @@
 
 8. 2026-09-28 Gemini 网关适配：新增 `function_stream.go` 并接入 `Model.Stream`，仅接受有名称的空参数首片，后接单一 `args.arguments` 字符串匿名片段；单流单待完成调用，累计上限 1 MiB，以完整 JSON 对象提交，保留大整数、签名及调用顺序。拒绝孤立匿名片、冲突 ID、非法对象及超限；不把有名称调用的业务 `arguments` 字段当分片，不支持原生 `PartialArgs`。`gemini_identity_stream_test.go` 经真实工厂验证普通/流式 ID 分配、参数合并、JSON 持久化和下一轮相同身份回传。真实网关已通过工具调用接收，但工具结果回传仍 HTTP 400，不能宣称完整 live 通过。
 
-9. 2026-09-28 提交前数值回放修复：`conv.go` 使用 `UseNumber` 解析工具参数和结果；`model.go` 在 Generate/Stream 发起请求前，通过请求级 `HTTPOptions.ExtraBody.contents` 保留精确历史内容，绕过锁定 genai 中间 map 转换的 float64 舍入。原有 HTTP、预算和取消链路不变。`gemini_numeric_replay_test.go` 验证下一轮实际 HTTP JSON 的整数、小数、身份和签名；Windows 模型包回归通过。此项仅证明出站历史回放；供应商原始响应解析的数值精度仍在调查，不能声明端到端无损。
+9. 2026-09-28 提交前数值回放修复：`conv.go` 使用 `UseNumber` 解析工具参数和结果；`model.go` 在 Generate/Stream 发起请求前，通过请求级 `HTTPOptions.ExtraBody.contents` 保留精确历史内容，绕过锁定 genai 中间 map 转换的 float64 舍入。原有 HTTP、预算和取消链路不变。`gemini_numeric_replay_test.go` 验证下一轮实际 HTTP JSON 的整数、小数、身份和签名；Windows 模型包回归通过。此项当时仅证明出站历史回放，原始响应精度的后续实现见第 10 项；保留这一历史验证范围，不将当时的调查状态视为当前实现缺失。
+
+10. 后续原始响应精度恢复：新增 `agenticgemini/response_restore.go` 的请求级恢复接口，由 `model.go` 在 Generate/Stream 的响应转换前调用。产品 `internal/llm/gemini_response_restore.go` 从原始响应收集有界 `json.RawMessage` 参数，按响应结构与调用身份校验后恢复精确数值，取消及关闭清理收集状态，不将原参数写入公开 Extra 或诊断。实际接线在 `internal/llm/gemini.go`，回归入口为 `gemini_numeric_response_test.go`、`gemini_numeric_boundary_test.go`、`gemini_response_restore_test.go`；源码接线不代替最终测试结果。
 
 ### Claude
 
@@ -43,6 +45,7 @@
 2. `agenticclaude/event_convertor.go`：Stream 保留 redacted thinking 块及供应商索引，连续两个 opaque 块不合并。
 3. 新增 `agenticclaude/protocol_roundtrip_test.go`：覆盖转换、非法元数据、真实 Generate/Stream、相邻 opaque 块、普通 thinking 对照、顺序、JSON 恢复及下一轮请求原样回传；断言两次 HTTP 调用。
 4. 隔离源码中的旧 `convertor_test.go` 曾修改“丢弃 redacted thinking”的断言；该旧文件未迁入产品，此私有包由新增离线测试覆盖相应行为。
+5. `content_block_extra.go` 提供 `SetToolInfoCacheControl` 和 `SetContentBlockCacheControl`，通过既有 Extra 元数据传递缓存控制，供产品 `anthropic_cache.go` 使用；回归由 `internal/llm/anthropic_cache_test.go` 验证。此内部扩展不等于真实服务缓存命中或计费认证。
 
 两个新增测试文件的 HTTP 客户端仅允许本地测试服务地址，禁止跟随重定向，超时五秒；凭据和协议数据均为合成 fixture，不读取真实凭据。
 
@@ -50,7 +53,7 @@
 
 - 沿用产品锁定的 Eino `v0.9.21`，未升级 Eino。
 - 将已锁定的 `anthropic-sdk-go v1.75.0`、`aws-sdk-go-v2/config v1.33.6`、`aws-sdk-go-v2/credentials v1.20.6`、`bytedance/sonic v1.15.4`、`go-viper/mapstructure/v2 v2.5.0` 提升为直接依赖；`genai v1.71.0` 与 `eino-contrib/jsonschema v1.0.3` 已是直接依赖。未新增依赖版本，未运行全仓 go mod tidy。
-- 原上游两个模块的生产和测试导入已统一切换，go.mod 中相应 require 已移除；go.sum 保留历史校验记录，不代表产品仍引用原上游包。当前 Gemini/Claude 产品测试认证本仓库补丁副本，不是未打补丁的原标签。
+- 原上游两个模块的生产和测试导入已统一切换，go.mod 中相应 require 已移除。2026-09-29 在 `GOPROXY=off GOTOOLCHAIN=local GOWORK=off` 下先审查 `go mod tidy -diff`：仅五项依赖的直接/间接分类及旧 Claude/Gemini 模块四行校验记录有差异；随后运行离线 tidy，同一 diff 检查无输出且 `go mod verify` 通过，依赖版本未改变。源码基线由本文件和 NOTICE 保留，不能以删除旧校验项推断上游已包含补丁。当前产品测试认证本仓库补丁副本。
 - 所有生产及测试中的旧包引用均已切换，避免新旧 Claude 类型以相同名字重复注册。本次接线只替换导入及修正证据注释，不削减产品测试断言；工厂行为由独立产品任务实现。
 - 产品持久化、复制、流拼接和下一轮请求必须保留完整 ContentBlock 和 Extra；不能因 Reasoning.Text 为空而删除 opaque 块，不能把 opaque data 输出到展示文本或日志。
 
@@ -93,7 +96,7 @@
 
 ## 切回上游的条件
 
-1. 上游已发布包含等效四项协议修复的明确版本，核实发布 tag/commit 和依赖兼容性。
-2. 使用正式上游版本在 `GOWORK=off` 下通过此处离线协议测试及 seasprak 原有协议红测；至少证明 ID、流块边界、thought signature、opaque thinking 经持久化和下一轮回传保持不变。
+1. 上游已发布包含本文件完整补丁清单的等效版本，核实发布 tag/commit 和依赖兼容性；不再仅以早期四项协议修复为准。
+2. 使用正式上游版本在 `GOWORK=off` 下通过此处离线协议测试及 seasprak 产品回归；至少覆盖 ID、流块边界、thought signature、opaque thinking、匿名工具参数分片、精确数值出站与响应恢复、显式缓存投影和 Claude 缓存元数据。持久化及下一轮实际 HTTP 请求必须保持这些契约，不能只验证适配器内存转换。
 3. 对 Claude 旧 Extra 键和任何注册类型的历史数据给出兼容迁移验证，不直接丢弃旧消息元数据。
 4. 完成产品全量普通/race、静态、安全、live（适用时）及 Linux/Windows/macOS 运行验证后，统一替换导入、移除此私有源码和不再需要的直接依赖，更新来源记录。禁止仅以“上游已修复”或上游测试通过作为切回依据。

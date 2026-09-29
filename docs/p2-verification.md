@@ -1,5 +1,56 @@
 # P2 实施记录与验证证据
 
+## 2026-09-29 P2 离线收尾（双平台门禁通过）
+
+基线 `53fadff1c9874380396cc2ec25c1900b3653840e`。执行前 17 项工作区修改标记均为索引 LF/工作区 CRLF，`git diff HEAD --exit-code` 与暂存区差异均为 0；不把这些标记计为未提交生产修复。本轮仅离线收尾，不处理 macOS、不运行 live、不读取 `.test_env`、不提交推送。最终稳定代码已按 Linux→Windows 串行完成下列门禁，不沿用上一轮结果冒充本轮通过。
+
+### 当前方案与历史记录的关系
+
+2026-09-28 22:01 维护者要求“先直接按照 pi 的设计来吧”，22:04 在持久待提交命令方案说明后要求“开始执行”。因此以下 20:06 的“不采用新增记录”是已被后续决定替代的历史方案，不是当前实现要求。已提交的执行说明见 `docs/superpowers/plans/2026-09-28-pi-host-command-context.md`：shell 结果以不可变 `host_command_result` 保存，不推进正在恢复的模型历史；原 Trace 终态后、下一独立输入前消费；审批等待和已答复未恢复期间拒绝新命令，同 Trace 暂停/恢复不消费。当前回归见 `commands_checkpoint_test.go`、`commands_continuation_test.go`、`commands_boundary_gap_test.go` 和 `state/host_commands*_test.go`。
+
+Gemini 原始响应精度恢复、Activity 窄读取与受限候选复制已在当前基线中实现并有产品测试，历史“尚在调查”不代表当前缺失。通用 View 与 commit 的完整复制仍保留；本轮先测 Snapshot，不擅自扩展浅复制或改变恢复资格缓存。PowerShell 原生命令退出码已有测试，本轮按风险复验，不预先宣称存在缺陷。
+
+### PowerShell 复验与新增回归
+
+新增 `internal/sessions/commands_shell_windows_test.go`，Windows PowerShell 5.1.26100.9444 与 PowerShell 7.6.6 各 7 个真实进程用例：显式非零、原生非零、cmdlet 非终止/终止错误、原生成功后 cmdlet 错误、成功及 UTF-8。每项验证 Started/Terminated、准确退出码、输出、执行一次、模型零调用，以及内存和关闭重开后的持久结果与返回结果一致。原专项 `TestP2CommandShellExplicitShellExitAndOutput` 也复验通过，没有复现原生退出码被归一为 1，不修改生产 shell 包装。
+
+Windows `go test ./internal/sessions -run '^TestP2CommandShell(ExplicitShellExitAndOutput|WindowsPowerShellResults)$' -count=10 -timeout=180s`：exit 0（61.567s）；对应 `-race`：exit 0（65.788s）。catch 后成功、前错后对、原生非零与 cmdlet 错误并存的优先级没有新增合同，不把本次覆盖推广到这些未定义组合。
+
+### Snapshot 基准口径
+
+新增 `internal/sessions/snapshot_benchmark_test.go`：真实完成的四个 Trace，1/8/32/128 页（每页 50 KiB 已接受助手文本），覆盖完成态、宿主命令排序、实际 Pause 生成的 checkpoint、运行态及计时器驱动续租竞争，共 20 组。使用内存存储和测试时钟；测量不是磁盘后端性能或真实时钟租约压力认证，不替代现有真实时钟测试。`renewal` 是查询与续租的组合耗时，包含同步，不是纯 Snapshot 延迟。基准准备不计时，记录 ns/op、B/op、allocs/op、Load/blob Get/Append 次数。
+
+默认 `TestSnapshotBenchmarkReadOnlyIsolation` 验证两次快照之间的深层隔离、私有信息不公开但内部回放保留、命令展示排序/去重、查询零模型/工具/Append。暂停态每次查询实际 Load 和 blob Get 各一次；其他纯查询为零。续租组合每次恰好一次独立 Activity Append，模型和工具调用不增加。
+
+夹具初版把嵌套 `map[string]any` 放在接口类型 Extra 中，真实暂停返回 `gob: type not registered for interface: map[string]interface {}`；最终夹具使用可编码的标量私有 Extra 和签名，没有修改生产编码器。该基准不认证任意嵌套扩展的暂停兼容性，后续如需承诺此能力，应另建契约与回归，不能将夹具调整称生产缺陷修复。
+
+两平台基准均固定 `GOMAXPROCS=4`、`GOWORK=off`，命令为 `go test -mod=readonly ./internal/sessions -run '^$' -bench '^BenchmarkAgentSessionSnapshot$' -benchmem -benchtime=1s -count=5 -timeout=15m`。Windows 完整 100 次采样 exit 0（282.751s）：50 KiB 完成态 0.854–0.884 ms/op；6.25 MiB 完成态 39.46–42.17 ms/op、约 96–98 MB 分配/op；同体量暂停态 52.29–55.79 ms/op、约 202 MB 分配/op。B/op 是累计分配量，不是常驻内存。
+
+Windows 对照 `go test -mod=readonly ./internal/sessions/state -run '^$' -bench '^BenchmarkActivityLedgerStages$/pages_(1|8|32|128)$/View$' -benchmem -benchtime=1s -count=5 -timeout=300s`：exit 0；128 页 View 38.28–39.40 ms/op。此 View 夹具以合成事件为主，不能用它与真实消息快照的数值相减作为各阶段耗时分解。Linux 最终可读汇总确认 20 组各 5 次、共 100 次采样，exit 0：50 KiB 完成态 0.976–1.050 ms/op；6.25 MiB 完成态 45.16–51.04 ms/op、约 95.7–98.0 MB 分配/op；同体量暂停态 65.61–72.61 ms/op、约 201.8–202.0 MB 分配/op。初次 Linux 基准链及后续重采样虽 exit 0，但输出转码异常；最终显式设置输出编码并统计恰好 100 个样本，才采用上述数值。Linux View 对照首轮基准链 exit 0，但其数字输出未作为本节定量依据。不同夹具与平台不用于宣称因果或优化幅度。
+
+本轮暂不改 Snapshot 生产逻辑：现有测量证明大历史成本增加，但没有容器预分配前后收益证据；不为达成“优化”而改变状态所有权、复制或恢复校验合同。
+
+### 最终离线门禁（2026-09-29）
+
+平台使用原生 Go 1.27.0、`GOWORK=off`，所有最终测试明确 `-count=1`，不使用测试结果缓存。Linux 使用 WSL Ubuntu 24.04，完成后才运行 Windows。
+
+- 两平台受影响包 race：`go test -mod=readonly -race ./internal/sessions ./internal/sessions/state -run 'Snapshot|Activity|CommandShell' -count=1 -timeout=300s` 均 exit 0。Linux sessions 27.360s；Windows sessions 38.695s。
+- 两平台 `go vet -mod=readonly ./...`、`go build -mod=readonly ./...` 均 exit 0。
+- 两平台 `go test -mod=readonly ./... ./sdk/testdata/consumer -count=1 -timeout=600s` 均 exit 0。Linux sessions 31.093s、consumer 3.406s；Windows sessions 37.800s、consumer 3.168s。
+- 两平台 `go test -mod=readonly -race ./... ./sdk/testdata/consumer -count=1 -timeout=900s` 均 exit 0。Linux sessions 159.128s、consumer 13.537s；Windows sessions 172.860s、consumer 14.257s。显式包含 testdata consumer，不以外层 SDK 的子进程测试代替 consumer race。
+- 第一轮 Linux 门禁命令因嵌套 shell 引号将正则的 `|` 解析为管道，报 `Activity: not found` / `CommandShell: not found`、exit 127；改为 WSL 直接传参执行专项后通过。这是命令构造失败，不是产品断言失败，历史结果保留。
+- 格式与差异：`gofmt -l .` 无输出；`git diff HEAD --check` exit 0；两份新增测试各自 `git diff --no-index --check -- NUL <file>` 无空白错误。新增文件常见凭据模式、私钥头、冲突标记扫描无匹配，未跟踪文件仅两份 Go 测试，无构建产物。
+- 维护者另行批准对基线 17 个 CRLF 文件仅运行 gofmt；规范化 Git 差异没有新增生产逻辑修改。本轮新增两份测试，修改依赖元数据和三份说明，不实施未经证明有收益的性能优化。
+- 本轮离线收尾完成；不宣称 macOS、live、任意嵌套 Extra 恢复或磁盘 Snapshot 性能已认证。未提交推送。
+
+### 依赖与私有补丁维护
+
+- `GOWORK=off go mod verify`：exit 0。
+- `GOPROXY=off GOTOOLCHAIN=local GOWORK=off go mod tidy -diff` 首次 exit 1，仅 5 项直接依赖分类和旧 Claude/Gemini 模块 4 行校验记录有差异；审查后运行离线 `go mod tidy`，再次 `tidy -diff` 无输出、exit 0，`go mod verify` exit 0。没有改变模块版本。
+- `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -show verbose ./...`：exit 0，代码可达漏洞 0；包级 `GO-2026-6443`（gRPC）和模块级 `GO-2026-5932`（OpenPGP）仍有未触达提示，未为消除提示盲目升级。扫描访问公共漏洞数据库，但没有真实模型请求。
+- Windows `go test -mod=readonly ./internal/llm/... ./internal/architecture -count=1 -timeout=180s` 及对应 `-race`：exit 0；不代替最终全仓。
+- `internal/llm/einoext/PATCH_NOTES.md` 补齐响应恢复、流式参数文件、Claude 缓存扩展及切回上游的完整回归条件；早期测试证据保留，当前最终结果见本节后续更新。
+
 ## 2026-09-28 20:06 审批期间拒绝宿主命令方案获准
 
 维护者明确批准：等待工具审批期间，SDK拒绝新的宿主ExecuteCommand，并保护已答复但尚未恢复的间隙；状态和历史查询、审批答复及取消仍可用。不采用新增host_command控制记录或延后注入上下文方案，不放宽checkpoint检查。正在以真实Session测试实现，并核查命令先启动、随后进入审批的竞争；本项尚未完成。

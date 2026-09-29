@@ -1,5 +1,15 @@
 # 逐条需求覆盖表
 
+## 2026-09-29 离线收尾：当前状态与历史记录分离
+
+本轮基线为 `53fadff`，后续收尾验证结果以 [P2 验证记录](../p2-verification.md) 顶部摘要为准。以下 2026-09-28 记录保留当时验收范围，不自动认证此后代码。macOS 与 live 本轮明确延期，不读取 `.test_env`，不将跳过计作通过。
+
+- 宿主命令独立事实和延后消费已实现：`commands_context.go`、`state/host_commands.go`、`state/host_commands_consume.go`；回归为 `commands_checkpoint_test.go`、`commands_boundary_gap_test.go`、`commands_continuation_test.go`、`state/host_commands*_test.go`。2026-09-28 22:01 用户改为按 Pi 设计、22:04 授权实施，后续执行说明见 `docs/superpowers/plans/2026-09-28-pi-host-command-context.md`；不是重新启用旧直接追加模型消息方案。
+- Gemini 原始响应参数精度恢复已经接线：`gemini_response_restore.go` 与私有 `agenticgemini/response_restore.go`；回归为 `gemini_numeric_response_test.go`、`gemini_numeric_boundary_test.go`、`gemini_response_restore_test.go`。历史调查记录不是当前未实现证明。
+- 活动账本窄读取及局部候选复制已实现：`state/activity.go`、`state/manager.go`；回归为 `activity_commit_contract_test.go`、`activity_projection_test.go`、`activity_snapshot_isolation_test.go`。通用 View/commit 仍保留完整隔离；本轮只测量 Snapshot，不预设扩大浅复制范围。
+- 本轮新增 `commands_shell_windows_test.go`（两个 PowerShell 共 14 项真实进程边界）与 `snapshot_benchmark_test.go`（20 组端到端基准及默认隔离/只读回归）；没有复现退出码缺陷，没有修改生产包装或 Snapshot 所有权。两平台五轮基准已执行，数值口径见验证记录。
+- 本轮最终 Windows/Linux `vet`、`build`、全仓普通及 race（均显式含 `sdk/testdata/consumer`、`-count=1`）通过；固定版漏洞扫描代码可达 0，保留两项未触达依赖提示。macOS/live 仍是已批准延期，不计通过。嵌套接口 Extra 的 checkpoint 编码限制作为独立边界记录，不用标量基准夹具证明任意扩展可恢复。
+
 ## 2026-09-28 P2 已实现范围与验收索引
 
 以下只认证列出的产品调用链；具体运行命令、平台、失败及修复历史见 [P2 验证记录](../p2-verification.md)，不把本表全部目标能力视为交付。
