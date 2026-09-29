@@ -71,13 +71,31 @@ func (s *AgentSession) Subscribe(context.Context, SubscribeOptions) (Subscriptio
 func (s *AgentSession) Close(context.Context) error
 ```
 
-2026-09-27 最新确认：ExecuteCommand 的用户 shell 场景采用独立宿主入口，不进入工具审批、Agent 预算、执行票据或持久化执行去重；保留 command/output/exitCode、超时和主动取消，不制造工具调用或可 Resume checkpoint。每次显式调用是新执行，调用方不能依赖通用 CommandMeta 幂等键防止重复启动；SDK 不自动重试。旧 direct 审批记录不得经此入口自动恢复；模型 RespondApproval/Resume 保持原契约。新语义尚未实现，旧接口迁移与外部消费者验证列入 Step 16.1/22。
+2026-09-27 最新确认：ExecuteCommand 的用户 shell 场景采用独立宿主入口，不进入工具审批、Agent 预算、执行票据或持久化执行去重；保留 command/output/exitCode、超时和主动取消，不制造工具调用或可 Resume checkpoint。每次显式调用是新执行，调用方不能依赖通用 CommandMeta 幂等键防止重复启动；SDK 不自动重试。旧 direct 审批记录不得经此入口自动恢复；模型 RespondApproval/Resume 保持原契约。新语义尚未实现，旧接口迁移与外部消费者验证列入 Step 16.1/22。2026-09-27 16:05 已获准直接修改 ExecuteCommand 公开请求/结果契约，移除按 Name/Arguments 调用任意已登记工具及其幂等操作回执，不新增 ExecuteShell 或旧通用入口兼容别名；本项是明确批准的 SDK 兼容性例外，其他公开接口的兼容要求不变。
 
 另提供 GetTrace/GetOperation/ListMessages/ListBranches、ForkBranch/NavigateBranch/Compact、SetDefaultModel/SelectNextTurnModel/SetActiveTools、ReloadResources、ExecuteCommand、InvokeCommand。除上述用户 shell 入口外，它们使用相同 CommandMeta（幂等键、预期版本、受信 caller），不通过直接写 Store 实现。`ExecuteWorkflow` 不再作为第三种公开产品入口；独立工作流通过 SubmitInput 指定 targetAgent 执行。
 
 Subscription 提供只读 Events channel 和幂等 Close。SDK callback 便利层逐订阅调用并隔离 panic/error；达到缓冲边界注销或要求 resync。关闭后不再投新事件，正在执行的 callback 可结束。SessionSnapshot 包含 durable cursor、active trace/turn、interactions、pending/undelivered/held queue、operation 和聚合消息视图，按权限脱敏。
 
 会话切换是外层协调函数 SwitchSession(current, target)，先准备目标再走旧会话 before_switch，成功后返回新的 AgentSession 引用；不把原对象 sessionId/工作区改成另一个。目标失败保持旧引用。两个 Session 的日志各自独立，切换不承诺跨文件事务；以预分配 targetId 和原 operationId 去重恢复目标创建。
+
+### 3.1 注入读取后端的 SDK 迁移
+
+2026-09-28 维护者已明确批准 `read_file` 的读取契约兼容性例外：现有注入 `FileOperations` / `ArtifactStore` 后端迁移为完整、不可变、版本绑定的快照语义，不采用可选能力回退。准确执行定义见 [05 §4.1](05-tools-and-operations.md#read-snapshot-migration)。本例外仅针对读取后端及读取结果语义，不放宽其他公开接口、模型权限或执行票据。
+
+`ReadRequest` 与 `ReadResult` 继续由 `sdk/sdk.go` 通过类型别名提供，不增加其他公有生产文件。调用方需要适配新增 `Mode` 字段；使用具名字段可避免结构体字段数量变化导致的编译问题。内置工具总是传 `lines/bytes`，其 `Offset/Limit` 用于冻结请求绑定而非让后端预裁剪正文；空 `Mode` 不是新内置工具的旧后端兼容入口。
+
+后端返回完整快照的可读 `ContentRef` 和非空稳定 `Version`；已有版本请求不匹配时返回 `state_conflict`。`ArtifactStore.Open` 收到零 `Offset/Limit`，验证并消费原执行授权后暴露完整快照，工具负责流式定位和有界投影。仍按旧行为裁剪的后端必须迁移，否则会发生双重定位；SDK 不自动猜测其语义。
+
+模型及宿主保存的读取结果为完整结构化 JSON，而非裸正文或引用字符串；正文、范围、UTF-8 编码、行数、截断和 `nextRead` 从同一次投影产生。续读带原版本，实际位置由工具计算，不依赖旧 `ReadResult.NextOffset`。公开消费者已覆盖 Session→模型工具→注入后端→模型结果的行/byte 续读与版本冲突；此测试仅认证受控内存后端契约，不认证任意外部后端已完成迁移。
+
+### 3.2 P2 当前公开快照与核对入口
+
+当前公开类型为 `sdk.Snapshot`。`ModelAttempts` 按尝试 ID 提供 `ModelAttemptView`，将初始尝试与已提交的终态结果合并，包含 started/accepted/failed/incomplete/aborted 等实际状态，不把已结束的尝试仍显示为 started。`Observations` 按观察 ID 提供 `ObservationView`，保留 call ID、version、previous ID 及执行/效果/退出事实；此新增投影不携带原工具正文、后端错误文本或内部证据引用。两者与其他快照字段来自同一次已提交 View，返回副本修改不影响会话状态。
+
+受信调用方从快照获取原 trace/invocation/call/observation 身份，将 `Revision` 作为 `ReconcileCommand.ExpectedRevision`，并提供已注册的只读取证 `QueryID` 或证据引用。核对通过 `GetOperation` 查询结果，成功后追加观察版本，不覆盖原 unknown 事实，不自动 Resume 或重跑工具；陈旧版本返回 `state_conflict`，同键同请求重试不重复取证。关闭重开保留版本链和 operation 结果。测试见 `sdk/testdata/consumer/reconcile_pipeline_test.go`。
+
+P2 保留现有 `Cancel(ctx, string) error`、`ContinueQueue(ctx, string) error`、`Subscribe(Limits)` 和 `SubscribeEvents(Limits)`；上文统一命令签名及下文网络 cursor/SSE 是目标契约，不能据此认定当前 SDK 已交付按 cursor 重连接口。慢订阅通过 `Subscription.Err()` 返回 `resync_required`，宿主重新加载快照；P3 网络重连另行接线。
 
 <a id="http"></a>
 ## 4. HTTP 路由与 DTO

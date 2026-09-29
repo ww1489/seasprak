@@ -138,7 +138,14 @@ type FileOperations interface {
 	Search(context.Context, SearchRequest) (SearchResult, error)
 }
 
-type ListRequest struct{ Root, Cursor string }
+// ListRequest asks for raw directory entries. The builtin owns sorting and
+// output limits; a backend that cannot return all entries must set NextCursor
+// so the output explicitly reports incompleteness, not silently drop entries.
+// Cursor is retained for host compatibility; builtins do not paginate.
+type ListRequest struct {
+	Root, Cursor string
+	Limit        int
+}
 type ListResult struct {
 	Entries    []FileEntry
 	NextCursor string
@@ -147,17 +154,47 @@ type FileEntry struct {
 	Identity, Name, Kind, Version string
 	Size                          int64
 }
+
+// ReadRequest binds a read_file range to a complete, immutable file snapshot.
+// For Mode "lines" or "bytes", Offset and Limit describe the requested range
+// (zero-based lines or UTF-8 bytes), but MUST NOT pre-slice the returned snapshot.
+// They remain bound to FrozenExecution for the artifact backend to verify.
+// Version, when nonempty, must match the snapshot or Read returns state_conflict.
+//
+// The built-in tool always supplies an explicit Mode. Injected backends must
+// migrate to this snapshot contract; empty Mode is not a compatibility fallback
+// for the built-in tool, even if a backend retains its own legacy empty mode.
 type ReadRequest struct {
 	Identity, Version string
+	Mode              string
 	Offset, Limit     int64
 }
+
+// ReadResult identifies the complete snapshot, not an inline body or a range.
+// ContentRef must be readable through the injected ArtifactStore, and Version
+// must be nonempty and identify the immutable bytes exposed by that reference.
+// The tool calls Open with Offset=0 and Limit=0 under the frozen execution
+// authority, then streams and projects the requested range itself. Open must
+// verify that authority and its bound request before exposing snapshot bytes.
+// A snapshot reference need not copy or buffer the entire file in memory.
+// NextOffset is legacy backend metadata; the built-in tool does not use it for
+// explicit modes and derives version-bound continuation from projected bytes.
 type ReadResult struct {
 	ContentRef, Version string
 	NextOffset          int64
 }
+
+// SearchRequest binds matching and projection options. Return raw, unsliced
+// matches: builtin tools apply OutputMode, Offset and Limit exactly once.
+// A backend returning a partial set must set NextCursor; counts then describe
+// only that set and the builtin reports incomplete results. Paths are logical
+// slash-separated paths. grep uses Go regular expressions, glob uses doublestar.
 type SearchRequest struct {
 	Root, Query, Cursor string
-	Limit               int
+	// Kind distinguishes glob path matching from grep content matching.
+	Kind, Glob, OutputMode string
+	CaseInsensitive        bool
+	Offset, Limit          int
 }
 type SearchResult struct {
 	Matches    []SearchMatch
@@ -178,7 +215,10 @@ type AuthorizedFileWrite struct {
 type AuthorizedFileEdit struct {
 	Authorization   AuthorizedExecution `json:"-"`
 	Path            string              `json:"path"`
-	PatchRef        string              `json:"patchRef"`
+	PatchRef        string              `json:"patchRef,omitempty"`
+	OldString       string              `json:"old_string"`
+	NewString       string              `json:"new_string"`
+	ReplaceAll      bool                `json:"replace_all,omitempty"`
 	ExpectedVersion string              `json:"expectedVersion,omitempty"`
 }
 type FileEffect struct {
@@ -237,6 +277,9 @@ type ProcessProgress struct {
 	Text               string
 	Sequence           uint64
 }
+
+// Content is complete inline output for optional log post-processing. A
+// ContentRef alone is opaque and is never opened with a consumed process ticket.
 type ProcessObservation struct {
 	Execution                       ExecutionRef
 	Started, Terminated             bool
@@ -279,6 +322,32 @@ type ArtifactRead struct {
 	Ref           ArtifactRef
 	Offset, Limit int64
 }
+
+// OutputArtifactStore is an optional trusted post-processing port implemented
+// by an injected ArtifactStore. It cannot start execution or grant permissions.
+// Content must already be redacted; bindings are supplied by the executor, not
+// tool arguments. Implementations isolate bindings and verify refs on reads.
+type OutputArtifactStore interface {
+	SaveOutput(context.Context, OutputArtifactInput) (ArtifactRef, error)
+	OpenOutput(context.Context, OutputArtifactRead) (io.ReadCloser, error)
+}
+
+type OutputArtifactBinding struct {
+	SessionID, Environment, CallID string
+}
+type OutputArtifactInput struct {
+	Binding                  OutputArtifactBinding
+	Content, MediaType, Name string
+}
+type OutputArtifactRead struct {
+	Binding OutputArtifactBinding
+	Ref     ArtifactRef
+}
+
+// OutputRedactor is trusted host configuration, never a tool argument. Errors
+// and panics must not publish the original text or change execution facts.
+type OutputRedactor func(context.Context, string) (string, error)
+
 type ArtifactRef struct {
 	ID, SessionID, Environment, Hash string
 	Size                             int64

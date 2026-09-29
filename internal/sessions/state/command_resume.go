@@ -1,7 +1,6 @@
 package state
 
 import (
-	"context"
 	"encoding/json"
 
 	"github.com/ww1489/seasprak/internal/agent"
@@ -9,8 +8,8 @@ import (
 	"github.com/ww1489/seasprak/internal/sessions/store"
 )
 
-// DirectResumeBinding is a stopped, unclaimed command, not an Eino checkpoint.
-// It lives in the same journal as the original call and approval.
+// DirectResumeBinding is a legacy stopped command retained for journal replay.
+// New host shell calls never create or execute this recovery representation.
 type DirectResumeBinding struct {
 	ID                     string               `json:"id"`
 	Scope                  agent.ExecutionScope `json:"scope"`
@@ -27,8 +26,7 @@ type DirectResumeBinding struct {
 	LeafID                 string               `json:"leafId"`
 }
 
-// ValidateDirectBinding verifies original identities without assuming a current
-// execution state; it is also used while replaying an already consumed binding.
+// ValidateDirectBinding validates historical identities, never execution rights.
 func (v View) ValidateDirectBinding(b DirectResumeBinding) error {
 	tr := v.Traces[b.Scope.TraceID]
 	in := v.Inputs[b.InputID]
@@ -57,59 +55,4 @@ func applyDirectResume(v *View, r store.Record) error {
 		return product.NewError(product.CodeIncompatibleVersion, "direct resume binding has no pending command")
 	}
 	return putImmutable(&v.DirectResumes, r.ID, b.ID, b)
-}
-
-// CommitCommandWait is called by the coordinator only after the worker exits.
-func (m *Manager) CommitCommandWait(ctx context.Context, b DirectResumeBinding) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if b.Scope.SessionID != m.sessionID || b.Scope.BranchID != m.view.BranchID || b.HistoryCommit != m.view.LastSeq || m.view.HasUnresolvedEffects() || m.view.ValidateDirectBinding(b) != nil {
-		return product.NewError(product.CodeStateConflict, "command cannot enter approval wait")
-	}
-	tr := m.view.Traces[b.Scope.TraceID]
-	call := m.view.Calls[b.CallID]
-	if tr.State != "running" || !tr.Started || tr.Settled || call.Claimed || call.Observation != nil {
-		return product.NewError(product.CodeStateConflict, "command is no longer awaiting approval")
-	}
-	next := *tr
-	next.State, next.ExecutionID, next.DirectResumeID = "paused", b.Scope.ExecutionID, b.ID
-	next.ExecutionStopped = true
-	binding := ApprovalBinding{ID: b.ID + ":" + b.InteractionID, InteractionID: b.InteractionID, ApprovalID: b.ApprovalID, DirectResumeID: b.ID}
-	_, err := m.commit(ctx, []store.Record{record("direct_resume", b.ID, b), record("approval_binding", binding.ID, binding), record("trace", tr.ID, next)}, nil, []agent.Event{m.event("interaction.ready", tr.ID, "", struct {
-		InteractionID string `json:"interactionId"`
-	}{b.InteractionID}), m.event("trace.state_changed", tr.ID, "", next)})
-	return err
-}
-
-func (m *Manager) CommitCommandResume(ctx context.Context, cmd OperationCommand, bindingID, executionID string) (OperationReceipt, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if receipt, found, err := m.findOperation(cmd); found || err != nil {
-		return receipt, err
-	}
-	b, exists := m.view.DirectResumes[bindingID]
-	tr := m.view.Traces[cmd.Target]
-	if !exists || tr == nil || cmd.Kind != "resume" || cmd.ExpectedRevision != m.view.LastSeq || tr.ID != b.Scope.TraceID || tr.DirectResumeID != b.ID || tr.ExecutionID != b.Scope.ExecutionID || tr.State != "paused" || !tr.ExecutionStopped || tr.Settled || executionID == "" || executionID == tr.ExecutionID || m.view.HasUnresolvedEffects() || m.view.ValidateDirectBinding(b) != nil || m.view.Calls[b.CallID].Claimed || m.view.Calls[b.CallID].Observation != nil {
-		return OperationReceipt{}, product.NewError(product.CodeIncompatibleResume, "direct command is not safely waiting")
-	}
-	if _, answered := m.view.ApprovalDecisions[b.ApprovalID]; !answered {
-		return OperationReceipt{}, product.NewError(product.CodeStateConflict, "direct command approval is unanswered")
-	}
-	digest, err := operationDigest(cmd)
-	if err != nil {
-		return OperationReceipt{}, err
-	}
-	receipt := OperationReceipt{OperationID: agent.MustID(), State: "accepted", Target: tr.ID, AcceptedCommit: m.view.LastSeq + 1}
-	op := Operation{Receipt: receipt, Principal: cmd.Principal, SessionID: m.sessionID, Kind: cmd.Kind, Key: cmd.IdempotencyKey, Digest: digest, Revision: 1, State: "accepted"}
-	scope := b.Scope
-	scope.ExecutionID = executionID
-	segment := ResumedExecution{ID: executionID, DirectResumeID: b.ID, OperationID: receipt.OperationID, Scope: scope}
-	next := *tr
-	next.State, next.ExecutionID, next.DirectResumeID = "running", executionID, ""
-	next.ExecutionStopped = false
-	_, err = m.commit(ctx, []store.Record{record("operation", receipt.OperationID, op), record("resumed_execution", executionID, segment), record("trace", tr.ID, next)}, nil, []agent.Event{m.event("trace.state_changed", tr.ID, "", next)})
-	if err != nil {
-		return OperationReceipt{}, err
-	}
-	return receipt, nil
 }

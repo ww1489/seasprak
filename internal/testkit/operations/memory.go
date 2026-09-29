@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	einofs "github.com/cloudwego/eino/adk/filesystem"
 	"io"
 	"sync"
 
@@ -29,6 +30,7 @@ type file struct {
 type content struct {
 	data          []byte
 	path, version string
+	read          agent.ReadRequest
 }
 type artifact struct {
 	ref  agent.ArtifactRef
@@ -37,16 +39,17 @@ type artifact struct {
 }
 
 // Memory shares full content between file and artifact ports. It never touches
-// the host filesystem. List and Search deliberately report unsupported.
+// the host filesystem. Discovery uses logical slash-separated paths.
 type Memory struct {
-	mu          sync.Mutex
-	environment string
-	next        int
-	files       map[string]file
-	contents    map[string]content
-	patches     map[string]Patch
-	artifacts   map[string]artifact
-	calls       map[string]int
+	mu              sync.Mutex
+	environment     string
+	next            int
+	files           map[string]file
+	contents        map[string]content
+	patches         map[string]Patch
+	artifacts       map[string]artifact
+	outputArtifacts map[string]outputArtifact
+	calls           map[string]int
 }
 
 func NewMemory() *Memory {
@@ -104,20 +107,12 @@ func capabilities(environment, kind string) agent.BackendCapabilities {
 	// filesystem/process access. This report certifies no OS security property.
 	return agent.BackendCapabilities{BackendID: "test-memory-" + kind, Version: "fixture-v1", EnvironmentID: environment, SupportedModes: []string{"workspace-write"}, Enforcement: "full", RuntimeDataWriteProtected: true}
 }
-func (m *Memory) List(context.Context, agent.ListRequest) (agent.ListResult, error) {
-	m.count("list")
-	return agent.ListResult{}, failure(product.CodeUnsupportedCapability)
-}
-func (m *Memory) Search(context.Context, agent.SearchRequest) (agent.SearchResult, error) {
-	m.count("search")
-	return agent.SearchResult{}, failure(product.CodeUnsupportedCapability)
-}
 func (m *Memory) Read(ctx context.Context, r agent.ReadRequest) (agent.ReadResult, error) {
 	m.count("read")
 	if err := ctx.Err(); err != nil {
 		return agent.ReadResult{}, err
 	}
-	if r.Offset < 0 || r.Limit < 0 {
+	if r.Offset < 0 || r.Limit < 0 || (r.Mode != "" && r.Mode != "lines" && r.Mode != "bytes") {
 		return agent.ReadResult{}, failure(product.CodeInvalidArgument)
 	}
 	m.mu.Lock()
@@ -130,12 +125,17 @@ func (m *Memory) Read(ctx context.Context, r agent.ReadRequest) (agent.ReadResul
 		return agent.ReadResult{}, failure(product.CodeStateConflict)
 	}
 	ref := m.ref("read")
-	m.contents[ref] = content{bytes.Clone(f.data), r.Identity, f.version}
-	next := int64(len(f.data))
-	if r.Offset < next && r.Limit > 0 && r.Limit < next-r.Offset {
-		next = r.Offset + r.Limit
+	m.contents[ref] = content{data: bytes.Clone(f.data), path: r.Identity, version: f.version, read: r}
+	// Explicit modes always expose the full immutable snapshot. Open verifies
+	// the original range against FrozenExecution before consuming its ticket.
+	// Empty Mode alone retains the historical byte-range NextOffset metadata.
+	var next int64
+	if r.Mode == "" {
+		next = int64(len(f.data))
+		if r.Offset < next && r.Limit > 0 && r.Limit < next-r.Offset {
+			next = r.Offset + r.Limit
+		}
 	}
-	// Keep the full snapshot: Executor passes the range to ArtifactStore.Open.
 	return agent.ReadResult{ContentRef: ref, Version: f.version, NextOffset: next}, nil
 }
 
@@ -203,6 +203,10 @@ func (m *Memory) Edit(ctx context.Context, r agent.AuthorizedFileEdit) (agent.Fi
 	if err := m.fileBinding(r.Authorization, "edit", r.Path, r.PatchRef, r.ExpectedVersion); err != nil {
 		return none, err
 	}
+	var bound agent.AuthorizedFileEdit
+	if json.Unmarshal(r.Authorization.Frozen.FinalArguments, &bound) != nil || bound.OldString != r.OldString || bound.NewString != r.NewString || bound.ReplaceAll != r.ReplaceAll || (r.PatchRef != "" && (r.OldString != "" || r.NewString != "" || r.ReplaceAll)) {
+		return none, failure(product.CodePermissionDenied)
+	}
 	if err := r.Authorization.Validate(ctx); err != nil {
 		return none, err
 	}
@@ -211,9 +215,13 @@ func (m *Memory) Edit(ctx context.Context, r agent.AuthorizedFileEdit) (agent.Fi
 	if err := ctx.Err(); err != nil {
 		return none, err
 	}
-	p, ok := m.patches[r.PatchRef]
-	if !ok {
-		return none, failure(product.CodeNotFound)
+	p := Patch{Old: r.OldString, New: r.NewString, ReplaceAll: r.ReplaceAll}
+	if r.PatchRef != "" {
+		var ok bool
+		p, ok = m.patches[r.PatchRef]
+		if !ok {
+			return none, failure(product.CodeNotFound)
+		}
 	}
 	f, ok := m.files[r.Path]
 	if !ok {
@@ -222,14 +230,26 @@ func (m *Memory) Edit(ctx context.Context, r agent.AuthorizedFileEdit) (agent.Fi
 	if r.ExpectedVersion != "" && f.version != r.ExpectedVersion {
 		return none, failure(product.CodeStateConflict)
 	}
-	if p.Old == "" {
+	if p.Old == "" || p.Old == p.New {
 		return none, failure(product.CodeInvalidArgument)
 	}
-	count := bytes.Count(f.data, []byte(p.Old))
-	if count == 0 || (count != 1 && !p.ReplaceAll) {
+	// Reuse Eino's literal unique/replace-all implementation on a detached
+	// snapshot; only our version-checked, ticket-bound put commits the effect.
+	backend := einofs.NewInMemoryBackend()
+	if err := backend.Write(ctx, &einofs.WriteRequest{FilePath: "edit", Content: string(f.data)}); err != nil {
+		return none, failure(product.CodeResourceUnavailable)
+	}
+	if err := backend.Edit(ctx, &einofs.EditRequest{FilePath: "edit", OldString: p.Old, NewString: p.New, ReplaceAll: p.ReplaceAll}); err != nil {
 		return none, failure(product.CodeStateConflict)
 	}
-	return m.put(r.Path, bytes.ReplaceAll(f.data, []byte(p.Old), []byte(p.New))), nil
+	updated, err := backend.Read(ctx, &einofs.ReadRequest{FilePath: "edit"})
+	if err != nil {
+		return none, failure(product.CodeResourceUnavailable)
+	}
+	if err := ctx.Err(); err != nil {
+		return none, err
+	}
+	return m.put(r.Path, []byte(updated.Content)), nil
 }
 func (m *Memory) put(path string, data []byte) agent.FileEffect {
 	version := hash(data)
@@ -288,10 +308,39 @@ func (m *Memory) Open(ctx context.Context, r agent.ArtifactRead) (io.ReadCloser,
 		}
 		f := r.Authorization.Frozen
 		var args struct {
-			Path, Version string
-			Offset, Limit int64
+			Path, Version, ExpectedVersion       string
+			Offset, Limit, ByteOffset, ByteLimit *int64
 		}
-		if !matchesBackend(f, m.environment, "file") || f.BackendID != "file-operations" || f.Tool != "read_file" || json.Unmarshal(f.FinalArguments, &args) != nil || args.Path != c.path || args.Offset != r.Offset || args.Limit != r.Limit || (args.Version != "" && args.Version != c.version) {
+		if !matchesBackend(f, m.environment, "file") || f.BackendID != "file-operations" || f.Tool != "read_file" || json.Unmarshal(f.FinalArguments, &args) != nil {
+			return nil, failure(product.CodePermissionDenied)
+		}
+		version := args.Version
+		if version == "" {
+			version = args.ExpectedVersion
+		}
+		mode, offset, limit := "lines", args.Offset, args.Limit
+		if args.ByteOffset != nil || args.ByteLimit != nil {
+			if offset != nil || limit != nil {
+				return nil, failure(product.CodePermissionDenied)
+			}
+			mode, offset, limit = "bytes", args.ByteOffset, args.ByteLimit
+		}
+		expected := agent.ReadRequest{Identity: args.Path, Version: version, Mode: mode}
+		if offset != nil {
+			expected.Offset = *offset
+		}
+		if limit != nil {
+			expected.Limit = *limit
+		}
+		if expected.Offset < 0 || expected.Limit < 0 || args.Path == "" || args.Path != c.path || (version != "" && version != c.version) || len(f.Resources) != 1 || f.Resources[0].Identity != "path:"+args.Path || f.Resources[0].ExpectedVersion != version {
+			return nil, failure(product.CodePermissionDenied)
+		}
+		// Legacy snapshots cannot be substituted for an explicit-mode read_file
+		// snapshot; doing so would silently restore byte slicing for line ranges.
+		if c.read.Mode == "" || r.Offset != 0 || r.Limit != 0 {
+			return nil, failure(product.CodePermissionDenied)
+		}
+		if c.read != expected {
 			return nil, failure(product.CodePermissionDenied)
 		}
 		if err := r.Authorization.Validate(ctx); err != nil {

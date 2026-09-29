@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudwego/eino-ext/components/model/agenticgemini"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	product "github.com/ww1489/seasprak/internal/errors"
 	"github.com/ww1489/seasprak/internal/llm"
+	"github.com/ww1489/seasprak/internal/llm/einoext/agenticgemini"
 )
 
 func geminiConfig() llm.ModelConfig {
@@ -125,10 +125,13 @@ func TestGeminiGenerateContentFactoryGenerateStreamAndTools(t *testing.T) {
 					opts = append(opts, model.WithTools([]*schema.ToolInfo{{Name: "lookup", Desc: "look up a value", ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{"q": {Type: schema.String}})}}))
 				}
 				if tool {
-					_, err := geminiInvoke(ctx, bound, stream, opts...)
-					p2Code(t, err, product.CodeUnsupportedCapability)
-					if physical.Load() != 0 || occupied.Load() != 0 {
-						t.Fatalf("unsupported Gemini tools sent a request: physical=%d occupied=%d", physical.Load(), occupied.Load())
+					msg, err := geminiInvoke(ctx, bound, stream, opts...)
+					p2OK(t, err)
+					if msg == nil || len(msg.ContentBlocks) != 1 || msg.ContentBlocks[0].FunctionToolCall == nil || msg.ContentBlocks[0].FunctionToolCall.CallID == "" {
+						t.Fatal("missing locally assigned call identity")
+					}
+					if physical.Load() != 1 || occupied.Load() != 1 {
+						t.Fatalf("missing provider ID request count: physical=%d occupied=%d", physical.Load(), occupied.Load())
 					}
 					return
 				}
@@ -427,6 +430,44 @@ func TestGeminiGenerateContentFactoryCredentialSnapshotAndClose(t *testing.T) {
 	defer mu.Unlock()
 	if len(seen) < 2 || seen[0] != "synthetic-gemini-first" || seen[1] != "synthetic-gemini-second" {
 		t.Fatalf("credential snapshots were not isolated: %d requests", len(seen))
+	}
+}
+
+func TestGeminiFactoryCapabilityGatesBeforeHTTP(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		for _, kind := range []string{"undeclared_tools", "undeclared_history", "deferred", "tool_search", "server_tools", "vertex"} {
+			t.Run(fmt.Sprintf("stream_%t/%s", stream, kind), func(t *testing.T) {
+				url, client, _ := p2ProbeServer(t)
+				cfg := geminiConfig()
+				cfg.Endpoint = url
+				tool := &schema.ToolInfo{Name: "lookup", Desc: "lookup", ParamsOneOf: schema.NewParamsOneOfByParams(map[string]*schema.ParameterInfo{"q": {Type: schema.String}})}
+				opts := []model.Option{model.WithTools([]*schema.ToolInfo{tool})}
+				input := []*schema.AgenticMessage{schema.UserAgenticMessage("probe")}
+				switch kind {
+				case "undeclared_tools":
+					delete(cfg.Capabilities.Items, llm.CapTools)
+				case "undeclared_history":
+					delete(cfg.Capabilities.Items, llm.CapTools)
+					opts = nil
+					input = append(input, &schema.AgenticMessage{Role: schema.AgenticRoleTypeAssistant, ContentBlocks: []*schema.ContentBlock{schema.NewContentBlock(&schema.FunctionToolCall{CallID: "provider-a", Name: "lookup", Arguments: `{}`})}})
+				case "deferred":
+					opts = append(opts, model.WithDeferredTools([]*schema.ToolInfo{tool}))
+				case "tool_search":
+					opts = append(opts, model.WithToolSearchTool(tool))
+				case "server_tools":
+					opts = append(opts, agenticgemini.WithServerTools(nil))
+				case "vertex":
+					cfg.Provider = "google-vertex"
+				}
+				bound := p2FactoryReplayBind(t, cfg, func(c *llm.Catalog) error { return c.RegisterGeminiGenerateContent(client, 1<<20) })
+				var observed atomic.Int32
+				msg, err := p2FactoryReplayInvoke(p2ChatContext(t, &observed), bound, stream, input, opts...)
+				p2Code(t, err, product.CodeUnsupportedCapability)
+				if msg != nil || observed.Load() != 0 {
+					t.Fatal("unsupported capability must fail before an observed request")
+				}
+			})
+		}
 	}
 }
 

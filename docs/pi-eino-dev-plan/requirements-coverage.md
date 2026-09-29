@@ -1,11 +1,20 @@
 # 逐条需求覆盖表
 
-## 2026-09-27 已确认变更的覆盖边界（实现待验）
+## 2026-09-28 P2 已实现范围与验收索引
+
+以下只认证列出的产品调用链；具体运行命令、平台、失败及修复历史见 [P2 验证记录](../p2-verification.md)，不把本表全部目标能力视为交付。
+
+- Steps16–17：`file_discovery_session_test.go` 和消费者文件发现测试覆盖 ls→glob→grep；工具层测试覆盖稳定排序、数量/字节限额、grep模式和精确编辑/replace_all。按已批准方案不实现复杂目录cursor分页。`todos_test.go`、`todos_boundary_test.go` 覆盖按任务调用范围持久更新及不确定提交；`search_tools*`、`selection_boundary_contract_test.go` 覆盖Eino匹配接线、下一Turn选择、恢复与权限复核。双平台专项race20和相关完整包通过，原plan已完成。
+- Step22：`factory_approval_test.go` 通过公开SDK真实工厂验证审批/关闭重开/显式恢复；`reconcile_pipeline_test.go` 覆盖公开快照身份→核对→operation查询→版本追加→磁盘重开，拒绝陈旧revision并保持工具只执行一次；`snapshot_projection_test.go` 验证尝试终态和观察安全副本。完整消费者双平台race10通过，原plan已完成。
+- Steps18–21：`protocol_contract*` 验证五协议Generate/Stream契约；`protocol_factory_integration_test.go` 经实际Session/Executor执行同一计算工具、预算计数及私有数据磁盘回放，双平台race10通过。Gemini按确认方案由供应商TTL自动回收，主动DELETE不列入P2出口；实现与确定性协议验收完成；OpenAIChat/Responses、DeepSeekChat、AnthropicMessages已在同源网关完成live基础往返，Gemini官方Generate与Stream也分别通过（不同模型配置），不推导未测模型、缓存命中或完整原生推理认证。
+- Step23：按已批准范围完成。52个真实Kill/reopen子案例双平台race10、最终Windows/Linux全仓普通/race及静态构建通过；CI已补SDK消费者。四工厂最新live通过，Gemini按17:19维护者批准因地域限制免本轮复测，沿用已有分项成功证据，保留完整live失败及末次回传根因未明的限制，不记全包live PASS。macOS已获准延期但不记通过；P4完整上下文、P5子Agent/Workflow、P6原生沙箱不前移。
+
+## 2026-09-27 已确认变更的覆盖边界（2026-09-28 更新实现状态）
 
 本轮用户最终选择只简化用户直接 shell，撤回此前全面取消审批的选项。下表原有工具安全条款仍用于模型/受控工具；不将用户 shell 计入统一 CallExecution、审批、预算或持久化去重的覆盖范围。
 
-- 用户 shell 的需求落点为 PRD 05 §4.6、12 开头范围说明；设计落点为开发 05 §2.1、03 开头说明、06 API、09 恢复边界；P2 Step 16.1/22 验收真实宿主调用、来源不可伪造、两次显式执行各启动一次、Open/Resume 零启动、超时/取消/退出码和 command 消息。状态：已确认，待实现与验证。
-- 日志落点为 PRD 05 §4.6、08 输出规则；开发 05 §7、07 输出规则、12 限额；P2 Step 16 验收短输出直返、超长脱敏保存和头尾预览、Save/Open/引用提交失败不改变原执行结果且不重跑，不新增审批/结果票据。状态：已确认，待实现与验证。
+- 用户 shell 的需求落点为 PRD 05 §4.6、12 开头范围说明；设计落点为开发 05 §2.1、03 开头说明、06 API、09 恢复边界；P2 Step 16.1/22 验收真实宿主调用、来源不可伪造、两次显式执行各启动一次、Open/Resume 零启动、超时/取消/退出码和 command 消息。状态：已实现，Windows/Linux 的 `commands_shell*_test.go`、消费者 `command_shell_test.go`/`command_limits_test.go` 已验；macOS未认证。
+- 日志落点为 PRD 05 §4.6、08 输出规则；开发 05 §7、07 输出规则、12 限额；P2 Step 16 验收短输出直返、超长脱敏保存和头尾预览、Save/Open/引用提交失败不改变原执行结果且不重跑，不新增审批/结果票据。状态：已实现，`process_log_contract_test.go`、`outputs_boundary_test.go`、`commands_logs_test.go` 及消费者日志测试覆盖这些边界；具体平台证据见验证记录。
 - SEC-A24 等“后端不可用零裸执行”仍约束模型受限后端；明确的用户宿主 shell 不属于自动降级。用户 shell 不宣称 stateRoot 写保护；产物自动读取仍保留 Session/内容校验。
 - 旧 direct 审批恢复已有历史证据仅证明旧契约；此次文档变更不提高完成度，不重建待办。macOS 延期待实际环境运行，不记通过。
 

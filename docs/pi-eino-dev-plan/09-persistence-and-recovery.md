@@ -128,7 +128,7 @@ sequenceDiagram
     S-->>T: 产品等待态可查询
 ```
 
-D21-恢复点时序：asked 可以先保存但交互在 checkpoint 关联前不宣称可恢复。blob 落盘后关联前崩溃：不凭孤儿 blob 自动执行。产品关联完成后崩溃：从日志恢复同一等待态。任意错误/进程崩溃不保证 Eino 有最新 checkpoint。
+D21-恢复点时序：一次性审批 asked/decided 仅存在当前运行实例内存，checkpoint 不保存可恢复的批准。blob 落盘后关联前崩溃：不凭孤儿 blob 自动执行。产品关联完成后崩溃：只恢复执行位置和持久调用事实，不能恢复旧批准；显式 Resume 遇到尚未执行且仍需审批的调用时重新询问。任意错误/进程崩溃不保证 Eino 有最新 checkpoint。工作流业务问答属于 P5，不能与本次临时审批混用。
 
 <a id="resume"></a>
 ## 5. 打开、继续与 resume
@@ -142,7 +142,7 @@ D21-恢复点时序：asked 可以先保存但交互在 checkpoint 关联前不�
 
 Resume 前依次校验当前状态/权限、未知效果冲突、blob 完整性、工作区和 backend 映射、build/Eino/序列化兼容、generation 可重建、原 targetAgent 与工作流定义/绑定、有效模型/工具选择和扩展状态、日志与 checkpoint 的进度一致性。
 
-checkpoint 之后存在新的未表示模型/Turn 历史时，旧点不直接恢复；仅允许适配器明确支持的 pending 输入、已保存交互决定、原待执行工具的已有结果/核对结论合并。等待时不改 checkpoint 的投影。跨 OS/工作区/容器镜像的执行恢复默认不兼容；历史仍可读。
+checkpoint 之后存在新的未表示模型/Turn 历史时，旧点不直接恢复；仅允许适配器明确支持的 pending 输入、当前运行实例内的有效审批决定、原待执行工具的已有结果/核对结论合并。一次性审批决定不写入 checkpoint 或 journal，重开后必须重新判断权限并按需询问。等待时不改 checkpoint 的投影。跨 OS/工作区/容器镜像的执行恢复默认不兼容；历史仍可读。
 
 有效应答映射成服务端保存的 Interrupt target，再使用 ResumeWithParams；不让 HTTP 自填 Eino 地址。恢复包装器先查原调用账目：已提交结果返回同一结果，未占用有效批准可原子占用；已占用且未知则阻止执行，不能重新取额度。
 

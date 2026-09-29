@@ -26,22 +26,26 @@ schema 在 generation 构建时编译并缓存，默认 Draft 2020-12；显式�
 
 | 工具 | 实现/输入规则 | 结果和失败 |
 | --- | --- | --- |
-| ls | Go 目录读取；路径解析、稳定排序、分页 | 文件类型/大小/路径；不可用明确错误 |
+| ls | 受控目录读取；路径解析、稳定排序、条目及字节限额；不要求游标分页 | 文件类型/大小/路径；超限明确提示截断及缩小目录，不可用明确错误 |
 | read_file | Go 文件读取；line offset/limit；扩展 byte offset/limit 处理超长单行，两种模式互斥 | 文件头部完整行；片段有 UTF-8 边界/版本信息，不用 Bash 续读 |
 | write_file | 目标规范化；写前复核真实路径及前置条件 | 确认写入事实；无法确认落盘效果则 unknown |
 | edit_file | 精确 old_text 匹配；默认唯一，replace_all 必须明确；保留权限和格式 | 零/多匹配、外部内容变化返回可修复错误，不静默模糊替换 |
-| glob / grep | 固定 ripgrep、参数数组、--no-config；验证 root/glob/数量和字节限额 | 路径/行号和有界预览；非法 pattern 明确返回 |
+| glob / grep | 优先复用 Eino 匹配/输出模式语义，经受控 FileOperations 执行；验证 root/pattern/数量和字节限额；grep 可简单 offset/limit 截取 | 稳定排序、路径/行号和有界预览；非法 pattern 明确返回，超限提示缩小查询；不承诺后端按页扫描 |
 | execute | ProcessOperations；显式 shell 类型、cwd、超时；Windows 原生无需 Bash | stdout/stderr、退出码、停止证据、截断及真实产物 |
 | write_todos | invocation 范围内的结构化 TODO；更新经事实提交 | 不把 TODO 勾选当作业务产物验证 |
 | task / general-purpose | Eino 委派机制＋作用域包装 | 父子身份、摘要/产物、权限和预算继承 |
+
+**2026-09-28 10:05 已批准调整，实施中：**目录/搜索优先复用框架已有能力，P2 不增加复杂游标或目录快照分页；采用稳定排序、有界输出和明确截断提示。框架能力存在不代表本项目已接线，验收须经过真实受控执行链。grep 的简单 offset/limit 是结果截取，不保证后端只扫描一页。若宿主选择 ripgrep 后端，仍使用固定可用版本、参数数组和 `--no-config`；P2 不强制所有后端依赖外部命令。文件 read 的版本绑定续读契约不变。
 
 默认先复用 Eino filesystem.NewTyped 的工具定义和可替换 CustomTool 入口；read_file 用自定义实现补片段读取，结果统一经过本章管道。需要自定义装配时不再同时传 DeepAgent.Backend/Shell 触发第二份同名工具。通用子 Agent 由同一工厂显式构建，不重复隐式 general-purpose。
 
 write/edit 优先在目标同目录安全创建临时文件、同步并替换，复核预期文件身份/hash；失败清理本次临时文件。符号链接/junction、硬链接、权限和 Windows 替换行为按 11 验证。外部进程并发修改不能凭进程内锁消除，冲突必须显式反馈。
 
-### 2.1 用户直接 shell（2026-09-27 最新确认，待实现）
+### 2.1 用户直接 shell
 
-ExecuteCommand 的用户 shell 场景改为由受信宿主显式调用的独立入口，不进入 tools.Executor 的模型工具管道：不进行人工审批、不计 Agent 工具/活动预算、不签发执行票据、不做持久化执行去重，不创建模型 Turn、FunctionToolCall 或 FunctionToolResult。相同命令被用户再次显式提交就是新执行；SDK 不自动重试，Open、Resume、日志重放和日志保存失败都不得启动或重跑它。
+**2026-09-28 审批恢复保护补充（已批准，修复中）：**模型任务等待工具审批时，SDK 的 ExecuteCommand 拒绝新手动命令，返回 state_conflict，不启动进程、不追加命令历史。审批已答复但任务尚未恢复的间隙继续保护原恢复点；状态/历史查询、审批答复和取消仍可用。不采用待消费命令上下文方案，不放宽 checkpoint 一致性校验。命令已启动后任务进入审批的竞争必须另有确定性测试及安全处理，不能只检查尚未答复的审批数量。此限制是会话状态兼容性检查，不是将用户 shell 纳入模型工具审批或预算。
+
+ExecuteCommand 的用户 shell 场景改为由受信宿主显式调用的独立入口。**2026-09-27 16:05 补充确认：**直接修改现有 ExecuteCommand 的公开契约，删除任意已登记工具调用、Name/Arguments 与持久化幂等/回执等不再适用的能力，不新增 ExecuteShell，也不保留旧通用入口作为兼容别名；允许调用方按新的 shell 请求/结果迁移。它不进入 tools.Executor 的模型工具管道：不进行人工审批、不计 Agent 工具/活动预算、不签发执行票据、不做持久化执行去重，不创建模型 Turn、FunctionToolCall 或 FunctionToolResult。相同命令被用户再次显式提交就是新执行；SDK 不自动重试，Open、Resume、日志重放和日志保存失败都不得启动或重跑它。
 
 Session 仍必须显式绑定工作区；命令 cwd 可显式指定，否则使用该绑定而不是进程 cwd。工作区只是用户 shell 的初始目录，不是访问限制；命令以宿主操作系统账户权限执行，不承诺沙箱或运行数据写保护。保留输出、退出码、超时、主动取消和真实退出状态；取消请求不等于进程已退出。超时数值沿用现有明确配置，本次不照搬 Zero 的 30 秒常量。
 
@@ -113,6 +117,19 @@ Authorized 类型是内部有效票据引用＋FrozenExecution，不是客户端
 原生文件和 shell 共享 WorkspaceBinding/ResourceMap。容器 shell 只映射受信配置的挂载根，文件工具对相应逻辑资源访问同一宿主文件；未映射的容器路径明确不支持文件直读，需在容器执行结束前导出产物。见 11。
 
 测试使用内存 FileOperations、可控 ProcessOperations 和 ArtifactStore；同样经过工具管道，不能测试时完全绕开权限和去重后宣称生产行为已覆盖。
+
+<a id="read-snapshot-migration"></a>
+### 4.1 read_file 注入后端迁移（2026-09-28 已批准的兼容性例外）
+
+维护者已明确批准调整读取契约，现有注入后端必须迁移为完整快照语义；不提供可选能力探测或旧行为回退。`sdk.ReadRequest` / `sdk.ReadResult` 仍通过现有单文件 SDK 别名公开，新增 `Mode` 字段可能影响未使用字段名的结构体字面量，调用方应使用具名字段。
+
+- 内置工具始终传入 `Mode=lines` 或 `Mode=bytes`。`Offset/Limit` 表示模型请求的零基行范围或字节范围，用于冻结请求绑定校验，后端不得按它们预裁剪 `ContentRef` 对应内容。保留空 `Mode` 的后端私有旧行为不等于兼容新内置工具。
+- `Read` 返回可由注入 `ArtifactStore` 读取的完整、不可变文件快照引用及非空稳定 `Version`。请求携带版本时，后端必须检查，不匹配返回 `state_conflict`，不得悄悄切换到最新内容。完整快照指引用的内容语义，不要求复制全文件或一次性读入内存。
+- 工具以 `ArtifactRead.Offset=0`、`Limit=0` 打开该快照；`Open` 校验原冻结资源、模式、范围、版本及执行票据，并消费一次性读取授权后暴露正文。实际行/字节定位、UTF-8 安全投影和上限控制由工具执行，避免双重裁剪。模型策略、取消与票据约束不变。
+- 行和 byte 模式均受 2000 行及 50 KiB 上限约束；byte 模式非空末尾片段计一行，文件末尾无换行仍计一行，末尾换行不增加虚构空行。首个完整行超过字节上限时返回 byte 片段读取入口。
+- 工具返回完整结构化 JSON，包含正文、版本、模式、编码、实际字节起止、行数、截断原因、部分行标记及 `nextRead`。续读参数带原版本并对应实际返回位置；工具不使用旧 `ReadResult.NextOffset` 生成续读参数。不可读引用或缺少版本不能报告成功。
+
+代码与当前测试已接入该契约；外部后端是否完成迁移仍需各宿主验证。`sdk/testdata/consumer/read_snapshot_test.go` 通过公开 Session 的真实模型工具调用验证行/byte 续读、完整 JSON、版本冲突和后端调用次数；它不是原生文件后端或操作系统安全认证。
 
 <a id="selection"></a>
 ## 5. 工具选择和搜索

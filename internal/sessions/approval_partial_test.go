@@ -1,6 +1,7 @@
 package sessions
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"sync/atomic"
@@ -83,7 +84,7 @@ func waitingApprovalSession(t *testing.T, decisionHook func(context.Context, age
 
 func answerApproval(t *testing.T, f approvalSessionFixture, decision string) InteractionResponse {
 	t.Helper()
-	for id := range f.manager.View().Interactions {
+	for id := range approvalSnapshot(t, f.s).Interactions {
 		response := InteractionResponse{InteractionID: id, Decision: decision, ExpectedRevision: f.manager.View().LastSeq, IdempotencyKey: "answer"}
 		if _, err := f.s.RespondInteraction(t.Context(), response); err != nil {
 			t.Fatal(err)
@@ -129,6 +130,7 @@ func TestApprovalPartialAnswersKeepUnansweredOriginalCallsWaiting(t *testing.T) 
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = s.Close(context.Background()) })
+			diagnoseApprovalClock(t, s)
 			input, err := s.SubmitInput(t.Context(), agent.InputCommand{Kind: "prompt", Content: json.RawMessage(`{"text":"hello"}`)})
 			if err != nil {
 				t.Fatal(err)
@@ -138,13 +140,13 @@ func TestApprovalPartialAnswersKeepUnansweredOriginalCallsWaiting(t *testing.T) 
 				return tr.State == "paused" || terminal(tr.State)
 			})
 			original := manager.View()
-			if len(original.Interactions) != 3 || original.Traces[input.TraceID].State != "paused" {
+			if len(approvalSnapshot(t, s).Interactions) != 3 || original.Traces[input.TraceID].State != "paused" {
 				t.Fatalf("batch did not ask three original approvals: %+v", original.Traces[input.TraceID])
 			}
 			for index, label := range labels {
 				v := manager.View()
 				var interactionID string
-				for id, in := range v.Interactions {
+				for id, in := range approvalSnapshot(t, s).Interactions {
 					if v.Calls[in.CallID].Call.ProviderCallID == label {
 						interactionID = id
 					}
@@ -178,6 +180,16 @@ func TestApprovalPartialAnswersKeepUnansweredOriginalCallsWaiting(t *testing.T) 
 						resumed.activity.mu.Unlock()
 					}
 					t.Fatalf("partial %s trace=%+v counts=%d/%d/%d", label, v.Traces[input.TraceID], counts[0].Load(), counts[1].Load(), counts[2].Load())
+				}
+				if wanted == "paused" {
+					cp := v.Checkpoints[v.Traces[input.TraceID].CheckpointID]
+					data, err := backend.Get(t.Context(), id, store.BlobRef{Hash: cp.BlobHash, Size: cp.BlobSize})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if bytes.Contains(data, []byte("allowed-once")) {
+						t.Fatal("approval decision leaked into resumed Eino checkpoint")
+					}
 				}
 				for n := range counts {
 					want := int32(0)

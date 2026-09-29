@@ -7,6 +7,7 @@ import (
 
 	"github.com/ww1489/seasprak/internal/agent"
 	einorun "github.com/ww1489/seasprak/internal/agent/eino"
+	"github.com/ww1489/seasprak/internal/agent/tools"
 	product "github.com/ww1489/seasprak/internal/errors"
 	"github.com/ww1489/seasprak/internal/llm"
 	"github.com/ww1489/seasprak/internal/sessions/state"
@@ -127,7 +128,7 @@ func (rt *runtime) validateResume(ctx context.Context, traceID string, view stat
 	if err != nil {
 		return state.CheckpointRef{}, err
 	}
-	if err := validateCheckpointProgress(cp, stored, view); err != nil {
+	if err := validateCheckpointProgress(cp, stored, view, rt.opts.Tools); err != nil {
 		return state.CheckpointRef{}, err
 	}
 	blobs, ok := rt.opts.Store.(store.CheckpointBlobs)
@@ -181,7 +182,7 @@ func checkpointIndependentDefault(cp state.CheckpointRef, commit store.Commit, r
 	return false
 }
 
-func validateCheckpointProgress(cp state.CheckpointRef, stored store.StoredSession, view state.View) error {
+func validateCheckpointProgress(cp state.CheckpointRef, stored store.StoredSession, view state.View, definitions []tools.Definition) error {
 	if cp.HistoryCommit == 0 || cp.ProjectionRevision != cp.HistoryCommit || cp.LeafID != view.LeafID || cp.SelectionRevision == 0 {
 		return incompatibleResume("checkpoint history projection differs")
 	}
@@ -212,8 +213,12 @@ func validateCheckpointProgress(cp state.CheckpointRef, stored store.StoredSessi
 			case "operation", "trace", "execution_policy", "idempotency", "generation_ref", "queue_hold":
 				// These are control-only changes. Current trace, policy, generation,
 				// stop proof and checkpoint identity were checked above.
+			case "host_command_result":
+				if !checkpointHostCommandResult(cp, commit, rec, view) {
+					return incompatibleResume("host command result changed checkpoint history or identity")
+				}
 			case "selection":
-				if !checkpointIndependentDefault(cp, commit, rec, view) {
+				if !checkpointIndependentDefault(cp, commit, rec, view) && !checkpointPendingTurnSelection(cp, commit, rec, view, definitions) {
 					return incompatibleResume("selection changed checkpoint execution")
 				}
 			case "approval_binding":

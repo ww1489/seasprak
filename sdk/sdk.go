@@ -75,6 +75,8 @@ type (
 	SessionOptions             = sessions.Options
 	AgentSession               = sessions.AgentSession
 	Snapshot                   = sessions.Snapshot
+	ModelAttemptView           = sessions.ModelAttemptView
+	ObservationView            = sessions.ObservationView
 	ResumeCommand              = sessions.ResumeCommand
 	InteractionResponse        = sessions.InteractionResponse
 	Interaction                = state.Interaction
@@ -86,6 +88,7 @@ type (
 	ReconcileQueryRequest      = sessions.ReconcileQueryRequest
 	ReconcileQueryFunc         = sessions.ReconcileQueryFunc
 	CommandRequest             = sessions.CommandRequest
+	CommandResult              = sessions.CommandResult
 	FrozenExecution            = agent.FrozenExecution
 	ResumeEligibility          = sessions.ResumeEligibility
 	OperationReceipt           = state.OperationReceipt
@@ -156,6 +159,7 @@ type (
 	BackendCapabilities        = agent.BackendCapabilities
 	BackendCapabilityReporter  = agent.BackendCapabilityReporter
 	FileOperations             = agent.FileOperations
+	FileEffect                 = agent.FileEffect
 	ListRequest                = agent.ListRequest
 	ListResult                 = agent.ListResult
 	FileEntry                  = agent.FileEntry
@@ -167,6 +171,12 @@ type (
 	ProcessOperations          = agent.ProcessOperations
 	ProgressSink               = agent.ProgressSink
 	ArtifactStore              = agent.ArtifactStore
+	OutputArtifactStore        = agent.OutputArtifactStore
+	OutputArtifactBinding      = agent.OutputArtifactBinding
+	OutputArtifactInput        = agent.OutputArtifactInput
+	OutputArtifactRead         = agent.OutputArtifactRead
+	OutputRedactor             = agent.OutputRedactor
+	ToolOutputProjection       = agent.ToolOutputProjection
 	TodoOperations             = agent.TodoOperations
 	AuthorizedExecution        = agent.AuthorizedExecution
 	AuthorizedProcess          = agent.AuthorizedProcess

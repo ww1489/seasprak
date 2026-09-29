@@ -71,7 +71,17 @@ func (s *AgentSession) SetDefaultModel(ctx context.Context, request SetDefaultMo
 			Name    string `json:"name"`
 			Version string `json:"version"`
 		}{name, version})
-		receipt, err := rt.manager.AcceptSelection(ctx, state.OperationCommand{Principal: rt.opts.Principal, Kind: "select_default_model", Target: "next_trace", IdempotencyKey: request.IdempotencyKey, ExpectedRevision: request.ExpectedRevision, Content: content}, selection)
+		command := state.OperationCommand{Principal: rt.opts.Principal, Kind: "select_default_model", Target: "next_trace", IdempotencyKey: request.IdempotencyKey, ExpectedRevision: request.ExpectedRevision, Content: content}
+		if receipt, found, err := rt.manager.FindOperation(command); found || err != nil {
+			if err == nil && found {
+				rt.rebindAcceptedModel(receipt, request.Model.Model)
+			}
+			return receipt, err
+		}
+		if err := validateSelectionModelOptions(request.Model.Model, len(rt.opts.ToolInfos) != 0); err != nil {
+			return nil, err
+		}
+		receipt, err := rt.manager.AcceptSelection(ctx, command, selection)
 		if err != nil {
 			return nil, err
 		}
@@ -111,6 +121,9 @@ func (s *AgentSession) SelectNextTurnModel(ctx context.Context, request SelectNe
 		}{request.TraceID, name, version})
 		command := state.OperationCommand{Principal: rt.opts.Principal, Kind: "select_next_turn_model", Target: request.TraceID, IdempotencyKey: request.IdempotencyKey, ExpectedRevision: request.ExpectedRevision, Content: content}
 		if receipt, found, err := rt.manager.FindOperation(command); found || err != nil {
+			if err == nil && found {
+				rt.rebindAcceptedModel(receipt, request.Model.Model)
+			}
 			return receipt, err
 		}
 		view := rt.manager.View()
@@ -129,6 +142,13 @@ func (s *AgentSession) SelectNextTurnModel(ctx context.Context, request SelectNe
 			invocation = trace.InvocationID
 		}
 		selection := state.Selection{ID: agent.MustID(), Scope: agent.ExecutionScope{SessionID: rt.opts.SessionID, BranchID: view.BranchID, TraceID: request.TraceID, InvocationID: invocation, Generation: rt.generation}, Kind: "model", State: "pending", ApplyAt: "next_turn", ModelName: name, ModelVersion: version}
+		needsTools := len(rt.opts.ToolInfos) != 0
+		if selectedTools := rt.findTurnSelection(view, selection.Scope, "tools"); selectedTools != nil {
+			needsTools = len(selectedTools.ToolNames) != 0
+		}
+		if err := validateSelectionModelOptions(request.Model.Model, needsTools); err != nil {
+			return nil, err
+		}
 		receipt, err := rt.manager.AcceptSelection(ctx, command, selection)
 		if err != nil {
 			return nil, err
@@ -151,46 +171,74 @@ func (s *AgentSession) SelectNextTurnModel(ctx context.Context, request SelectNe
 
 func (s *AgentSession) SetActiveTools(ctx context.Context, request SetActiveToolsRequest) (state.OperationReceipt, error) {
 	value, err := s.rt.call(ctx, func(rt *runtime) (any, error) {
-		if err := rt.writable(); err != nil {
-			return nil, err
-		}
-		if request.TraceID == "" {
-			return nil, invalidSelection("trace is required")
-		}
-		view := rt.manager.View()
-		trace := view.Traces[request.TraceID]
-		if trace == nil {
-			return nil, notFoundSelection("trace not found")
-		}
-		if terminal(trace.State) || trace.State == "cancelling" {
-			return nil, stateConflictSelection("trace cannot accept a tool selection")
-		}
-		if trace.Generation != rt.generation {
-			return nil, incompatibleSelection("tool generation does not match the trace")
-		}
-		names, versions, err := rt.validateToolSelection(request.ToolNames)
-		if err != nil {
-			return nil, err
-		}
-		invocation := request.InvocationID
-		if invocation == "" {
-			invocation = trace.InvocationID
-		}
-		selection := state.Selection{ID: agent.MustID(), Scope: agent.ExecutionScope{SessionID: rt.opts.SessionID, BranchID: view.BranchID, TraceID: request.TraceID, InvocationID: invocation, Generation: rt.generation}, Kind: "tools", State: "pending", ApplyAt: "next_turn", ToolNames: names, ToolVersions: versions}
-		content, _ := json.Marshal(struct {
-			TraceID string   `json:"traceId"`
-			Names   []string `json:"names"`
-		}{request.TraceID, names})
-		receipt, err := rt.manager.AcceptSelection(ctx, state.OperationCommand{Principal: rt.opts.Principal, Kind: "select_active_tools", Target: request.TraceID, IdempotencyKey: request.IdempotencyKey, ExpectedRevision: request.ExpectedRevision, Content: content}, selection)
-		if err != nil {
-			return nil, err
-		}
-		return receipt, nil
+		return rt.acceptActiveTools(ctx, request)
 	})
 	if err != nil {
 		return state.OperationReceipt{}, err
 	}
 	return value.(state.OperationReceipt), nil
+}
+
+func (rt *runtime) acceptActiveTools(ctx context.Context, request SetActiveToolsRequest) (any, error) {
+	if err := rt.writable(); err != nil {
+		return nil, err
+	}
+	if request.TraceID == "" {
+		return nil, invalidSelection("trace is required")
+	}
+	names, err := normalizeToolSelection(request.ToolNames)
+	if err != nil {
+		return nil, err
+	}
+	content, _ := json.Marshal(struct {
+		TraceID      string   `json:"traceId"`
+		Names        []string `json:"names"`
+		InvocationID string   `json:"invocationId,omitempty"`
+	}{request.TraceID, names, request.InvocationID})
+	command := state.OperationCommand{Principal: rt.opts.Principal, Kind: "select_active_tools", Target: request.TraceID, IdempotencyKey: request.IdempotencyKey, ExpectedRevision: request.ExpectedRevision, Content: content}
+	if receipt, found, err := rt.manager.FindOperation(command); found || err != nil {
+		return receipt, err
+	}
+	view := rt.manager.View()
+	trace := view.Traces[request.TraceID]
+	if trace == nil {
+		return nil, notFoundSelection("trace not found")
+	}
+	if terminal(trace.State) || trace.State == "cancelling" {
+		return nil, stateConflictSelection("trace cannot accept a tool selection")
+	}
+	if trace.Generation != rt.generation {
+		return nil, incompatibleSelection("tool generation does not match the trace")
+	}
+	invocation := request.InvocationID
+	if invocation == "" {
+		invocation = trace.InvocationID
+	} else if invocation != trace.InvocationID {
+		return nil, stateConflictSelection("selection invocation does not belong to the trace")
+	}
+	names, versions, err := rt.validateToolSelection(names)
+	if err != nil {
+		return nil, err
+	}
+	selection := state.Selection{ID: agent.MustID(), Scope: agent.ExecutionScope{SessionID: rt.opts.SessionID, BranchID: view.BranchID, TraceID: request.TraceID, InvocationID: invocation, Generation: rt.generation}, Kind: "tools", State: "pending", ApplyAt: "next_turn", ToolNames: names, ToolVersions: versions}
+	bound := *trace
+	if chosen := rt.findTurnSelection(view, selection.Scope, "model"); chosen != nil {
+		bound.ModelSelectionID = chosen.ID
+	}
+	if bound.ModelSelectionID != "" {
+		model, err := rt.modelForTrace(&bound)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateSelectionModelOptions(model, len(names) != 0); err != nil {
+			return nil, err
+		}
+	}
+	receipt, err := rt.manager.AcceptSelection(ctx, command, selection)
+	if err != nil {
+		return nil, err
+	}
+	return receipt, nil
 }
 
 func (s *AgentSession) SearchTools(ctx context.Context, request SearchToolsRequest) ([]ToolCandidate, error) {
@@ -217,6 +265,9 @@ func (s *AgentSession) SearchTools(ctx context.Context, request SearchToolsReque
 		query := strings.ToLower(strings.TrimSpace(request.Query))
 		result := make([]ToolCandidate, 0, limit)
 		for _, def := range rt.opts.Tools {
+			if !rt.toolSelectionAllowed(def) {
+				continue
+			}
 			if query != "" && !strings.Contains(strings.ToLower(def.Name), query) && !strings.Contains(strings.ToLower(def.Description), query) {
 				continue
 			}
@@ -254,34 +305,102 @@ func validateModelChoice(choice ModelChoice) (string, string, error) {
 	return name, version, nil
 }
 
-func (rt *runtime) validateToolSelection(names []string) ([]string, []string, error) {
+// validateSelectionModelOptions resolves the selected model's own trusted
+// configuration, never options inherited from the previous model. Raw injected
+// implementations retain their existing AgenticModel contract.
+func validateSelectionModelOptions(candidate einomodel.AgenticModel, needsTools bool) error {
+	configured, ok := candidate.(interface{ Configuration() llm.ModelConfig })
+	if !ok {
+		return nil
+	}
+	requested := llm.RequestedOptions{RequiredCapabilities: []llm.CapabilityName{llm.CapTextStream}}
+	if needsTools {
+		requested.RequiredCapabilities = append(requested.RequiredCapabilities, llm.CapTools)
+	}
+	if bound, ok := candidate.(interface{ EffectiveOptions() llm.EffectiveOptions }); ok {
+		effective := bound.EffectiveOptions()
+		requested.Thinking = effective.RequestedThinking
+		requested.CacheIntent = effective.RequestedCacheIntent
+		requested.MaxOutputTokens = effective.MaxOutputTokens
+	}
+	_, err := llm.ResolveOptions(configured.Configuration(), requested)
+	return err
+}
+
+// restoreDefaultSelection reconstructs only the durable reference. Opening a
+// session does not construct models, activate choices, or resume execution.
+func (rt *runtime) restoreDefaultSelection() {
+	view := rt.manager.View()
+	scope := agent.ExecutionScope{SessionID: rt.opts.SessionID, BranchID: view.BranchID, Generation: rt.generation}
+	var revision uint64
+	for _, selected := range view.Selections {
+		if selected.Kind == "model" && selected.ApplyAt == "next_trace" && (selected.State == "pending" || selected.State == "active") && selected.Scope == scope && selected.Revision > revision {
+			rt.defaultModelID, revision = selected.ID, selected.Revision
+		}
+	}
+}
+
+func normalizeToolSelection(names []string) ([]string, error) {
 	seen := make(map[string]bool, len(names))
-	versions := make(map[string]string, len(names))
-	for _, name := range names {
+	ordered := append([]string(nil), names...)
+	for i, name := range ordered {
 		name = strings.TrimSpace(name)
 		if name == "" || seen[name] {
-			return nil, nil, invalidSelection("tool names must be unique and non-empty")
+			return nil, invalidSelection("tool names must be unique and non-empty")
 		}
+		seen[name], ordered[i] = true, name
+	}
+	sort.Strings(ordered)
+	return ordered, nil
+}
+
+func (rt *runtime) validateToolSelection(names []string) ([]string, []string, error) {
+	ordered, err := normalizeToolSelection(names)
+	if err != nil {
+		return nil, nil, err
+	}
+	versions := make([]string, len(ordered))
+	for i, name := range ordered {
 		found := false
 		for _, def := range rt.opts.Tools {
 			if def.Name == name {
-				found = true
-				versions[name] = def.Version
+				if !rt.toolSelectionAllowed(def) {
+					return nil, nil, product.NewError(product.CodePermissionDenied, "tool selection is unavailable or denied")
+				}
+				found, versions[i] = true, def.Version
 				break
 			}
 		}
 		if !found {
 			return nil, nil, notFoundSelection("tool is not registered in the current generation")
 		}
-		seen[name] = true
 	}
-	ordered := append([]string(nil), names...)
-	sort.Strings(ordered)
-	orderedVersions := make([]string, len(ordered))
-	for i, name := range ordered {
-		orderedVersions[i] = versions[name]
+	return ordered, versions, nil
+}
+
+// rebindAcceptedModel optionally restores a lost process-local instance through
+// an exact idempotent replay. Invalid candidates leave the binding untouched;
+// they cannot change the historical receipt returned by FindOperation. Resume
+// still rejects a missing instance. No choice, default or revision is changed.
+func (rt *runtime) rebindAcceptedModel(receipt state.OperationReceipt, candidate einomodel.AgenticModel) {
+	view := rt.manager.View()
+	selected, ok := selectionForOperation(view, receipt.OperationID)
+	if !ok || selected.Kind != "model" || !state.SelectionMatchesOperation(selected, view.Operations[receipt.OperationID]) {
+		return
 	}
-	return ordered, orderedVersions, nil
+	if rt.modelSlots[selected.ID] != nil {
+		return
+	}
+	if _, _, err := validateModelChoice(ModelChoice{Name: selected.ModelName, Version: selected.ModelVersion, Model: candidate}); err != nil {
+		return
+	}
+	if err := validateSelectionModelOptions(candidate, false); err != nil {
+		return
+	}
+	if rt.modelSlots == nil {
+		rt.modelSlots = map[string]einomodel.AgenticModel{}
+	}
+	rt.modelSlots[selected.ID] = candidate
 }
 
 func selectionForOperation(view state.View, operationID string) (state.Selection, bool) {
@@ -323,14 +442,15 @@ func (rt *runtime) modelForTrace(trace *state.TraceState) (einomodel.AgenticMode
 		}
 		return rt.opts.Model, nil
 	}
-	if rt.modelSlots != nil {
-		if selected := rt.modelSlots[trace.ModelSelectionID]; selected != nil {
-			return selected, nil
-		}
-	}
 	selection, ok := rt.manager.View().Selections[trace.ModelSelectionID]
-	if !ok {
+	if !ok || selection.Kind != "model" {
 		return nil, product.NewError(product.CodeIncompatibleResume, "trace model selection is missing")
+	}
+	if selected := rt.modelSlots[trace.ModelSelectionID]; selected != nil {
+		if _, _, err := validateModelChoice(ModelChoice{Name: selection.ModelName, Version: selection.ModelVersion, Model: selected}); err != nil {
+			return nil, err
+		}
+		return selected, nil
 	}
 	if rt.opts.Model != nil {
 		name, version, err := modelIdentity(rt.opts.Model)
@@ -363,6 +483,60 @@ func (rt *runtime) modelForCheckpoint(cp state.CheckpointRef, view state.View) (
 		bound.ModelSelectionID, revision = selected.ID, selected.Revision
 	}
 	return rt.modelForTrace(&bound)
+}
+
+// beginSelectedTurn runs only in the ledger's mailbox persistence callback.
+// Validation and durable publication precede all execution-frame changes.
+func (rt *runtime) beginSelectedTurn(ctx context.Context, frame *execution, usage agent.Usage) error {
+	view := rt.manager.View()
+	trace := view.Traces[frame.scope.TraceID]
+	if trace == nil {
+		return notFoundSelection("trace not found")
+	}
+	bound := *trace
+	modelSelection := rt.findTurnSelection(view, frame.scope, "model")
+	toolSelection := rt.findTurnSelection(view, frame.scope, "tools")
+	var selectionIDs []string
+	if modelSelection != nil {
+		bound.ModelSelectionID = modelSelection.ID
+		selectionIDs = append(selectionIDs, modelSelection.ID)
+	}
+	selected, err := rt.modelForTrace(&bound)
+	if err != nil {
+		return err
+	}
+	names := make(map[string]struct{})
+	if toolSelection != nil {
+		if _, _, err := rt.validateToolSelection(toolSelection.ToolNames); err != nil {
+			return err
+		}
+		for _, name := range toolSelection.ToolNames {
+			names[name] = struct{}{}
+		}
+		selectionIDs = append(selectionIDs, toolSelection.ID)
+	} else {
+		for _, info := range rt.opts.ToolInfos {
+			if info != nil {
+				names[info.Name] = struct{}{}
+			}
+		}
+	}
+	if bound.ModelSelectionID != "" {
+		if err := validateSelectionModelOptions(selected, len(names) != 0); err != nil {
+			return err
+		}
+	}
+	turn := agent.TurnRecord{ID: usage.ModelCallID, TraceID: trace.ID, InvocationID: frame.scope.InvocationID, SelectionRevision: view.LastSeq, ModelConfigVersion: modelVersion(selected), ToolNames: sortedToolNames(names)}
+	if err := rt.manager.BeginSelectedTurn(ctx, frame.scope, usage, turn, selectionIDs); err != nil {
+		return err
+	}
+	frame.currentModel, frame.activeToolNames = selected, names
+	frame.turnID, frame.turnSelectionRevision = turn.ID, turn.SelectionRevision
+	frame.scope.SelectionRevision = turn.SelectionRevision
+	if toolSelection != nil {
+		frame.activeToolSelection = toolSelection.Revision
+	}
+	return nil
 }
 
 func modelIdentity(candidate einomodel.AgenticModel) (string, string, error) {

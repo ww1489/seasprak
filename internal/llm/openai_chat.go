@@ -50,7 +50,7 @@ func (c *Catalog) RegisterOpenAIChat(client *http.Client, maxResponseBytes int) 
 		if r.Options.ActiveCache {
 			switch r.Options.CacheIntent {
 			case "short":
-				extra["prompt_cache_retention"] = "in_memory"
+				// Match pi: use provider-default retention without an extra field.
 			case "long":
 				extra["prompt_cache_retention"] = "24h"
 			default:

@@ -1,0 +1,19 @@
+This directory contains private copies of the CloudWeGo Eino extension adapters.
+
+Upstream: https://github.com/cloudwego/eino-ext
+Copyright 2026 CloudWeGo Authors
+License: Apache License 2.0; see LICENSE in this directory.
+
+Source commit: 3603a39473c3e7b2aa3bfc11216487c94b8c7fd9
+Gemini source tag: components/model/agenticgemini/v0.2.5
+Claude source tag: components/model/agenticclaude/v0.1.7
+
+The upstream root LICENSE and LICENSE-APACHE both contain Apache License 2.0.
+LICENSE is retained here; no upstream NOTICE file was found in the source tree.
+This NOTICE records seasprak attribution and modifications; it is not an
+additional upstream license condition and does not modify the license.
+
+seasprak carries local protocol fixes and offline regression tests described in
+PATCH_NOTES.md. Original source copyright and license headers are retained.
+These packages are private implementation details, not a published fork or a
+new public SDK import path.

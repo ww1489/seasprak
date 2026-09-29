@@ -76,7 +76,8 @@ func TestTestkitTicketSessionLifecycle(t *testing.T) {
 					if operation == "write" {
 						args["contentRef"] = m.RegisterContent([]byte("replacement"))
 					} else {
-						args["patchRef"] = m.RegisterPatch(fixture.Patch{Old: "original", New: "replacement"})
+						args["old_string"] = "original"
+						args["new_string"] = "replacement"
 					}
 					raw, err := json.Marshal(args)
 					if err != nil {
@@ -117,9 +118,11 @@ func TestTestkitTicketSessionLifecycle(t *testing.T) {
 						t.Fatal("proxy did not capture an unconsumed claimed request")
 					}
 					wantState := "completed"
+					wantObservation := "failed"
 					wantModelCalls := 2
 					if boundary == "cancel-before-consume" {
 						wantState = "cancelled"
+						wantObservation = "cancelled"
 						wantModelCalls = 1
 						stopped := make(chan error, 1)
 						go func() { stopped <- s.Cancel(ctx, receipt.TraceID) }()
@@ -167,7 +170,7 @@ func TestTestkitTicketSessionLifecycle(t *testing.T) {
 					view = s.rt.manager.View()
 					trace := view.Traces[receipt.TraceID]
 					call = view.Calls[request.auth.Frozen.CallID]
-					if trace.State != wantState || !trace.Settled || !trace.ExecutionStopped || !call.Claimed || call.Observation == nil || call.Observation.Executed || call.Observation.SideEffect != "none" || call.Observation.Status != "failed" || trace.Usage.ToolExecutions != 1 || frame.budget.Snapshot().ToolExecutions != 1 || files.calls.Load() != 1 || files.writes.Load() != 0 || model.Calls() != wantModelCalls {
+					if trace.State != wantState || !trace.Settled || !trace.ExecutionStopped || !call.Claimed || call.Observation == nil || call.Observation.Executed || call.Observation.SideEffect != "none" || call.Observation.Status != wantObservation || trace.Usage.ToolExecutions != 1 || frame.budget.Snapshot().ToolExecutions != 1 || files.calls.Load() != 1 || files.writes.Load() != 0 || model.Calls() != wantModelCalls {
 						t.Fatalf("settled trace=%+v call=%+v proxy=%d writes=%d model=%d", trace, call, files.calls.Load(), files.writes.Load(), model.Calls())
 					}
 					data, current, ok := m.Snapshot("document")

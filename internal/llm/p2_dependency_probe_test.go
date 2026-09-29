@@ -10,17 +10,18 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/cloudwego/eino-ext/components/model/agenticclaude"
 	"github.com/cloudwego/eino-ext/components/model/agenticdeepseek"
-	"github.com/cloudwego/eino-ext/components/model/agenticgemini"
 	"github.com/cloudwego/eino-ext/components/model/agenticopenai"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/ww1489/seasprak/internal/llm/einoext/agenticclaude"
+	"github.com/ww1489/seasprak/internal/llm/einoext/agenticgemini"
 	"google.golang.org/genai"
 )
 
-// Constructor/transport compatibility probes against the versions pinned in go.mod.
-// These do not certify the product factory, response admission or any endpoint.
+// Constructor/transport probes use the private patched Claude/Gemini adapters
+// and the other dependency versions pinned in go.mod. They do not certify the
+// original unpatched tags, product factory, response admission or any endpoint.
 type p2RoundTripper func(*http.Request) (*http.Response, error)
 
 func (f p2RoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

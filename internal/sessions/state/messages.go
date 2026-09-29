@@ -130,9 +130,12 @@ func (m *Manager) FinishTools(ctx context.Context, turn agent.TurnRecord) error 
 		if !ok || call.Observation == nil || m.view.ReconciliationUnresolved(id) {
 			return product.NewError(product.CodeReconciliationRequired, "tool result is unresolved")
 		}
-		content := call.Observation.Content
-		if effective, ok := m.view.EffectiveObservation(id); ok {
-			content = effective.Observation.Content
+		content := call.Observation.ModelContent()
+		if p, ok := m.view.ToolProjections[id]; ok && p.Observation == *call.Observation {
+			content = p.ModelContent()
+		}
+		if effective, ok := m.view.EffectiveObservation(id); ok && effective.Observation != *call.Observation {
+			content = effective.Observation.ModelContent()
 		}
 		result := &schema.FunctionToolResult{CallID: call.Call.ProviderCallID, Name: call.Call.Name, Content: []*schema.FunctionToolResultContentBlock{{Type: schema.FunctionToolResultContentBlockTypeText, Text: &schema.UserInputText{Text: content}}}}
 		msg := agent.AgentMessage{ID: agent.MustID(), Kind: agent.KindToolResult, Status: agent.StatusComplete, Source: agent.SourceRef{Kind: agent.SourceTool}, Scope: agent.MessageScope{SessionID: m.sessionID, TraceID: turn.TraceID, TurnID: turn.ID, InvocationID: turn.InvocationID, ToolCallID: id}, Standard: &schema.AgenticMessage{Role: schema.AgenticRoleTypeUser, ContentBlocks: []*schema.ContentBlock{schema.NewContentBlock(result)}}}

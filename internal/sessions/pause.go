@@ -14,7 +14,31 @@ func (s *AgentSession) GetOperation(ctx context.Context, id string) (state.Opera
 	if err := ctx.Err(); err != nil {
 		return state.OperationStatus{}, err
 	}
-	return s.rt.manager.GetOperation(id)
+	get := func(rt *runtime) (any, error) {
+		if op, ok := rt.approvalOps[id]; ok {
+			status := state.OperationStatus{OperationReceipt: op.Receipt, Revision: op.Revision, ResultRef: op.ResultRef}
+			status.State = op.State
+			return status, nil
+		}
+		if op := rt.manager.View().Operations[id]; op.Kind == "respond_interaction" {
+			return nil, product.NewError(product.CodeNotFound, "operation not found")
+		}
+		return rt.manager.GetOperation(id)
+	}
+	select {
+	case <-s.rt.done:
+		value, err := get(s.rt)
+		if err != nil {
+			return state.OperationStatus{}, err
+		}
+		return value.(state.OperationStatus), nil
+	default:
+	}
+	value, err := s.rt.call(ctx, get)
+	if err != nil {
+		return state.OperationStatus{}, err
+	}
+	return value.(state.OperationStatus), nil
 }
 
 // Pause requests a cooperative checkpoint of the active trace. The returned

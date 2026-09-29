@@ -41,8 +41,9 @@ func resumeBuildFingerprint(opts Options) string {
 		Model                                                       llm.ModelConfig
 		Functions                                                   []functionShape
 		Files, Process, Artifacts                                   bool
+		Todos                                                       string
 	}{runtimeFingerprint(), goruntime.GOOS, goruntime.GOARCH, "0.9.21", "1", opts.GenerationFingerprint, opts.Instruction, configured.Configuration(), functions,
-		opts.Operations.Files != nil, opts.Operations.Process != nil, opts.Operations.Artifacts != nil})
+		opts.Operations.Files != nil, opts.Operations.Process != nil, opts.Operations.Artifacts != nil, todoBackendIdentity(opts.Operations.Todos)})
 	if err != nil {
 		return ""
 	}
@@ -101,11 +102,6 @@ func (rt *runtime) matchesCallScope(scope agent.ExecutionScope, call agent.ToolR
 	if call.Scope == scope && rt.matchesExecution(scope) {
 		return true
 	}
-	if direct := rt.active.directResume; direct != nil && call.Call.CallID == direct.CallID && call.Scope == direct.Scope {
-		original := call.Scope
-		original.ExecutionID = rt.active.scope.ExecutionID
-		return scope == call.Scope || (scope == original && rt.matchesExecution(scope))
-	}
 	resume := rt.active.resume
 	if resume == nil || !sameLogicalScope(call.Scope, resume.Scope) {
 		return false
@@ -141,16 +137,16 @@ func (s *AgentSession) Resume(ctx context.Context, cmd ResumeCommand) (state.Ope
 		if err := rt.writable(); err != nil {
 			return nil, err
 		}
+		view := rt.manager.View()
+		if tr := view.Traces[cmd.TraceID]; tr != nil && tr.Kind == "command" {
+			return nil, incompatibleResume("legacy direct commands cannot be resumed")
+		}
 		operation := state.OperationCommand{Principal: rt.opts.Principal, Kind: "resume", Target: cmd.TraceID, ExpectedRevision: cmd.ExpectedRevision, IdempotencyKey: cmd.IdempotencyKey}
 		if receipt, found, err := rt.manager.FindOperation(operation); found || err != nil {
 			return receipt, err
 		}
-		view := rt.manager.View()
 		if cmd.ExpectedRevision != view.LastSeq {
 			return nil, product.NewError(product.CodeStateConflict, "session revision changed")
-		}
-		if tr := view.Traces[cmd.TraceID]; tr != nil && tr.Kind == "command" {
-			return rt.resumeCommand(ctx, cmd, operation, view)
 		}
 		cp, err := rt.validateResume(ctx, cmd.TraceID, view)
 		if err != nil {

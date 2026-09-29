@@ -16,10 +16,21 @@ import (
 const approvalUnavailableMessage = "execution approval is not available"
 
 type Outcome struct {
-	Status     string
-	Content    string
-	SideEffect string
-	Executed   bool
+	Status         string
+	Content        string
+	SideEffect     string
+	Executed       bool
+	Process        bool
+	ExitCode       int
+	Terminated     bool
+	ExecutionError string
+	Truncated      bool
+	LogError       string
+	Artifact       agent.ArtifactRef
+}
+
+func (o Outcome) ModelContent() string {
+	return (agent.ToolOutputProjection{Content: o.Content, Truncated: o.Truncated, Artifact: o.Artifact, LogError: o.LogError}).ModelContent()
 }
 
 type Executor struct {
@@ -99,7 +110,7 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 		if record.Observation.Status == "denied" && record.Observation.Content == approvalUnavailableMessage {
 			return Outcome{}, product.NewError(product.CodeResourceUnavailable, approvalUnavailableMessage)
 		}
-		return outcomeOf(record.Observation), nil
+		return outcomeOfRecord(record), nil
 	}
 	if accepted && record.Claimed {
 		return Outcome{}, product.NewError(product.CodeStateConflict, "claimed tool call has no observation")
@@ -327,6 +338,10 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	output := &callOutput{runCtx: runCtx, sink: e.sink, scope: envelope, callID: call.CallID, streamID: agent.MustID()}
 	out = e.invokeAuthorized(runCtx, def, frozen, ticket, output)
 	output.close() // Drain accepted publications before saving the final observation.
+	var fullLog string
+	if out.Process {
+		out, fullLog = e.prepareProcessLog(runCtx, out)
+	}
 	if out.SideEffect == "unknown" || out.Status == "outcome_unknown" {
 		retain = true
 	}
@@ -335,6 +350,9 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 			retain = true
 		}
 		return out, saveErr
+	}
+	if out.Process && (out.Truncated || out.LogError != "") {
+		out = e.projectProcessLog(runCtx, envelope, call, frozen, out, fullLog)
 	}
 	return out, nil
 }
@@ -425,6 +443,14 @@ func (e *Executor) lookup(ctx context.Context, scope agent.ExecutionScope, provi
 	if rec.Call.CallID == "" && rec.Call.ProviderCallID == "" && rec.Observation == nil && !rec.Claimed {
 		return false, rec, nil
 	}
+	if src, ok := e.sink.(interface {
+		LookupToolProjection(context.Context, agent.ExecutionScope, string) (*agent.ToolOutputProjection, error)
+	}); ok && rec.Observation != nil {
+		rec.Projection, err = src.LookupToolProjection(ctx, scope, rec.Call.CallID)
+		if err != nil {
+			return false, rec, err
+		}
+	}
 	return true, rec, nil
 }
 
@@ -440,7 +466,7 @@ func (e *Executor) RejectUnavailable(ctx context.Context, scope agent.ExecutionS
 		return Outcome{}, product.NewError(product.CodeStateConflict, "unavailable tool does not match accepted call")
 	}
 	if rec.Observation != nil {
-		return outcomeOf(rec.Observation), nil
+		return outcomeOfRecord(rec), nil
 	}
 	return e.saveObservation(ctx, scope, rec.Scope, rec.Call, Outcome{Status: "denied", Content: "tool is unavailable", SideEffect: "none"}, false, true)
 }
@@ -459,7 +485,7 @@ func (e *Executor) saveObservation(ctx context.Context, envelope, scope agent.Ex
 	if !write {
 		return out, nil
 	}
-	record := agent.ToolRecord{Call: call, Scope: scope, Claimed: claimed, Observation: &agent.ToolObservation{Status: out.Status, Content: out.Content, SideEffect: out.SideEffect, Executed: out.Executed}}
+	record := agent.ToolRecord{Call: call, Scope: scope, Claimed: claimed, Observation: observationOf(out)}
 	body, err := json.Marshal(record)
 	if err != nil {
 		return out, err
@@ -478,7 +504,7 @@ func outcomeOf(obs *agent.ToolObservation) Outcome {
 	if obs == nil {
 		return Outcome{}
 	}
-	return Outcome{Status: obs.Status, Content: obs.Content, SideEffect: obs.SideEffect, Executed: obs.Executed}
+	return Outcome{Status: obs.Status, Content: obs.Content, SideEffect: obs.SideEffect, Executed: obs.Executed, Process: obs.Process, ExitCode: obs.ExitCode, Terminated: obs.Terminated, ExecutionError: obs.ExecutionError, Truncated: obs.Truncated, LogError: obs.LogError}
 }
 func DecodeNumbers(r io.Reader) (any, error) {
 	dec := json.NewDecoder(r)
@@ -521,12 +547,12 @@ func (e *Executor) invokeAuthorized(ctx context.Context, def Definition, frozen 
 			StdinRef: frozen.StdinRef, Mounts: append([]agent.ExecutionMount(nil), frozen.Mounts...),
 			TempRootRef: frozen.TempRootRef, OutputLimitBytes: frozen.OutputLimitBytes}, processOutput{output: output})
 		out.Content, out.Executed, out.SideEffect = observation.Content, observation.Started, observation.SideEffect
-		if err == nil && observation.ContentRef != "" && e.operations.Artifacts != nil {
-			ref, saveErr := e.operations.Artifacts.Save(ctx, agent.ArtifactInput{Authorization: auth, ContentRef: observation.ContentRef, MediaType: "text/plain", Name: frozen.Tool + ".log"})
-			if saveErr != nil {
-				return Outcome{Status: "failed", Content: "controlled artifact save failed", SideEffect: "unknown", Executed: observation.Started}
-			}
-			out.Content = ref.ID
+		out.Process, out.ExitCode, out.Terminated = true, observation.ExitCode, observation.Terminated
+		if observation.Content == "" && observation.ContentRef != "" {
+			out.LogError = "resource_unavailable: full process log content is unavailable"
+		}
+		if observation.Terminated && observation.ExitCode != 0 {
+			out.Status = "failed"
 		}
 		if out.SideEffect == "" {
 			out.SideEffect = "none"
@@ -535,9 +561,12 @@ func (e *Executor) invokeAuthorized(ctx context.Context, def Definition, frozen 
 			}
 		}
 		if err != nil {
-			out.Status, out.Content = "failed", "controlled process execution failed"
+			out.Status, out.ExecutionError = "failed", "controlled process execution failed"
 			if pe, ok := product.AsError(err); ok {
-				out.Content = pe.Code
+				out.ExecutionError = pe.Code
+			}
+			if out.Content == "" {
+				out.Content = out.ExecutionError
 			}
 		}
 		// A nonterminal process may still produce effects even if none have
@@ -564,8 +593,15 @@ func (e *Executor) invokeAuthorized(ctx context.Context, def Definition, frozen 
 func (e *Executor) invokeFile(ctx context.Context, auth agent.AuthorizedExecution, frozen agent.FrozenExecution) Outcome {
 	var command struct {
 		Operation, Path, ContentRef, PatchRef, ExpectedVersion string
-		Root, Pattern, Query, Cursor                           string
+		Root, Pattern, Query, Cursor, Version                  string
 		Offset, Limit                                          int64
+		OldString                                              string `json:"old_string"`
+		NewString                                              string `json:"new_string"`
+		ReplaceAll                                             bool   `json:"replace_all"`
+		OutputMode                                             string `json:"output_mode"`
+		HeadLimit                                              int    `json:"head_limit"`
+		Glob                                                   string `json:"glob"`
+		CaseInsensitive                                        bool   `json:"case_insensitive"`
 	}
 	if err := json.Unmarshal(frozen.FinalArguments, &command); err != nil {
 		return Outcome{Status: "failed", Content: "file request is invalid", SideEffect: "none"}
@@ -592,64 +628,56 @@ func (e *Executor) invokeFile(ctx context.Context, auth agent.AuthorizedExecutio
 	var err error
 	switch command.Operation {
 	case "list":
-		result, callErr := e.operations.Files.List(ctx, agent.ListRequest{Root: command.Root, Cursor: command.Cursor})
+		if err := auth.Validate(ctx); err != nil {
+			return fileOperationFailure(err, false)
+		}
+		result, callErr := e.operations.Files.List(ctx, agent.ListRequest{Root: command.Root, Cursor: command.Cursor, Limit: int(command.Limit)})
 		err = callErr
 		if err == nil {
-			return encodeFileResult(result)
+			err = ctx.Err()
+		}
+		if err == nil {
+			return projectList(result, int(command.Limit))
 		}
 	case "read":
-		result, callErr := e.operations.Files.Read(ctx, agent.ReadRequest{Identity: command.Path, Version: command.ExpectedVersion, Offset: command.Offset, Limit: command.Limit})
-		err = callErr
-		if err == nil {
-			content, contentErr := e.readFileContent(ctx, auth, result, command.Offset, command.Limit)
-			if contentErr != nil {
-				return Outcome{Status: "failed", Content: "controlled file output could not be opened", SideEffect: "none"}
-			}
-			return Outcome{Status: "succeeded", Content: content, SideEffect: "none", Executed: true}
-		}
+		return e.invokeRead(ctx, auth, frozen.FinalArguments)
 	case "search":
-		result, callErr := e.operations.Files.Search(ctx, agent.SearchRequest{Root: command.Root, Query: command.Query, Cursor: command.Cursor, Limit: int(command.Limit)})
+		if err := auth.Validate(ctx); err != nil {
+			return fileOperationFailure(err, false)
+		}
+		limit := int(command.Limit)
+		if frozen.Tool == "grep" {
+			limit = command.HeadLimit
+		}
+		result, callErr := e.operations.Files.Search(ctx, agent.SearchRequest{Root: command.Root, Query: command.Query, Cursor: command.Cursor, Kind: frozen.Tool, Glob: command.Glob, OutputMode: command.OutputMode, CaseInsensitive: command.CaseInsensitive, Offset: int(command.Offset), Limit: limit})
 		err = callErr
 		if err == nil {
-			return encodeFileResult(result)
+			err = ctx.Err()
+		}
+		if err == nil {
+			return projectSearch(result, frozen.Tool, command.OutputMode, int(command.Offset), limit)
 		}
 	case "write":
 		effect, callErr := e.operations.Files.Write(ctx, agent.AuthorizedFileWrite{Authorization: auth, Path: command.Path, ContentRef: command.ContentRef, ExpectedVersion: command.ExpectedVersion})
 		return fileEffectOutcome(effect, callErr, command.Path)
 	case "edit":
-		effect, callErr := e.operations.Files.Edit(ctx, agent.AuthorizedFileEdit{Authorization: auth, Path: command.Path, PatchRef: command.PatchRef, ExpectedVersion: command.ExpectedVersion})
+		effect, callErr := e.operations.Files.Edit(ctx, agent.AuthorizedFileEdit{Authorization: auth, Path: command.Path, PatchRef: command.PatchRef, OldString: command.OldString, NewString: command.NewString, ReplaceAll: command.ReplaceAll, ExpectedVersion: command.ExpectedVersion})
 		return fileEffectOutcome(effect, callErr, command.Path)
 	default:
 		return Outcome{Status: "failed", Content: "file operation is unavailable", SideEffect: "none"}
 	}
-	out := Outcome{Status: "failed", Content: "controlled file operation failed", SideEffect: "none"}
-	if err != nil {
-		out.Content = "controlled file operation failed"
-	}
-	return out
+	return fileOperationFailure(err, true)
 }
 
-func (e *Executor) readFileContent(ctx context.Context, auth agent.AuthorizedExecution, result agent.ReadResult, offset, limit int64) (string, error) {
-	if result.ContentRef == "" || e.operations.Artifacts == nil {
-		return result.ContentRef, nil
+func fileOperationFailure(err error, executed bool) Outcome {
+	out := Outcome{Status: "failed", Content: "controlled file operation failed", SideEffect: "none", Executed: executed, ExecutionError: "controlled file operation failed"}
+	if pe, ok := product.AsError(err); ok {
+		out.ExecutionError = pe.Code
 	}
-	reader, err := e.operations.Artifacts.Open(ctx, agent.ArtifactRead{Authorization: auth, Ref: agent.ArtifactRef{ID: result.ContentRef, Available: true}, Offset: offset, Limit: limit})
-	if err != nil {
-		return "", err
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		out.Status = "cancelled"
 	}
-	defer reader.Close()
-	maxBytes := int64(50 << 10)
-	if limit > 0 && limit < maxBytes {
-		maxBytes = limit
-	}
-	data, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
-	if err != nil {
-		return "", err
-	}
-	if int64(len(data)) > maxBytes {
-		data = data[:maxBytes]
-	}
-	return string(data), nil
+	return out
 }
 
 func encodeFileResult(value any) Outcome {
@@ -670,6 +698,13 @@ func fileEffectOutcome(effect agent.FileEffect, err error, fallback string) Outc
 	}
 	if err != nil {
 		out.Status, out.Content = "failed", "controlled file operation failed"
+		out.ExecutionError = "controlled file operation failed"
+		if pe, ok := product.AsError(err); ok {
+			out.ExecutionError = pe.Code
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			out.Status = "cancelled"
+		}
 	}
 	if out.SideEffect == "unknown" && !out.Executed {
 		out.Status = "outcome_unknown"
@@ -686,7 +721,30 @@ func (e *Executor) invokeTodos(ctx context.Context, auth agent.AuthorizedExecuti
 		out.Content = effect.Version
 	}
 	if err != nil {
-		return Outcome{Status: "failed", Content: "controlled TODO update failed", SideEffect: "unknown", Executed: true}
+		out.Status, out.Content = "failed", "controlled TODO update failed"
+		out.ExecutionError = "controlled TODO update failed"
+		if !effect.Confirmed {
+			out.SideEffect = "unknown"
+		}
+		var pe *product.Error
+		if errors.As(err, &pe) {
+			out.ExecutionError = pe.Code
+			// These codes describe rejection before a TODO update. Storage
+			// failures (including lost Append replies) never imply no effect.
+			switch pe.Code {
+			case product.CodePermissionDenied, product.CodeInvalidArgument, product.CodeStateConflict, product.CodeBudgetExhausted:
+				if !effect.Confirmed {
+					out.SideEffect = "none"
+				}
+			}
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// Cancellation alone says nothing about a host backend's effects.
+			// The built-in backend joins a pre-commit state_conflict rejection
+			// only when it can prove Append was never attempted.
+			out.Status = "cancelled"
+		}
+		return out
 	}
 	if !effect.Confirmed {
 		out.Status, out.SideEffect = "outcome_unknown", "unknown"

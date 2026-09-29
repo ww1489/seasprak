@@ -74,8 +74,6 @@ func TestP2SaveRecordsRoundTripAndCAS(t *testing.T) {
 	records := state.Records{
 		ModelAttempts:    []state.ModelAttempt{{ID: "attempt", ModelCallID: "model", MessageID: "message", StreamID: "stream", Attempt: 1, Purpose: "agent", State: "registered", ModelConfigVersion: "config"}},
 		FrozenExecutions: []state.FrozenExecution{{ID: "frozen", CallID: "call", Hash: "hash", Origin: "direct", Tool: "read", Generation: "generation", Resources: []state.ExecutionResource{{Identity: "file", ExpectedVersion: "v1"}}, Argv: []string{"read", "file"}, Mounts: []state.ExecutionMount{{SourceRef: "source", Target: "target", ReadOnly: true}}}},
-		Interactions:     []state.Interaction{{ID: "interaction", Kind: "approval", CallID: "call", ApprovalID: "approval", State: "pending", Options: []string{"allowed-once", "rejected"}}},
-		Approvals:        []state.Approval{{ID: "approval", InteractionID: "interaction", CallID: "call", FrozenExecutionID: "frozen", FrozenHash: "hash", State: "asked"}},
 		Checkpoints:      []state.CheckpointRef{{ID: "checkpoint", BlobHash: "blob", BlobSize: 42, UnfinishedTurnIDs: []string{"turn"}, CallIDs: []string{"call"}, InteractionIDs: []string{"interaction"}, EinoVersion: "0.9.21", CodecVersion: "1"}},
 	}
 	if err := m.SaveRecords(ctx, 0, records); err != nil {
@@ -86,12 +84,12 @@ func TestP2SaveRecordsRoundTripAndCAS(t *testing.T) {
 		t.Fatal(err)
 	}
 	view := reopened.View()
-	if !reflect.DeepEqual(view.ModelAttempts["attempt"], records.ModelAttempts[0]) || !reflect.DeepEqual(view.FrozenExecutions["frozen"], records.FrozenExecutions[0]) || !reflect.DeepEqual(view.Interactions["interaction"], records.Interactions[0]) || !reflect.DeepEqual(view.Approvals["approval"], records.Approvals[0]) || !reflect.DeepEqual(view.Checkpoints["checkpoint"], records.Checkpoints[0]) {
+	if !reflect.DeepEqual(view.ModelAttempts["attempt"], records.ModelAttempts[0]) || !reflect.DeepEqual(view.FrozenExecutions["frozen"], records.FrozenExecutions[0]) || len(view.Interactions) != 0 || len(view.Approvals) != 0 || !reflect.DeepEqual(view.Checkpoints["checkpoint"], records.Checkpoints[0]) {
 		t.Fatal("typed records did not round trip")
 	}
 	records.FrozenExecutions[0].Argv[0] = "mutated"
-	view.Interactions["interaction"].Options[0] = "mutated"
-	if reopened.View().FrozenExecutions["frozen"].Argv[0] != "read" || reopened.View().Interactions["interaction"].Options[0] != "allowed-once" {
+	view.Checkpoints["checkpoint"].CallIDs[0] = "mutated"
+	if reopened.View().FrozenExecutions["frozen"].Argv[0] != "read" || reopened.View().Checkpoints["checkpoint"].CallIDs[0] != "call" {
 		t.Fatal("record storage aliases caller")
 	}
 	requireP2Code(t, reopened.SaveRecords(ctx, 0, records), product.CodeStateConflict)
@@ -147,8 +145,6 @@ func TestP2FileJournalClosesAndReopens(t *testing.T) {
 	records := state.Records{
 		ModelAttempts:    []state.ModelAttempt{{ID: "attempt", ModelCallID: "model", MessageID: "message", StreamID: "stream", Attempt: 1, Purpose: "agent", State: "registered"}},
 		FrozenExecutions: []state.FrozenExecution{{ID: "frozen", CallID: "call", Hash: "hash", Origin: "direct", Tool: "write", Resources: []state.ExecutionResource{{Identity: "file", ExpectedVersion: "v1"}}}},
-		Interactions:     []state.Interaction{{ID: "interaction", ApprovalID: "approval", CallID: "call", Kind: "approval", State: "pending", Options: []string{"allowed-once", "rejected"}}},
-		Approvals:        []state.Approval{{ID: "approval", InteractionID: "interaction", CallID: "call", FrozenExecutionID: "frozen", FrozenHash: "hash", State: "asked"}},
 		Checkpoints:      []state.CheckpointRef{{ID: "checkpoint", BlobHash: "blob", BlobSize: 42, CallIDs: []string{"call"}, InteractionIDs: []string{"interaction"}, EinoVersion: "0.9.21", CodecVersion: "1"}},
 	}
 	if err := m.SaveRecords(ctx, 1, records); err != nil {

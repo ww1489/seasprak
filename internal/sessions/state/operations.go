@@ -80,6 +80,9 @@ func (m *Manager) findOperation(cmd OperationCommand) (OperationReceipt, bool, e
 }
 
 func (m *Manager) AcceptOperation(ctx context.Context, cmd OperationCommand) (OperationReceipt, error) {
+	if cmd.Kind == "respond_interaction" {
+		return OperationReceipt{}, product.NewError(product.CodePermissionDenied, "approval responses are runtime-only")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if cmd.Kind == "" || cmd.Target == "" {

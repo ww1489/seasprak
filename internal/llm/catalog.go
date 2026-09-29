@@ -264,7 +264,7 @@ func (m *catalogModel) Generate(ctx context.Context, in []*schema.AgenticMessage
 	if err != nil {
 		return nil, observedModelError(requestCtx, err)
 	}
-	return result, nil
+	return m.bindPrivateReplay(result), nil
 }
 func (m *catalogModel) Stream(ctx context.Context, in []*schema.AgenticMessage, opts ...einomodel.Option) (*schema.StreamReader[*schema.AgenticMessage], error) {
 	requestCtx, inner, safe, release, err := m.prepare(ctx, in, true, opts)
@@ -283,7 +283,7 @@ func (m *catalogModel) Stream(ctx context.Context, in []*schema.AgenticMessage, 
 	if reader == nil {
 		return nil, invalid("model returned no stream")
 	}
-	return schema.StreamReaderWithConvert(reader, func(msg *schema.AgenticMessage) (*schema.AgenticMessage, error) { return msg, nil }, schema.WithErrWrapper(func(err error) error { return observedModelError(requestCtx, err) })), nil
+	return schema.StreamReaderWithConvert(reader, func(msg *schema.AgenticMessage) (*schema.AgenticMessage, error) { return m.bindPrivateReplay(msg), nil }, schema.WithErrWrapper(func(err error) error { return observedModelError(requestCtx, err) })), nil
 }
 
 func (m *catalogModel) validateInput(messages []*schema.AgenticMessage) error {
@@ -300,6 +300,9 @@ func (m *catalogModel) validateInput(messages []*schema.AgenticMessage) error {
 		for _, b := range msg.ContentBlocks {
 			if b == nil {
 				return invalid("nil input content block")
+			}
+			if err := m.validatePrivateReplay(b); err != nil {
+				return err
 			}
 			if b.ServerToolCall != nil || b.ServerToolResult != nil || b.MCPToolCall != nil || b.MCPToolResult != nil || b.MCPListToolsResult != nil || b.MCPToolApprovalRequest != nil || b.MCPToolApprovalResponse != nil || b.ToolSearchFunctionToolResult != nil {
 				return unsupported("server-side tool content is not enabled")

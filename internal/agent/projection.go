@@ -44,7 +44,16 @@ func ConvertToLLM(in []AgentMessage) ([]*schema.AgenticMessage, error) {
 			copied.Role = schema.AgenticRoleTypeUser
 			out = append(out, &copied)
 		case KindCommand:
+			if msg.Command.ExcludeFromContext {
+				continue
+			}
 			text := msg.Command.Name
+			if text == "shell" {
+				text, err = hostShellText(*msg.Command)
+				if err != nil {
+					return nil, err
+				}
+			}
 			out = append(out, schema.UserAgenticMessage(text))
 		case KindCompactionSummary, KindBranchSummary:
 			out = append(out, schema.UserAgenticMessage(msg.Summary.Text))

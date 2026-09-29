@@ -2,7 +2,6 @@ package state
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"reflect"
@@ -88,44 +87,6 @@ func approvalTime(approval Approval, now time.Time) error {
 	return nil
 }
 
-// RequestApproval is an asked fact, never an execution permission. Repeating the
-// same pending frozen request preserves its IDs and original expiry.
-func (m *Manager) RequestApproval(ctx context.Context, expected uint64, frozenID, question string, now time.Time) (Interaction, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	frozen, exists := m.view.FrozenExecutions[frozenID]
-	call := m.view.Calls[frozen.CallID]
-	tr := m.view.Traces[call.Scope.TraceID]
-	approval := Approval{ID: agent.MustID(), InteractionID: agent.MustID(), CallID: frozen.CallID, Scope: frozen.Scope, FrozenExecutionID: frozenID, FrozenHash: frozen.Hash, GrantRef: frozen.RequestedGrantRef, State: "asked", ExpiresAt: now.UTC().Add(config.ApprovalValidity)}
-	if !exists || tr == nil || tr.State != "running" || !tr.Started || tr.Settled || frozen.Scope.SessionID != m.sessionID || frozen.Scope.BranchID != m.view.BranchID || frozen.Scope.Generation != tr.Generation || frozen.Scope.ExecutionID == "" || call.Claimed || call.Observation != nil || question == "" || now.IsZero() {
-		return Interaction{}, product.NewError(product.CodeStateConflict, "call is not awaiting an execution approval")
-	}
-	if _, _, err := approvalDescription(m.view, approval); err != nil {
-		return Interaction{}, err
-	}
-	if err := approvalPolicy(m.view, frozen); err != nil {
-		return Interaction{}, err
-	}
-	for _, old := range m.view.Approvals {
-		if old.FrozenExecutionID == frozenID && old.FrozenHash == frozen.Hash && old.Scope == frozen.Scope {
-			in := m.view.Interactions[old.InteractionID]
-			if in.Question != question || in.ApprovalID != old.ID {
-				return Interaction{}, product.NewError(product.CodeStateConflict, "approval question or binding changed")
-			}
-			return clone(in), nil
-		}
-	}
-	if expected != m.view.LastSeq {
-		return Interaction{}, product.NewError(product.CodeStateConflict, "session revision changed")
-	}
-	in := Interaction{ID: approval.InteractionID, Kind: "approval", Scope: approval.Scope, CallID: approval.CallID, ApprovalID: approval.ID, Question: question, Options: []string{"allowed-once", "rejected", "cancelled"}, State: "pending", ExpiresAt: approval.ExpiresAt}
-	_, err := m.commit(ctx, []store.Record{record("interaction", in.ID, in), record("approval", approval.ID, approval)}, nil, []agent.Event{m.event("interaction.asked", in.Scope.TraceID, in.Scope.TurnID, in)})
-	if err != nil {
-		return Interaction{}, err
-	}
-	return clone(in), nil
-}
-
 func containsID(ids []string, id string) bool {
 	for _, candidate := range ids {
 		if candidate == id {
@@ -152,64 +113,6 @@ func approvalCheckpointCall(v *View, cp CheckpointRef, call agent.ToolRecord) bo
 	return true
 }
 
-// CommitApprovalCheckpoint is called only with actual worker-exit and blob
-// evidence. The binding, checkpoint and stopped waiting trace share one commit.
-func (m *Manager) CommitApprovalCheckpoint(ctx context.Context, traceID string, cp CheckpointRef, targets map[string]string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.commitApprovalCheckpoint(ctx, traceID, cp, targets, "")
-}
-
-// CommitApprovalPause completes an accepted explicit Pause in the same commit
-// as the business interrupt targets, checkpoint and stopped proof.
-func (m *Manager) CommitApprovalPause(ctx context.Context, traceID, operationID string, cp CheckpointRef, targets map[string]string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.commitApprovalCheckpoint(ctx, traceID, cp, targets, operationID)
-}
-
-func (m *Manager) commitApprovalCheckpoint(ctx context.Context, traceID string, cp CheckpointRef, targets map[string]string, pauseID string) error {
-	tr := m.view.Traces[traceID]
-	if tr == nil || tr.State != "running" || !tr.Started || tr.Settled || cp.ID == "" || cp.BlobHash == "" || cp.BlobSize <= 0 || cp.Scope.SessionID != m.sessionID || cp.Scope.BranchID != m.view.BranchID || cp.Scope.TraceID != traceID || cp.Scope.InvocationID != tr.InvocationID || cp.Scope.Generation != tr.Generation || cp.Target != tr.Target || cp.HistoryCommit != m.view.LastSeq || cp.ProjectionRevision != cp.HistoryCommit || cp.LeafID != m.view.LeafID || len(cp.InteractionIDs) == 0 || len(targets) != len(cp.InteractionIDs) || m.view.HasUnresolvedEffects() {
-		return product.NewError(product.CodeStateConflict, "approval checkpoint association is invalid")
-	}
-	next := *tr
-	next.State, next.ExecutionID, next.CheckpointID = "paused", cp.Scope.ExecutionID, cp.ID
-	next.ExecutionStopped, next.Settled = true, false
-	controls := []store.Record{record("checkpoint_ref", cp.ID, cp), record("trace", traceID, next)}
-	var events []agent.Event
-	seen := make(map[string]bool)
-	seenTargets := make(map[string]bool)
-	for _, id := range cp.InteractionIDs {
-		in, exists := m.view.Interactions[id]
-		approval := m.view.Approvals[in.ApprovalID]
-		_, call, err := approvalDescription(m.view, approval)
-		target := targets[id]
-		if !exists || err != nil || seen[id] || target == "" || seenTargets[target] || in.Kind != "approval" || in.State != "pending" || approval.State != "asked" || approval.InteractionID != in.ID || call.Claimed || call.Observation != nil || !approvalCheckpointCall(m.view, cp, call) || !containsID(cp.CallIDs, call.Call.CallID) || !containsID(cp.UnfinishedTurnIDs, call.Scope.TurnID) {
-			return product.NewError(product.CodeStateConflict, "interrupt target is not an original pending approval")
-		}
-		seen[id], seenTargets[target] = true, true
-		binding := ApprovalBinding{ID: cp.ID + ":" + id, InteractionID: id, ApprovalID: approval.ID, CheckpointID: cp.ID, TargetRef: target}
-		controls = append(controls, record("approval_binding", binding.ID, binding))
-		// Framework target addresses remain private, including in durable events.
-		events = append(events, m.event("interaction.ready", traceID, in.Scope.TurnID, struct {
-			InteractionID string `json:"interactionId"`
-		}{id}))
-	}
-	if pauseID != "" {
-		op, exists := m.view.Operations[pauseID]
-		if !exists || op.Kind != "pause" || op.Receipt.Target != traceID || op.State != "accepted" {
-			return product.NewError(product.CodeStateConflict, "approval pause operation is not accepted")
-		}
-		op.State, op.ResultRef = "completed", cp.ID
-		op.Revision++
-		controls = append(controls, record("operation", pauseID, op))
-	}
-	events = append(events, m.event("trace.state_changed", traceID, cp.Scope.TurnID, next))
-	_, err := m.commit(ctx, controls, nil, events)
-	return err
-}
-
 func responseContent(cmd OperationCommand, decision string) error {
 	var body struct {
 		Decision string `json:"decision"`
@@ -223,74 +126,6 @@ func responseContent(cmd OperationCommand, decision string) error {
 		return product.NewError(product.CodeInvalidArgument, "approval response has trailing content")
 	}
 	return nil
-}
-
-// RespondApproval records a decision and its durable acceptance together. It
-// neither claims the operation nor changes the paused trace or checkpoint.
-func (m *Manager) RespondApproval(ctx context.Context, cmd OperationCommand, decision string, now time.Time) (OperationReceipt, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	receipt, found, err := m.findOperation(cmd)
-	if err != nil {
-		return OperationReceipt{}, err
-	}
-	if cmd.Kind != "respond_interaction" || cmd.Target == "" || cmd.Principal == "" {
-		return OperationReceipt{}, product.NewError(product.CodePermissionDenied, "approval response requires a trusted principal and interaction")
-	}
-	if err := responseContent(cmd, decision); err != nil {
-		return OperationReceipt{}, err
-	}
-	if found {
-		return receipt, nil
-	}
-	if cmd.ExpectedRevision != m.view.LastSeq {
-		return OperationReceipt{}, product.NewError(product.CodeStateConflict, "session revision changed")
-	}
-	in, exists := m.view.Interactions[cmd.Target]
-	approval := m.view.Approvals[in.ApprovalID]
-	tr := m.view.Traces[in.Scope.TraceID]
-	if !exists || in.Kind != "approval" || approval.InteractionID != in.ID || tr == nil || tr.State != "paused" || !tr.ExecutionStopped || tr.Settled {
-		return OperationReceipt{}, product.NewError(product.CodeStateConflict, "interaction has no safely stopped checkpoint")
-	}
-	bindingID := tr.CheckpointID + ":" + in.ID
-	if tr.DirectResumeID != "" {
-		bindingID = tr.DirectResumeID + ":" + in.ID
-	}
-	binding, bound := m.view.ApprovalBindings[bindingID]
-	if !bound || binding.ApprovalID != approval.ID || !validApprovalBinding(m.view, binding) {
-		return OperationReceipt{}, product.NewError(product.CodeStateConflict, "interaction is not associated with the current checkpoint")
-	}
-	if _, decided := m.view.ApprovalDecisions[approval.ID]; decided {
-		return OperationReceipt{}, product.NewError(product.CodeStateConflict, "approval already has a decision")
-	}
-	if err := approvalTime(approval, now); err != nil {
-		return OperationReceipt{}, err
-	}
-	frozen, call, err := approvalDescription(m.view, approval)
-	if err != nil {
-		return OperationReceipt{}, err
-	}
-	if call.Claimed || call.Observation != nil || approval.State != "asked" {
-		return OperationReceipt{}, product.NewError(product.CodeStateConflict, "approval call is no longer pending")
-	}
-	if err := approvalPolicy(m.view, frozen); err != nil {
-		return OperationReceipt{}, err
-	}
-	digest, err := operationDigest(cmd)
-	if err != nil {
-		return OperationReceipt{}, err
-	}
-	receipt = OperationReceipt{OperationID: agent.MustID(), State: "accepted", Target: in.ID, AcceptedCommit: m.view.LastSeq + 1}
-	op := Operation{Receipt: receipt, Principal: cmd.Principal, SessionID: m.sessionID, Kind: cmd.Kind, Key: cmd.IdempotencyKey, Digest: digest, Revision: 1, State: "accepted"}
-	answer := ApprovalDecision{ApprovalID: approval.ID, InteractionID: in.ID, OperationID: receipt.OperationID, BindingID: binding.ID, Decision: decision, Principal: cmd.Principal, DecidedAt: now.UTC()}
-	_, err = m.commit(ctx, []store.Record{record("operation", receipt.OperationID, op), record("approval_decision", approval.ID, answer)}, nil, []agent.Event{m.event("interaction.responded", in.Scope.TraceID, in.Scope.TurnID, struct {
-		InteractionID string `json:"interactionId"`
-		Decision      string `json:"decision"`
-	}{in.ID, decision})})
-	if err != nil {
-		return OperationReceipt{}, err
-	}
-	return receipt, nil
 }
 
 func validateApprovalClaim(v *View, claim ApprovalClaim) error {
@@ -322,19 +157,6 @@ func validateApprovalClaim(v *View, claim ApprovalClaim) error {
 		return product.NewError(product.CodePermissionDenied, "approval is not for a resumable original call")
 	}
 	return approvalPolicy(v, frozen)
-}
-
-func (m *Manager) ClaimApprovedTool(ctx context.Context, frozen agent.FrozenCall, usage agent.Usage, approvalID, executionID string, now time.Time) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	claim := ApprovalClaim{ApprovalID: approvalID, CallID: frozen.CallID, ExecutionID: executionID, ClaimedAt: now.UTC()}
-	if _, consumed := m.view.ApprovalClaims[approvalID]; consumed {
-		return product.NewError(product.CodeStateConflict, "one-time approval is already claimed")
-	}
-	if err := validateApprovalClaim(m.view, claim); err != nil {
-		return err
-	}
-	return m.claimTool(ctx, frozen, usage, &claim)
 }
 
 // validateApprovalCommit checks the pre-commit view as well as the entire batch.

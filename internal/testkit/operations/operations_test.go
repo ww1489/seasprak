@@ -37,6 +37,22 @@ func run(t *testing.T, m *fixture.Memory, name string, args any, files agent.Fil
 			def = d
 		}
 	}
+	// Legacy host-only patch fixtures retain their own explicit definition.
+	// NewBuiltinDefinitions exposes literal edits, not this private patch format.
+	var legacy struct{ PatchRef, Path, ExpectedVersion string }
+	_ = json.Unmarshal(raw, &legacy)
+	if name == "edit_file" && legacy.PatchRef != "" {
+		def.Schema = json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"patchRef":{"type":"string"},"expectedVersion":{"type":"string"}},"required":["path","patchRef"],"additionalProperties":false}`)
+		def.ResolveExecution = func(_ context.Context, b json.RawMessage, d tools.ExecutionDescription) (tools.ExecutionDescription, error) {
+			var in struct{ Path, ExpectedVersion string }
+			if err := json.Unmarshal(b, &in); err != nil {
+				return d, err
+			}
+			d.Resources = []agent.ExecutionResource{{Identity: "path:" + in.Path, ExpectedVersion: in.ExpectedVersion}}
+			d.Effect, d.Concurrency = "write", "exclusive"
+			return d, nil
+		}
+	}
 	if name == "save" {
 		def = tools.Definition{Name: name, Version: "1", Schema: json.RawMessage(`{"type":"object"}`), Execution: tools.ExecutionDescription{BackendID: "artifact-store", Effect: "write"}}
 	}
@@ -138,8 +154,9 @@ func TestMemoryFilesThroughExecutor(t *testing.T) {
 	if out.Status != "succeeded" || string(data) != "new new" || next == version {
 		t.Fatalf("edit=%+v content=%q", out, data)
 	}
-	out = run(t, m, "read_file", map[string]any{"path": "file", "offset": 4, "limit": 3}, m, m)
-	if out.Content != "new" || out.Status != "succeeded" || m.Calls("read") != 1 || m.Calls("open") != 1 {
+	out = run(t, m, "read_file", map[string]any{"path": "file", "byteOffset": 4, "byteLimit": 3}, m, m)
+	var page struct{ Content, Version string }
+	if json.Unmarshal([]byte(out.Content), &page) != nil || page.Content != "new" || page.Version != next || out.Status != "succeeded" || m.Calls("read") != 1 || m.Calls("open") != 1 {
 		t.Fatalf("read=%+v", out)
 	}
 }
@@ -393,12 +410,12 @@ func TestMemoryEditRejectsTicketFromAnotherRealExecutorRequest(t *testing.T) {
 	}
 }
 
-func TestUnsupportedOperationsAndMissingReferences(t *testing.T) {
+func TestInvalidDiscoveryRequestsAndMissingReferences(t *testing.T) {
 	m := fixture.NewMemory()
 	_, err := m.List(t.Context(), agent.ListRequest{})
-	code(t, err, product.CodeUnsupportedCapability)
+	code(t, err, product.CodeInvalidArgument)
 	_, err = m.Search(t.Context(), agent.SearchRequest{})
-	code(t, err, product.CodeUnsupportedCapability)
+	code(t, err, product.CodeInvalidArgument)
 	_, err = m.Read(t.Context(), agent.ReadRequest{Identity: "missing"})
 	code(t, err, product.CodeNotFound)
 	_, err = m.Write(t.Context(), agent.AuthorizedFileWrite{})

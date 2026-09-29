@@ -53,6 +53,7 @@ func TestSDKConsumerApprovesOriginalCallAfterReopenAndExplicitlyResumes(t *testi
 	if before.Traces[input.TraceID].State != "paused" || len(before.Interactions) != 1 || runs.Load() != 0 || initialModel.calls.Load() != 1 {
 		t.Fatalf("SDK cannot query pending approval: trace=%+v interactions=%d runs=%d", before.Traces[input.TraceID], len(before.Interactions), runs.Load())
 	}
+	assertConsumerApprovalBlocksShell(t, s, opts.Workspace)
 	var interaction sdk.Interaction
 	for _, in := range before.Interactions {
 		interaction = in
@@ -73,11 +74,25 @@ func TestSDKConsumerApprovesOriginalCallAfterReopenAndExplicitlyResumes(t *testi
 	t.Cleanup(func() { _ = opened.Close(context.Background()) })
 	responder, supported := any(opened).(sdkApprovalResponder)
 	if !supported {
-		t.Fatal("SDK session cannot durably respond to an approval")
+		t.Fatal("SDK session cannot respond to a runtime approval")
 	}
 	snap, err := opened.Snapshot(t.Context())
-	if err != nil || snap.Interactions[interaction.ID].ID != interaction.ID || resumedModel.calls.Load() != 0 || runs.Load() != 0 {
-		t.Fatalf("open changed original interaction or executed work: %v", err)
+	if err != nil || len(snap.Interactions) != 0 || len(snap.Approvals) != 0 || snap.Revision != before.Revision || resumedModel.calls.Load() != 0 || runs.Load() != 0 {
+		t.Fatalf("open asked, wrote or executed work: %v", err)
+	}
+	assertConsumerApprovalBlocksShell(t, opened, opts.Workspace)
+	if _, err := opened.Resume(t.Context(), sdk.ResumeCommand{TraceID: input.TraceID, ExpectedRevision: snap.Revision}); err != nil {
+		t.Fatal(err)
+	}
+	snap = waitConsumerApprovalState(t, opened, input.TraceID, "paused")
+	if len(snap.Interactions) != 1 || snap.Interactions[interaction.ID].ID != "" || resumedModel.calls.Load() != 0 || runs.Load() != 0 || snap.Traces[input.TraceID].Usage.ToolExecutions != 0 {
+		t.Fatal("unanswered Resume restored permission or executed work")
+	}
+	for _, fresh := range snap.Interactions {
+		if fresh.CallID != interaction.CallID || fresh.Scope != interaction.Scope || fresh.ApprovalID == interaction.ApprovalID || fresh.State != "ready" {
+			t.Fatal("fresh approval lost the original frozen call or reused permission identity")
+		}
+		interaction = fresh
 	}
 	cmd := sdk.InteractionResponse{InteractionID: interaction.ID, Decision: "allowed-once", ExpectedRevision: snap.Revision, IdempotencyKey: "answer"}
 	receipt, err := responder.RespondInteraction(t.Context(), cmd)
@@ -92,6 +107,7 @@ func TestSDKConsumerApprovesOriginalCallAfterReopenAndExplicitlyResumes(t *testi
 	if err != nil || snap.Interactions[interaction.ID].State != "allowed-once" || !snap.Resume[input.TraceID].CanResume {
 		t.Fatalf("answered snapshot=%+v eligibility=%+v err=%v", snap.Interactions, snap.Resume, err)
 	}
+	assertConsumerApprovalBlocksShell(t, opened, opts.Workspace)
 	if _, err := opened.Resume(t.Context(), sdk.ResumeCommand{TraceID: input.TraceID, ExpectedRevision: snap.Revision}); err != nil {
 		t.Fatal(err)
 	}

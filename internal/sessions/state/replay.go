@@ -19,7 +19,11 @@ func applyCommit(v *View, c store.Commit) error {
 	if err := validateApprovalCommit(v, c); err != nil {
 		return err
 	}
+	consumesHostCommands := false
 	for _, r := range c.ControlRecords {
+		if r.Type == "host_command_consumed" {
+			consumesHostCommands = true
+		}
 		if err := applyControl(v, r); err != nil {
 			return err
 		}
@@ -34,6 +38,9 @@ func applyCommit(v *View, c store.Commit) error {
 		}
 		if err := msg.Validate(); err != nil {
 			return err
+		}
+		if _, exists := v.HostCommands[msg.ID]; exists && (!consumesHostCommands || v.HostCommandConsumptions[msg.ID] != c.CommitSeq) {
+			return product.NewError(product.CodeStateConflict, "host command requires an explicit context consumption commit")
 		}
 		if r.ParentID != v.LeafID {
 			return product.NewError(product.CodeIncompatibleVersion, "history parent is not the selected leaf")
@@ -64,6 +71,10 @@ func applyControl(v *View, r store.Record) error {
 		return product.NewError(product.CodeIncompatibleVersion, "unknown control version")
 	}
 	switch r.Type {
+	case "host_command_consumed":
+		return applyHostCommandConsumption(v, r)
+	case "host_command_result":
+		return applyHostCommandResult(v, r)
 	case "execution_policy":
 		return applyExecutionPolicy(v, r)
 	case "approval_binding", "approval_decision", "approval_claim":
@@ -80,6 +91,10 @@ func applyControl(v *View, r store.Record) error {
 		return applyAttemptTransition(v, r)
 	case "operation":
 		return applyOperation(v, r)
+	case "todo_update":
+		return applyTodoUpdate(v, r)
+	case "tool_output_projection":
+		return applyToolProjection(v, r)
 	case "observation_revision":
 		return applyObservation(v, r)
 	case "resource_hold_release":

@@ -71,10 +71,11 @@ func (d Definition) Clone() Definition {
 }
 
 type Operations struct {
-	Files     agent.FileOperations
-	Process   agent.ProcessOperations
-	Artifacts agent.ArtifactStore
-	Todos     agent.TodoOperations
+	Files          agent.FileOperations
+	Process        agent.ProcessOperations
+	Artifacts      agent.ArtifactStore
+	Todos          agent.TodoOperations
+	OutputRedactor agent.OutputRedactor
 }
 
 type ExecutorOption func(*Executor)

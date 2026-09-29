@@ -40,6 +40,7 @@ func (c *Catalog) RegisterOpenAIResponses(client *http.Client, maxResponseBytes 
 			Model:           r.Config.Model,
 			MaxTokens:       &maxTokens,
 			Store:           &store,
+			Include:         []responses.ResponseIncludable{"reasoning.encrypted_content"},
 			EnableAutoCache: false,
 		}
 		if r.Options.EffectiveThinking != "" {
@@ -58,21 +59,27 @@ func (c *Catalog) RegisterOpenAIResponses(client *http.Client, maxResponseBytes 
 			reasoning := responses.ReasoningParam{Effort: shared.ReasoningEffort(native)}
 			config.Reasoning = &reasoning
 		}
+		cacheKey := ""
 		if r.Options.ActiveCache {
-			retention := responses.ResponseNewParamsPromptCacheRetentionInMemory
+			var err error
+			cacheKey, err = sessionPromptCacheKey(ctx, r)
+			if err != nil {
+				return nil, err
+			}
 			if r.Options.CacheIntent == "long" {
-				retention = responses.ResponseNewParamsPromptCacheRetention24h
+				retention := responses.ResponseNewParamsPromptCacheRetention24h
+				config.PromptCacheRetention = &retention
 			} else if r.Options.CacheIntent != "short" {
 				return nil, unsupported("unsupported Responses cache retention")
 			}
-			config.PromptCacheRetention = &retention
+			// Like pi, short omits retention rather than forcing in_memory.
 		}
 
 		inner, err := agenticopenai.NewResponsesModel(ctx, config)
 		if err != nil {
 			return nil, err
 		}
-		return &openAIResponsesModel{inner: inner, secret: auth.Secret}, nil
+		return &openAIResponsesModel{inner: inner, secret: auth.Secret, maxResponseBytes: maxResponseBytes, cacheKey: cacheKey}, nil
 	})
 }
 
@@ -222,16 +229,26 @@ func normalizeResponsesFinish(ctx context.Context, msg *schema.AgenticMessage) (
 }
 
 type openAIResponsesModel struct {
-	inner  Model
-	secret string
+	inner            Model
+	cacheKey         string
+	secret           string
+	maxResponseBytes int
 }
 
 func (*openAIResponsesModel) UsesObservedTransport() bool { return true }
 
+func (m *openAIResponsesModel) cacheOptions(opts []model.Option) []model.Option {
+	if m.cacheKey == "" {
+		return opts
+	}
+	copied := append([]model.Option(nil), opts...)
+	return append(copied, agenticopenai.WithResponsesPromptCacheKey(m.cacheKey))
+}
+
 func (m *openAIResponsesModel) Generate(ctx context.Context, in []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
 	capture := &usageCapture{}
 	requestCtx := withUsageCapture(ctx, capture)
-	msg, err := m.inner.Generate(requestCtx, in, opts...)
+	msg, err := m.inner.Generate(requestCtx, in, m.cacheOptions(opts)...)
 	if err != nil {
 		return nil, safeModelError(err)
 	}
@@ -247,7 +264,9 @@ func (m *openAIResponsesModel) Stream(ctx context.Context, in []*schema.AgenticM
 	requestCtx, cancel := context.WithCancel(ctx)
 	capture := &usageCapture{}
 	requestCtx = withUsageCapture(requestCtx, capture)
-	inner, err := m.inner.Stream(requestCtx, in, opts...)
+	collector := newResponsesCollector(m.maxResponseBytes)
+	requestCtx = context.WithValue(requestCtx, responsesCollectorKey{}, collector)
+	inner, err := m.inner.Stream(requestCtx, in, m.cacheOptions(opts)...)
 	if err != nil {
 		cancel()
 		return nil, safeModelError(err)
@@ -277,7 +296,7 @@ func (m *openAIResponsesModel) Stream(ctx context.Context, in []*schema.AgenticM
 			state.usage = msg.ResponseMeta.TokenUsage
 			msg.ResponseMeta.TokenUsage = nil
 		}
-		return msg, nil
+		return collector.associateResponsesReasoning(msg)
 	}, schema.WithErrWrapper(safeModelError), schema.WithOnEOF(func() (any, error) {
 		if requestCtx.Err() != nil {
 			return nil, requestCtx.Err()
@@ -287,6 +306,10 @@ func (m *openAIResponsesModel) Stream(ctx context.Context, in []*schema.AgenticM
 		}
 		terminal := &schema.AgenticMessage{Role: schema.AgenticRoleTypeAssistant, ResponseMeta: &schema.AgenticResponseMeta{TokenUsage: state.usage}}
 		finish, original, err := normalizeResponsesFinishWithState(requestCtx, terminal, state)
+		if err != nil {
+			return nil, err
+		}
+		terminal.ContentBlocks, err = collector.responsesReasoningPatches()
 		if err != nil {
 			return nil, err
 		}

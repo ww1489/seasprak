@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudwego/eino-ext/components/model/agenticclaude"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	product "github.com/ww1489/seasprak/internal/errors"
 	"github.com/ww1489/seasprak/internal/llm"
+	"github.com/ww1489/seasprak/internal/llm/einoext/agenticclaude"
 	"github.com/ww1489/seasprak/internal/testkit"
 )
 
@@ -236,9 +236,14 @@ func TestAnthropicMessagesFactoryMapsThinkingAndCacheTypedFields(t *testing.T) {
 	if !ok || thinking["type"] != "enabled" || thinking["budget_tokens"] != float64(1024) {
 		t.Fatalf("typed Anthropic thinking = %#v", request["thinking"])
 	}
-	cache, ok := request["cache_control"].(map[string]any)
-	if !ok || cache["type"] != "ephemeral" {
-		t.Fatalf("typed Anthropic cache = %#v", request["cache_control"])
+	if _, exists := request["cache_control"]; exists {
+		t.Fatal("top-level automatic cache must be disabled")
+	}
+	messages := request["messages"].([]any)
+	blocks := messages[len(messages)-1].(map[string]any)["content"].([]any)
+	cache, ok := blocks[len(blocks)-1].(map[string]any)["cache_control"].(map[string]any)
+	if !ok || cache["type"] != "ephemeral" || cache["ttl"] != nil {
+		t.Fatalf("typed Anthropic explicit cache = %#v", cache)
 	}
 }
 

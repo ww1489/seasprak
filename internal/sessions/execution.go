@@ -32,11 +32,7 @@ func (rt *runtime) runSegment(frame *execution, inputID string) {
 	frame.input = agent.InputRef{InputID: inputID, TraceID: frame.scope.TraceID, Kind: "prompt"}
 	err := rt.beginActivity(frame)
 	if err == nil {
-		if trace := rt.manager.View().Traces[frame.scope.TraceID]; trace != nil && trace.Kind == "command" {
-			err = rt.executeCommandSegment(frame, inputID)
-		} else {
-			err = rt.executeSegment(frame, inputID)
-		}
+		err = rt.executeSegment(frame, inputID)
 	}
 	err = errors.Join(err, rt.endActivity(frame))
 	_ = rt.do(context.Background(), func(rt *runtime) error { rt.segmentFinished(frame, err); return nil })
@@ -45,7 +41,7 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 	ctx := frame.ctx
 	scope := frame.scope
 	environment, workspace := rt.resourceDomain()
-	exec, err := tools.NewExecutor(scope.Generation, rt.opts.Tools, rt, sessionAuthorizer{rt: rt, scope: scope}, frame.budget,
+	exec, err := tools.NewExecutor(scope.Generation, rt.searchToolDefinitions(), rt, sessionAuthorizer{rt: rt, scope: scope}, frame.budget,
 		tools.WithCompiledSchemas(rt.opts.compiledTools), tools.WithOperations(rt.opts.Operations), tools.WithResourceScheduler(rt.resourceScheduler()), tools.WithResourceDomain(environment, workspace))
 	if err != nil {
 		return err
@@ -128,7 +124,10 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 				if rt.active != frame {
 					return nil, incompatibleResume("resumed execution was replaced")
 				}
-				return approvalResumeTargets(*frame.resume, rt.manager.View()), nil
+				if err := rt.prepareApprovalResume(ctx, *frame.resume, rt.manager.View()); err != nil {
+					return nil, err
+				}
+				return rt.approvalResumeTargets(*frame.resume), nil
 			})
 			if err != nil {
 				return nil, err
@@ -432,9 +431,11 @@ func (rt *runtime) CommitFact(ctx context.Context, scope agent.ExecutionScope, f
 				return product.NewError(product.CodeInvalidArgument, "tool intent requires atomic budget")
 			}
 			if committed.RequestedGrantRef != "" {
-				return rt.manager.ClaimApprovedTool(ctx, frozen, *fact.Budget, approvalIDForCall(rt.manager.View(), committed), rt.active.scope.ExecutionID, rt.approvalNow())
+				return rt.claimRuntimeApproval(ctx, committed, frozen, *fact.Budget)
 			}
 			return rt.manager.ClaimTool(ctx, frozen, *fact.Budget)
+		case "tool_output_projection":
+			return rt.saveToolProjection(ctx, scope, fact.Payload)
 		case "tool_observation":
 			var call agent.ToolRecord
 			if err := json.Unmarshal(fact.Payload, &call); err != nil {
@@ -559,70 +560,23 @@ func (rt *runtime) PrepareNextTurn(ctx context.Context, scope agent.ExecutionSco
 		if !rt.matchesExecution(scope) {
 			return nil, product.NewError(product.CodeStateConflict, "trace is not active")
 		}
-		if err := rt.active.ctx.Err(); err != nil {
-			return nil, err
+		return rt.active, nil
+	})
+	if err != nil {
+		return agent.TurnPlan{}, err
+	}
+	frame := value.(*execution)
+	turnID := agent.MustID()
+	// Reserve through the existing ledger outside the mailbox: its persistence
+	// callback atomically selects and starts this Turn inside the mailbox.
+	if err := frame.budget.BeginTurnID(turnID); err != nil {
+		return agent.TurnPlan{}, err
+	}
+	value, err = rt.call(ctx, func(rt *runtime) (any, error) {
+		if !rt.matchesExecution(scope) || rt.active.turnID != turnID {
+			return nil, product.NewError(product.CodeStateConflict, "selected turn is no longer active")
 		}
-		if rt.active.turnID != "" {
-			previous := rt.manager.View().Turns[rt.active.turnID]
-			if !previous.Ended {
-				return nil, product.NewError(product.CodeStateConflict, "previous turn is unfinished")
-			}
-		}
-		view := rt.manager.View()
-		trace := view.Traces[scope.TraceID]
-		if trace == nil {
-			return nil, product.NewError(product.CodeNotFound, "trace not found")
-		}
-		modelSelection := rt.findTurnSelection(view, scope, "model")
-		if modelSelection != nil {
-			if modelSelection.State == "pending" {
-				activated, err := rt.manager.ActivateSelection(ctx, modelSelection.ID)
-				if err != nil {
-					return nil, err
-				}
-				modelSelection = &activated
-			}
-			selected := rt.modelSlots[modelSelection.ID]
-			if selected == nil {
-				return nil, product.NewError(product.CodeResourceUnavailable, "selected model instance is unavailable")
-			}
-			rt.active.currentModel = selected
-		}
-		toolSelection := rt.findTurnSelection(view, scope, "tools")
-		if toolSelection != nil {
-			if toolSelection.State == "pending" {
-				activated, err := rt.manager.ActivateSelection(ctx, toolSelection.ID)
-				if err != nil {
-					return nil, err
-				}
-				toolSelection = &activated
-			}
-			rt.active.activeToolNames = make(map[string]struct{}, len(toolSelection.ToolNames))
-			for _, name := range toolSelection.ToolNames {
-				rt.active.activeToolNames[name] = struct{}{}
-			}
-			rt.active.activeToolSelection = toolSelection.Revision
-		} else if rt.active.activeToolNames == nil {
-			rt.active.activeToolNames = make(map[string]struct{}, len(rt.opts.ToolInfos))
-			for _, info := range rt.opts.ToolInfos {
-				if info != nil {
-					rt.active.activeToolNames[info.Name] = struct{}{}
-				}
-			}
-		}
-		if rt.active.currentModel == nil {
-			selected, err := rt.modelForTrace(trace)
-			if err != nil {
-				return nil, err
-			}
-			rt.active.currentModel = selected
-		}
-		selectionRevision := rt.manager.View().LastSeq
-		turn := agent.TurnRecord{ID: agent.MustID(), TraceID: scope.TraceID, InvocationID: scope.InvocationID, SelectionRevision: selectionRevision, ModelConfigVersion: modelVersion(rt.active.currentModel), ToolNames: sortedToolNames(rt.active.activeToolNames)}
-		rt.active.turnID = turn.ID
-		rt.active.turnSelectionRevision = selectionRevision
-		rt.active.scope.SelectionRevision = selectionRevision
-		return agent.TurnPlan{TurnID: turn.ID, SelectionRevision: selectionRevision, ModelConfigVersion: turn.ModelConfigVersion, ToolInfos: selectedToolInfos(rt.opts.ToolInfos, rt.active.activeToolNames), ToolsSelected: true}, nil
+		return agent.TurnPlan{TurnID: turnID, SelectionRevision: frame.turnSelectionRevision, ModelConfigVersion: modelVersion(frame.currentModel), ToolInfos: selectedToolInfos(rt.opts.ToolInfos, frame.activeToolNames), ToolsSelected: true}, nil
 	})
 	if err != nil {
 		return agent.TurnPlan{}, err

@@ -24,8 +24,10 @@ import (
 	"github.com/ww1489/seasprak/internal/testkit"
 )
 
-// TestSessionCrash 在默认套件内用真实子进程 Kill/Wait/重开覆盖五个业务提交窗口，
-// 每个窗口各有 Append 前与成功后两种（共 10 子案例）。证据映射：
+// TestSessionCrash 在默认套件内用真实子进程 Kill/Wait/重开覆盖六个业务提交窗口，
+// 每个窗口各有 Append 前与成功后两种（共 12 子案例）。证据映射：
+//
+//	model_attempt_before/after 逻辑预算已占额、物理请求和工具效果均0；尝试记录分别0/1
 //
 //	input.accepted_before     无受理记录；不 Submit 新任务冒充恢复
 //	input.accepted_after      Input pending；幂等回放原回执；queued+hold
@@ -42,7 +44,7 @@ func TestSessionCrash(t *testing.T) {
 		runRecoveryChild(t)
 		return
 	}
-	windows := []string{windowAccepted, windowAssistant, windowIntent, windowObservation, windowSettled}
+	windows := []string{windowAccepted, "model_attempt", windowAssistant, windowIntent, windowObservation, windowSettled}
 	phases := []string{"before", "after"}
 	for _, window := range windows {
 		for _, phase := range phases {
@@ -218,6 +220,20 @@ func runRecoveryParent(t *testing.T, window, phase string) {
 
 	wantModel, wantTool := expectedCalls(window)
 	if rep.ModelCalls != wantModel || rep.ToolCalls != wantTool {
+		t.Logf("crash child stopped=%v exit=%d reported-model=%d reported-tool=%d", stopped, cmd.ProcessState.ExitCode(), rep.ModelCalls, rep.ToolCalls)
+		// Inspect only execution metadata from this synthetic fixture; do not
+		// dump prompts, tool arguments, paths, or arbitrary journal payloads.
+		for _, commit := range append(rep.Prefix, rep.Target) {
+			for _, record := range commit.ControlRecords {
+				if record.Type != "trace" {
+					continue
+				}
+				var trace state.TraceState
+				if json.Unmarshal(record.Payload, &trace) == nil {
+					t.Logf("crash trace seq=%d state=%s error=%s activity=%+v model=%d tool=%d", commit.CommitSeq, trace.State, trace.Error, trace.Activity, trace.Usage.LogicalModelCalls, trace.Usage.ToolExecutions)
+				}
+			}
+		}
 		t.Fatalf("child counts at %s %s: model=%d tool=%d, want model=%d tool=%d",
 			window, phase, rep.ModelCalls, rep.ToolCalls, wantModel, wantTool)
 	}
@@ -403,11 +419,24 @@ func assertOpenedState(t *testing.T, s *AgentSession, ws, stateRoot, sessionID s
 	if rep.Window == windowIntent && rep.Phase == "after" {
 		wantUsage.ToolExecutions = 1
 	}
-	if wantUsage.LogicalModelCalls > 0 {
+	if wantUsage.LogicalModelCalls > 0 && rep.Window != "model_attempt" {
 		if tr.Usage.ModelCallID == "" || tr.Usage.ModelRequests != 1 {
 			t.Fatalf("missing durable logical request identity: %+v", tr.Usage)
 		}
 		wantUsage.ModelCallID, wantUsage.ModelRequests = tr.Usage.ModelCallID, 1
+	}
+	if rep.Window == "model_attempt" {
+		if tr.Usage.ModelCallID == "" || tr.Usage.ModelRequests != 0 {
+			t.Fatal("attempt barrier must retain logical identity before any physical request")
+		}
+		wantUsage.ModelCallID = tr.Usage.ModelCallID
+		wantAttempts := 0
+		if rep.Phase == "after" {
+			wantAttempts = 1
+		}
+		if len(snap.ModelAttempts) != wantAttempts {
+			t.Fatalf("durable attempts=%d want=%d", len(snap.ModelAttempts), wantAttempts)
+		}
 	}
 	if tr.Usage != wantUsage {
 		t.Fatalf("persisted usage %+v, want %+v (budget occupancy is not execution)", tr.Usage, wantUsage)

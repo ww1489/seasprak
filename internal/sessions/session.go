@@ -39,6 +39,11 @@ func Start(opts Options, manager *state.Manager, generation string) (*AgentSessi
 		return nil, err
 	}
 	rt := &runtime{opts: opts, manager: manager, mailbox: make(chan command, 64), done: make(chan struct{}), subs: map[int]*subscription{}, generation: generation}
+	// An injected TODO backend remains the sole owner of its persistence.
+	if rt.opts.Operations.Todos == nil {
+		rt.opts.Operations.Todos = &sessionTodos{rt: rt}
+	}
+	rt.restoreDefaultSelection()
 	if err := rt.restoreResourceHolds(); err != nil {
 		return nil, err
 	}
@@ -69,6 +74,9 @@ func (s *AgentSession) SubmitInput(ctx context.Context, cmd agent.InputCommand) 
 	}
 	value, err := s.rt.call(ctx, func(rt *runtime) (any, error) {
 		if err := rt.writable(); err != nil {
+			return nil, err
+		}
+		if err := rt.flushHostCommands(ctx); err != nil {
 			return nil, err
 		}
 		target := agent.TargetAgent{Name: "main", Version: "main-v1", Generation: rt.generation}
@@ -107,7 +115,7 @@ func (s *AgentSession) Snapshot(ctx context.Context) (Snapshot, error) {
 			err := rt.writable()
 			if err == nil {
 				if v.Traces[id].Kind == "command" {
-					_, err = rt.validateCommandResume(ctx, id, v)
+					err = incompatibleResume("legacy direct commands cannot be resumed")
 				} else {
 					_, err = rt.validateResume(ctx, id, v)
 				}
@@ -135,5 +143,14 @@ func (s *AgentSession) Snapshot(ctx context.Context) (Snapshot, error) {
 
 func (rt *runtime) snapshot(v state.View, resume map[string]ResumeEligibility) Snapshot {
 	interactions, approvals := rt.snapshotApprovals(v)
-	return Snapshot{Revision: v.LastSeq, SessionID: rt.opts.SessionID, Cursor: v.Cursor, ActiveTrace: v.ActiveTrace, Traces: v.Traces, Inputs: v.Inputs, Messages: v.Messages, Turns: v.Turns, Calls: v.Calls, Operations: v.Operations, Selections: v.Selections, Reconciliations: v.Reconciliations, RepairRequired: v.RepairRequired, Resume: resume, Interactions: interactions, Approvals: approvals, FrozenExecutions: v.FrozenExecutions}
+	for id, op := range v.Operations {
+		if op.Kind == "respond_interaction" {
+			delete(v.Operations, id)
+		}
+	}
+	for id, op := range rt.approvalOps {
+		v.Operations[id] = op
+	}
+	messages := snapshotMessages(v)
+	return Snapshot{ModelAttempts: snapshotAttemptViews(v), Observations: snapshotObservationViews(v), Revision: v.LastSeq, SessionID: rt.opts.SessionID, Cursor: v.Cursor, ActiveTrace: v.ActiveTrace, Traces: v.Traces, Inputs: v.Inputs, Messages: messages, Turns: v.Turns, Calls: v.Calls, Operations: v.Operations, Selections: v.Selections, Reconciliations: v.Reconciliations, RepairRequired: v.RepairRequired, Resume: resume, Interactions: interactions, Approvals: approvals, FrozenExecutions: v.FrozenExecutions}
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/ww1489/seasprak/internal/agent"
 	"github.com/ww1489/seasprak/internal/agent/tools"
 	"github.com/ww1489/seasprak/internal/sessions/store/jsonl"
@@ -65,7 +66,7 @@ func TestP2ResourcesDiskReopenUnknownBlocksUntilDurableReconcile(t *testing.T) {
 	}()
 	var queries atomic.Int32
 	original := &diskUnknownProcess{}
-	model := testkit.NewFake()
+	model := testkit.NewFake(testkit.Step{ToolCalls: []schema.FunctionToolCall{{CallID: "execute", Name: "execute", Arguments: `{"argv":["echo","hi"],"cwd":"workspace"}`}}}, testkit.Step{Text: "done"})
 	opts := Options{
 		SessionID: "disk-unknown", Workspace: t.TempDir(), StateRoot: t.TempDir(),
 		Profile: ProfileMemory, Principal: "operator", Model: model,
@@ -90,17 +91,14 @@ func TestP2ResourcesDiskReopenUnknownBlocksUntilDurableReconcile(t *testing.T) {
 	if _, ok := first.rt.opts.Store.(*jsonl.Store); !ok {
 		t.Fatal("fixture is not backed by a real JSONL store")
 	}
-	receipt, err := first.ExecuteCommand(ctx, atomicCommandRequest())
-	if err != nil {
-		t.Fatal(err)
-	}
+	receipt := submitOutput(t, first)
 	waitResumeCondition(t, func() bool {
 		view := first.rt.manager.View()
-		call, ok := view.Calls[receipt.OperationID]
-		return ok && terminal(view.Operations[receipt.OperationID].State) && view.Traces[call.Scope.TraceID].ExecutionStopped && terminal(view.Traces[call.Scope.TraceID].State)
+		return view.Traces[receipt.TraceID].ExecutionStopped && terminal(view.Traces[receipt.TraceID].State)
 	})
 	before := first.rt.manager.View()
-	call := before.Calls[receipt.OperationID]
+	call := onlyControlledCall(t, first)
+	originalModelCalls := model.Calls()
 	if !call.Claimed || call.Observation == nil || call.Observation.SideEffect != "unknown" || !before.Traces[call.Scope.TraceID].ExecutionStopped || original.calls.Load() != 1 {
 		t.Fatalf("unknown command did not durably stop: call=%+v runs=%d", call, original.calls.Load())
 	}
@@ -123,7 +121,7 @@ func TestP2ResourcesDiskReopenUnknownBlocksUntilDurableReconcile(t *testing.T) {
 	if _, ok := opened.rt.opts.Store.(*jsonl.Store); !ok {
 		t.Fatal("reopen did not use JSONL")
 	}
-	if opened.rt.opts.Store == first.rt.opts.Store || !opts.ResourceScheduler.HasHold(holdID) || original.calls.Load() != 1 || model.Calls() != 0 {
+	if opened.rt.opts.Store == first.rt.opts.Store || !opts.ResourceScheduler.HasHold(holdID) || original.calls.Load() != 1 || model.Calls() != originalModelCalls {
 		t.Fatal("public Open failed to reconstruct the hold without executing work")
 	}
 
@@ -166,7 +164,7 @@ func TestP2ResourcesDiskReopenUnknownBlocksUntilDurableReconcile(t *testing.T) {
 			t.Error("conflicting backend started before durable release")
 		}
 	}
-	secondModel := testkit.NewFake()
+	secondModel := testkit.NewFake(testkit.Step{ToolCalls: []schema.FunctionToolCall{{CallID: "execute", Name: "execute", Arguments: `{"argv":["echo","hi"],"cwd":"workspace"}`}}}, testkit.Step{Text: "done"})
 	secondOpts := Options{SessionID: "disk-conflicting", Workspace: opts.Workspace, StateRoot: opts.StateRoot, Profile: ProfileMemory,
 		Model: secondModel, Tools: opts.Tools, Operations: tools.Operations{Process: secondProcess}, ResourceScheduler: opts.ResourceScheduler}
 	second, err := CreateAgentSession(ctx, secondOpts)
@@ -174,10 +172,7 @@ func TestP2ResourcesDiskReopenUnknownBlocksUntilDurableReconcile(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = second.Close(context.Background()) })
-	secondReceipt, err := second.ExecuteCommand(ctx, atomicCommandRequest())
-	if err != nil {
-		t.Fatal(err)
-	}
+	secondReceipt := submitOutput(t, second)
 	// No production hook exposes scheduler queue admission. Observe the real
 	// blocked Acquire stack (not a pre-authorization hook), then hold the
 	// reconciliation query at a channel boundary while checking zero starts.
@@ -194,7 +189,7 @@ func TestP2ResourcesDiskReopenUnknownBlocksUntilDurableReconcile(t *testing.T) {
 		t.Fatalf("conflicting backend ran before release: original=%d second=%d", original.calls.Load(), secondProcess.calls.Load())
 	}
 	view := second.rt.manager.View()
-	if view.Calls[secondReceipt.OperationID].Claimed || len(view.Traces) != 1 {
+	if onlyControlledCall(t, second).Claimed || len(view.Traces) != 1 {
 		t.Fatal("waiting conflict already claimed execution")
 	}
 	close(queryRelease)
@@ -211,9 +206,9 @@ func TestP2ResourcesDiskReopenUnknownBlocksUntilDurableReconcile(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("durable release did not unblock the conflicting session")
 	}
-	waitResumeCondition(t, func() bool { return terminal(second.rt.manager.View().Operations[secondReceipt.OperationID].State) })
+	waitResumeCondition(t, func() bool { return terminal(second.rt.manager.View().Traces[secondReceipt.TraceID].State) })
 	after := opened.rt.manager.View()
-	if original.calls.Load() != 1 || secondProcess.calls.Load() != 1 || queries.Load() != 1 || model.Calls() != 0 || secondModel.Calls() != 0 || opts.ResourceScheduler.HasHold(holdID) || after.HasUnresolvedEffects() {
+	if original.calls.Load() != 1 || secondProcess.calls.Load() != 1 || queries.Load() != 1 || model.Calls() != originalModelCalls || secondModel.Calls() != 2 || opts.ResourceScheduler.HasHold(holdID) || after.HasUnresolvedEffects() {
 		t.Fatalf("unexpected executions/holds: original=%d second=%d queries=%d", original.calls.Load(), secondProcess.calls.Load(), queries.Load())
 	}
 	if after.Calls[call.Call.CallID].Observation.SideEffect != "unknown" || after.Traces[call.Scope.TraceID].State != before.Traces[call.Scope.TraceID].State || after.Traces[call.Scope.TraceID].Usage != before.Traces[call.Scope.TraceID].Usage {
@@ -244,7 +239,7 @@ func waitDiskResourceAcquire(t *testing.T, scheduler *tools.ResourceScheduler) {
 		buf := make([]byte, 1<<20)
 		n := goruntime.Stack(buf, true)
 		for _, stack := range strings.Split(string(buf[:n]), "\n\n") {
-			if strings.Contains(stack, "[select]") && strings.Contains(stack, acquire) && strings.Contains(stack, "sessions.(*runtime).executeCommandSegment(") {
+			if strings.Contains(stack, "[select]") && strings.Contains(stack, acquire) && strings.Contains(stack, "tools.(*Executor).run(") {
 				return true
 			}
 		}

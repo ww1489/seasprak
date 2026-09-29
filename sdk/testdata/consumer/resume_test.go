@@ -3,7 +3,6 @@ package consumer_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"runtime"
 	"sync/atomic"
 	"testing"
@@ -39,13 +38,6 @@ func (m *consumerResumeModel) Stream(ctx context.Context, in []*schema.AgenticMe
 
 func TestSDKConsumerExplicitlyResumesAfterReopen(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
-	defer func() {
-		select {
-		case <-release:
-		default:
-			close(release)
-		}
-	}()
 	var runs atomic.Int32
 	def := sdk.ToolDefinition{Name: "work", Version: "1", Schema: json.RawMessage(`{"type":"object"}`), Run: func(context.Context, json.RawMessage) (string, error) {
 		runs.Add(1)
@@ -61,6 +53,14 @@ func TestSDKConsumerExplicitlyResumesAfterReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close(context.Background())
+	// Release the uncooperative callback before Close, including Fatal paths.
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
 	input, err := s.SubmitInput(t.Context(), sdk.InputCommand{Kind: "prompt", Content: json.RawMessage(`{"text":"hello"}`)})
 	if err != nil {
 		t.Fatal(err)
@@ -70,15 +70,55 @@ func TestSDKConsumerExplicitlyResumesAfterReopen(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("tool did not enter")
 	}
-	waitCtx, cancel := context.WithTimeout(t.Context(), 80*time.Millisecond)
+	// Recovery is a successful Pause/Close/Open/Resume contract. Acceptance
+	// has no 80ms SLA. Post-receipt wait cancellation is tested independently
+	// in sessions with a context that observes Pause's actual waiting select.
+	type pauseResult struct {
+		receipt sdk.OperationReceipt
+		err     error
+	}
+	paused := make(chan pauseResult, 1)
+	go func() {
+		receipt, err := s.Pause(t.Context(), input.TraceID)
+		paused <- pauseResult{receipt, err}
+	}()
 	var pause sdk.OperationReceipt
-	pause, err = s.Pause(waitCtx, input.TraceID)
-	cancel()
-	if !errors.Is(err, context.DeadlineExceeded) || pause.OperationID == "" {
-		t.Fatalf("accepted pause=%+v err=%v", pause, err)
+	deadline := time.After(5 * time.Second)
+	for pause.OperationID == "" {
+		snapshot, err := s.Snapshot(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, op := range snapshot.Operations {
+			if op.Kind == "pause" && op.Receipt.Target == input.TraceID {
+				pause = op.Receipt
+				if op.State != "accepted" || snapshot.Traces[input.TraceID].ExecutionStopped || snapshot.Traces[input.TraceID].State != "running" || runs.Load() != 1 || model.calls.Load() != 1 {
+					t.Fatalf("pause settled before tool exit: operation=%+v trace=%+v", op, snapshot.Traces[input.TraceID])
+				}
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatal("pause not accepted")
+		default:
+			runtime.Gosched()
+		}
+	}
+	select {
+	case result := <-paused:
+		t.Fatalf("pause returned before tool exit: %+v err=%v", result.receipt, result.err)
+	default:
 	}
 	close(release)
-	deadline := time.After(5 * time.Second)
+	select {
+	case result := <-paused:
+		if result.err != nil || result.receipt != pause || pause.OperationID == "" {
+			t.Fatalf("pause receipt=%+v accepted=%+v err=%v", result.receipt, pause, result.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("pause did not return after tool exit")
+	}
+	deadline = time.After(5 * time.Second)
 	for {
 		status, err := s.GetOperation(t.Context(), pause.OperationID)
 		if err != nil {

@@ -18,7 +18,9 @@ full/partial/none/unavailable 是实际后端能力等级，和模式不同；fu
 <a id="grants"></a>
 ## 2. 冻结描述、一次批准与占用
 
-批准关联 approvalId、interactionId、原调用、描述 hash、generation、资源范围、权限版本、有效期和决定者。批准只适用于同一冻结操作，不能把工具名或“用户说可以”作为通行证。
+**2026-09-28 已确认修订，实施与验收进行中：**一次性审批请求、决定与许可消费状态仅保存在当前会话运行实例内存，不写入历史或可恢复授权记录；关闭/重启后失效。批准关联 approvalId、interactionId、原调用、描述 hash、generation、资源范围、权限版本、有效期和决定者，只适用于同一冻结操作，不能把工具名或“用户说可以”作为通行证。
+
+显式恢复未执行调用时重新检查当前权限，必要时生成新审批；只读浏览和 Open 不自动询问或执行。已有结果直接复用，执行状态未知必须先核对，不能因旧批准消失就重新执行。调用 claim、执行意图、预算及观察仍按原事务持久保存，但不包含可恢复的一次批准。永久授权规则与会话级复用授权不属于本次迁移的新增能力。
 
 ```mermaid
 sequenceDiagram
@@ -32,17 +34,17 @@ sequenceDiagram
     T->>P: 当前策略判断
     opt 需要一次批准
         P->>S: ask 冻结描述
-        S->>H: approval.asked
+        S->>S: 内存登记审批请求
         S-->>U: 同一份授权视图
         U->>S: allowed-once / 拒绝
-        S->>H: approval.decided
+        S->>S: 内存保存一次决定
     end
     T->>P: 启动前复核取消、撤销、描述与期限
     T->>H: 原子 claim（需要时）+ execution intent
     H-->>T: 执行票据
     T->>X: 执行同一冻结动作
     X-->>T: 可信启动/结果
-    T->>H: 观察事实 / 许可消费关联
+    T->>H: 观察与执行事实（不保存一次批准）
 ```
 
 D26-授权时序：审批等待的 checkpoint 关联见 09。常驻策略/Auto 直接 allow 不制造 approvalId，但仍先提交调用意图和必要审计。claim 不等于 tool.started；helper 已启动也不等于目标命令已启动。
@@ -70,7 +72,7 @@ D26-授权时序：审批等待的 checkpoint 关联见 09。常驻策略/Auto �
 <a id="protected-data"></a>
 ## 4. 运行数据和产物保护
 
-Session 日志、审批/claim、checkpoint、原授权原文、可信 manifest 位于 stateRoot；artifactRoot 和 tempRoot 是业务材料。创建时用真实路径/文件身份检查重叠、junction/symlink、硬链接和挂载别名，不仅比较字符串前缀。
+Session 日志、调用 claim、checkpoint、可信 manifest 位于 stateRoot；一次性审批请求和决定仅存运行实例内存，不保存原授权原文。artifactRoot 和 tempRoot 是业务材料。创建时用真实路径/文件身份检查重叠、junction/symlink、硬链接和挂载别名，不仅比较字符串前缀。
 
 默认 stateRoot 在业务可写根之外；有包含关系时只有后端真正落实子目录写禁止才允许。文件 Operations 和进程后端都要验证，不能只隐藏工具描述。探测报告单独列 runtimeDataWriteProtected，generic partial 标签不是证明。
 
@@ -181,7 +183,7 @@ Auto 默认关闭，保留显式装配的审核接口和完整行为。开启也
 
 分类为 sandbox_unavailable/runner_failed、sandbox_denied、ordinary_failure、unknown。先检查可信设施故障证据，再解释 stderr；业务程序可以伪造错误文本，退出码/PID 缺失不足以证明 no-start。开始业务操作后不能自动换 backend 重试。
 
-最小审计链：原始输入/委派来源引用 → 参数转换来源 → 冻结描述 → 策略/审核/审批决定 → claim+intent → 可信启动 → 结果/效果 → 核对/释放。每步关联原调用，秘密值仅在受保护引用中；缺必要持久事实就不启动新副作用。
+最小执行事实链：原始输入/委派来源引用 → 参数转换来源 → 冻结描述 → claim+intent → 可信启动 → 结果/效果 → 核对/释放。策略和一次性批准在启动前复核，其中临时审批请求、决定与许可消费状态不进入持久历史。每步关联原调用；缺必要执行事实提交就不启动新副作用。
 
 <a id="evidence"></a>
 ## 10. 证据与验收

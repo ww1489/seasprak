@@ -105,13 +105,16 @@ func (rt *runtime) beginActivity(frame *execution) error {
 		if clock == nil {
 			clock = systemActivityClock{}
 		}
-		tr := rt.manager.View().Traces[frame.scope.TraceID]
-		l := &activityLease{clock: clock, limit: tr.Limits.ActivityBudget, record: tr.Activity, wake: make(chan uint64, 1), stop: make(chan struct{}), done: make(chan struct{})}
+		limit, activity, found := rt.manager.ActivityState(frame.scope.TraceID)
+		if !found {
+			return product.NewError(product.CodeStateConflict, "activity trace is not running")
+		}
+		l := &activityLease{clock: clock, limit: limit, record: activity, wake: make(chan uint64, 1), stop: make(chan struct{}), done: make(chan struct{})}
 		frame.activity = l
 		sample := clock.Now()
 		// Before the first append there is no permitted execution, but the watchdog
 		// still bounds a blocked append. Only commit success opens the work gate.
-		grant := min(time.Second, tr.Limits.ActivityBudget-tr.Activity.Settled-tr.Activity.Uncertain)
+		grant := min(time.Second, limit-activity.Settled-activity.Uncertain)
 		if grant > 0 {
 			l.mu.Lock()
 			l.armExpiryLocked(frame, sample.Add(grant))
@@ -140,6 +143,9 @@ func (rt *runtime) beginActivity(frame *execution) error {
 					if !rt.matchesExecution(frame.scope) {
 						return product.NewError(product.CodeStateConflict, "activity execution changed")
 					}
+					if err := frame.ctx.Err(); err != nil {
+						return err
+					}
 					l.mu.Lock()
 					if l.closed || epoch != l.epoch {
 						l.mu.Unlock()
@@ -147,12 +153,16 @@ func (rt *runtime) beginActivity(frame *execution) error {
 					}
 					sample := l.clock.Now()
 					elapsed := sample.Sub(l.sample)
-					l.mu.Unlock()
-					if err := frame.ctx.Err(); err != nil {
-						return err
+					// Check closure, epoch and expiry in one critical section.
+					// endActivity may close a valid lease after the model exits;
+					// a separate allowed() would mistake that closure for expiry.
+					gateErr := l.err
+					if !l.committed || !sample.Before(l.sample.Add(l.record.Reserved)) {
+						gateErr = activityExhausted()
 					}
-					if err := l.allowed(); err != nil {
-						return err
+					l.mu.Unlock()
+					if gateErr != nil {
+						return gateErr
 					}
 					return rt.commitActivity(frame, sample, elapsed)
 				})
@@ -172,6 +182,10 @@ func (rt *runtime) beginActivity(frame *execution) error {
 func (rt *runtime) commitActivity(frame *execution, sample time.Time, elapsed time.Duration) error {
 	l := frame.activity
 	l.mu.Lock()
+	if l.closed {
+		l.mu.Unlock()
+		return nil
+	}
 	revision := l.record.Revision
 	wasCommitted := l.committed
 	oldDeadline := l.sample.Add(l.record.Reserved)

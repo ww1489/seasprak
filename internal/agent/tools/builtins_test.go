@@ -27,7 +27,7 @@ func TestBuiltinReadFileUsesControlledOperationsAndArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out.Status != "succeeded" || out.Content != "你好🙂\nsecond\n" || files.reads.Load() != 1 || artifacts.opens.Load() != 1 {
+	if out.Status != "succeeded" || decodeReadPage(t, out).Content != "你好🙂\nsecond\n" || files.reads.Load() != 1 || artifacts.opens.Load() != 1 {
 		t.Fatalf("unexpected controlled read: out=%+v reads=%d opens=%d", out, files.reads.Load(), artifacts.opens.Load())
 	}
 	if got := files.lastRead; got.Identity != "src/main.go" || got.Offset != 0 || got.Limit != 2000 {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 
 	"github.com/ww1489/seasprak/internal/agent"
 	product "github.com/ww1489/seasprak/internal/errors"
@@ -69,8 +70,96 @@ func (m *Manager) AcceptSelection(ctx context.Context, cmd OperationCommand, sel
 	return receipt, nil
 }
 
-// ActivateSelection is the only transition that makes a pending selection
-// visible to a new Turn. It is deliberately separate from acceptance.
+// SelectionMatchesOperation reconstructs the existing acceptance command. Older
+// tool selections used the same digest shape and remain compatible; the caller
+// must separately match ToolVersions against the fixed trusted generation,
+// because tool versions were never part of the request digest. InvocationID was
+// optional in the request, so only omitted or the committed scope can match.
+func SelectionMatchesOperation(selected Selection, op Operation) bool {
+	if selected.Revision == 0 || selected.OperationID != op.Receipt.OperationID || selected.Revision != op.Receipt.AcceptedCommit || selected.Scope.SessionID != op.SessionID {
+		return false
+	}
+	command := OperationCommand{Kind: op.Kind, Target: op.Receipt.Target, ExpectedRevision: selected.Revision - 1}
+	if selected.ApplyAt == "next_trace" {
+		scope := agent.ExecutionScope{SessionID: selected.Scope.SessionID, BranchID: selected.Scope.BranchID, Generation: selected.Scope.Generation}
+		if selected.Kind != "model" || op.Kind != "select_default_model" || op.Receipt.Target != "next_trace" || selected.Scope != scope {
+			return false
+		}
+		command.Content, _ = json.Marshal(struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		}{selected.ModelName, selected.ModelVersion})
+		digest, err := operationDigest(command)
+		return err == nil && digest == op.Digest
+	}
+	if selected.ApplyAt != "next_turn" || op.Receipt.Target != selected.Scope.TraceID {
+		return false
+	}
+	if selected.Kind == "model" && op.Kind == "select_next_turn_model" {
+		command.Content, _ = json.Marshal(struct {
+			TraceID string `json:"traceId"`
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		}{selected.Scope.TraceID, selected.ModelName, selected.ModelVersion})
+		digest, err := operationDigest(command)
+		return err == nil && digest == op.Digest
+	}
+	if selected.Kind != "tools" || op.Kind != "select_active_tools" {
+		return false
+	}
+	for _, invocation := range []string{"", selected.Scope.InvocationID} {
+		command.Content, _ = json.Marshal(struct {
+			TraceID      string   `json:"traceId"`
+			Names        []string `json:"names"`
+			InvocationID string   `json:"invocationId,omitempty"`
+		}{selected.Scope.TraceID, selected.ToolNames, invocation})
+		digest, err := operationDigest(command)
+		if err == nil && digest == op.Digest {
+			return true
+		}
+	}
+	return false
+}
+
+// BeginSelectedTurn commits the selected inventory, model activation, logical
+// budget reservation and initial Turn snapshot in one journal transaction.
+func (m *Manager) BeginSelectedTurn(ctx context.Context, scope agent.ExecutionScope, usage agent.Usage, turn agent.TurnRecord, selectionIDs []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	trace := m.view.Traces[scope.TraceID]
+	if trace == nil || trace.State != "running" || scope.SessionID != m.sessionID || scope.BranchID != m.view.BranchID || scope.InvocationID != trace.InvocationID || scope.Generation != trace.Generation {
+		return product.NewError(product.CodeStateConflict, "turn selection scope does not match the active trace")
+	}
+	if turn.ID == "" || turn.ID != usage.ModelCallID || turn.TraceID != trace.ID || turn.InvocationID != trace.InvocationID || turn.SelectionRevision != m.view.LastSeq || turn.Ended || len(turn.CallIDs) != 0 || turn.TransportRequests != 0 {
+		return product.NewError(product.CodeStateConflict, "initial turn snapshot is invalid")
+	}
+	if _, exists := m.view.Turns[turn.ID]; exists {
+		return product.NewError(product.CodeStateConflict, "selected turn already exists")
+	}
+	if previous, ok := m.view.Turns[trace.Usage.ModelCallID]; ok && !previous.Ended {
+		return product.NewError(product.CodeStateConflict, "previous turn is unfinished")
+	}
+	var activations []Selection
+	seen := map[string]bool{}
+	for _, id := range selectionIDs {
+		selected, ok := m.view.Selections[id]
+		if !ok || seen[selected.Kind] || selected.ApplyAt != "next_turn" || (selected.State != "pending" && selected.State != "active") || selected.Scope.SessionID != scope.SessionID || selected.Scope.BranchID != scope.BranchID || selected.Scope.TraceID != scope.TraceID || selected.Scope.Generation != scope.Generation || (selected.Scope.InvocationID != "" && selected.Scope.InvocationID != scope.InvocationID) {
+			return product.NewError(product.CodeStateConflict, "selection does not belong to the new turn")
+		}
+		seen[selected.Kind] = true
+		if selected.Kind == "model" && turn.ModelConfigVersion != "" && selected.ModelVersion != turn.ModelConfigVersion || selected.Kind == "tools" && !slices.Equal(selected.ToolNames, turn.ToolNames) {
+			return product.NewError(product.CodeStateConflict, "selection differs from the new turn snapshot")
+		}
+		if selected.State == "pending" {
+			selected.State = "active"
+			activations = append(activations, selected)
+		}
+	}
+	return m.saveTraceBudget(ctx, trace.ID, usage, &turn, activations)
+}
+
+// ActivateSelection transitions a single pending control record. Execution uses
+// BeginSelectedTurn so activation cannot outlive a failed Turn reservation.
 func (m *Manager) ActivateSelection(ctx context.Context, id string) (Selection, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

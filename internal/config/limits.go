@@ -5,6 +5,12 @@ import "time"
 // ToolOutputChunkBytes is the maximum UTF-8 text size of one temporary output event.
 const ToolOutputChunkBytes = 50 << 10
 
+// GeminiFunctionArgumentsBytes bounds gateway JSON argument fragments per call.
+const GeminiFunctionArgumentsBytes = 1 << 20
+
+// GeminiCacheRegistryEntries bounds cached and in-flight resources per registered factory.
+const GeminiCacheRegistryEntries = 128
+
 // ApprovalValidity is checked both at the decision and atomic claim boundaries.
 const ApprovalValidity = 24 * time.Hour
 

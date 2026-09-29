@@ -11,14 +11,14 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/cloudwego/eino-ext/components/model/agenticclaude"
 	"github.com/cloudwego/eino/schema"
 	"github.com/ww1489/seasprak/internal/llm"
+	"github.com/ww1489/seasprak/internal/llm/einoext/agenticclaude"
 )
 
-// Pin the actual upstream contract rather than carrying forward the older
-// assumption that Claude's adapter discards all cache-write counts. This is a
-// dependency probe, not certification of the future product Claude factory.
+// Pin the private patched Claude adapter's cache-write contract rather than the
+// older assumption that all cache-write counts are discarded. This probe does
+// not certify the product factory or the original unpatched upstream version.
 func TestP2UsageClaudeUpstreamCacheWriteAndPresence(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		for _, write := range []int{-1, 0, 100} {

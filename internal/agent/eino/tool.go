@@ -77,5 +77,5 @@ func (t *pipelineTool) run(ctx context.Context, arguments string) (string, error
 		raw, _ := json.Marshal(out)
 		return string(raw), nil
 	}
-	return out.Content, nil
+	return out.ModelContent(), nil
 }

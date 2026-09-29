@@ -3,7 +3,6 @@ package sessions
 import (
 	"context"
 	"errors"
-	"sort"
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/components/model"
@@ -38,7 +37,6 @@ type execution struct {
 	pauseID               string
 	checkpoint            *checkpointResult
 	input                 agent.InputRef
-	directResume          *state.DirectResumeBinding
 	resume                *state.CheckpointRef
 	resumeID              string
 	toolChunks            map[string]toolChunkPosition // mailbox-owned, one execution segment only
@@ -58,11 +56,14 @@ type runtime struct {
 	closing        bool
 	closeErr       error // read only after done is closed
 	generation     string
+	commands       map[string]context.CancelFunc // mailbox-owned live host shells, never persisted
 	active         *execution
 	cursor         uint64
 	modelChunks    map[string]uint64             // mailbox-owned temporary stream positions
 	modelSlots     map[string]model.AgenticModel // process-local pending model instances
 	defaultModelID string
+	approvals      map[string]*runtimeApproval // mailbox-owned, never recovered as permission
+	approvalOps    map[string]state.Operation
 }
 
 func (rt *runtime) writable() error {
@@ -72,13 +73,7 @@ func (rt *runtime) writable() error {
 	if rt.opts.ReadOnly {
 		return product.NewError(product.CodePermissionDenied, "session is read-only")
 	}
-	if err := rt.manager.Fault(); err != nil {
-		return err
-	}
-	if rt.manager.View().RepairRequired {
-		return product.NewError(product.CodeStorageUnavailable, "journal requires repair")
-	}
-	return nil
+	return rt.manager.WriteStatus()
 }
 func (s *AgentSession) Cancel(ctx context.Context, traceID string) error {
 	value, err := s.rt.call(ctx, func(rt *runtime) (any, error) {
@@ -126,6 +121,9 @@ func (s *AgentSession) ContinueQueue(ctx context.Context, traceID string) error 
 		if tr == nil || tr.State != "queued" {
 			return nil, product.NewError(product.CodeStateConflict, "only queued trace can continue")
 		}
+		if tr.Kind == "command" {
+			return nil, incompatibleResume("legacy direct commands cannot continue")
+		}
 		if tr.Generation != rt.generation {
 			return nil, product.NewError(product.CodeIncompatibleVersion, "queued generation cannot be replaced")
 		}
@@ -153,6 +151,9 @@ func (s *AgentSession) Close(ctx context.Context) error {
 	default:
 	}
 	_, err := s.rt.call(ctx, func(rt *runtime) (any, error) {
+		for _, cancel := range rt.commands {
+			cancel()
+		}
 		rt.closing = true
 		if rt.active != nil {
 			rt.active.cancel()
@@ -182,9 +183,16 @@ func (rt *runtime) schedule() {
 	if v.ActiveTrace != "" || v.HasUnresolvedEffects() {
 		return
 	}
+	if err := rt.flushHostCommands(context.Background()); err != nil {
+		return
+	}
+	v = rt.manager.View()
 	for _, id := range v.Independent {
 		in := v.Inputs[id]
 		tr := v.Traces[in.TraceID]
+		if in.Kind == "command" || tr.Kind == "command" {
+			continue // Legacy commands are history only, including queued records.
+		}
 		if in.State != "pending" || tr.State != "queued" || tr.Hold {
 			continue
 		}
@@ -227,16 +235,10 @@ func (rt *runtime) setBudgetPersistence(frame *execution) {
 			if err := frame.activity.allowed(); err != nil {
 				return err
 			}
-			if err := rt.manager.SaveTraceBudget(context.Background(), frame.scope.TraceID, usage); err != nil {
-				return err
+			if usage.ModelCallID != "" && usage.ModelCallID != rt.manager.View().Traces[frame.scope.TraceID].Usage.ModelCallID {
+				return rt.beginSelectedTurn(context.Background(), frame, usage)
 			}
-			if usage.ModelCallID != "" {
-				turn := agent.TurnRecord{ID: usage.ModelCallID, TraceID: frame.scope.TraceID, InvocationID: frame.scope.InvocationID, SelectionRevision: frame.turnSelectionRevision, ModelConfigVersion: modelVersion(frame.currentModel), ToolNames: sortedToolNames(frame.activeToolNames)}
-				if err := rt.manager.SaveTurn(context.Background(), turn); err != nil {
-					return err
-				}
-			}
-			return nil
+			return rt.manager.SaveTraceBudget(context.Background(), frame.scope.TraceID, usage)
 		})
 	})
 }
@@ -274,21 +276,6 @@ func (rt *runtime) segmentFinished(frame *execution, runErr error) {
 	if runErr == nil && frame.ctx.Err() != nil {
 		runErr = frame.ctx.Err()
 	}
-	var commandWait *agent.ApprovalWait
-	if tr.Kind == "command" && errors.As(runErr, &commandWait) && !rt.closing && frame.ctx.Err() == nil && tr.State == "running" {
-		binding, err := rt.commandWaitBinding(frame, commandWait, v)
-		if err == nil {
-			err = rt.manager.CommitCommandWait(context.Background(), binding)
-		}
-		if err == nil {
-			frame.cancel()
-			frame.toolChunks = nil
-			rt.active = nil
-			close(frame.done)
-			return
-		}
-		runErr = err
-	}
 	if frame.resumeID != "" && rt.manager.Fault() == nil {
 		next := "completed"
 		if tr.State == "cancelling" || rt.closing {
@@ -305,17 +292,11 @@ func (rt *runtime) segmentFinished(frame *execution, runErr error) {
 	if !rt.closing && frame.ctx.Err() == nil && tr.State == "running" && runErr == nil && frame.checkpoint != nil && frame.checkpoint.valid && len(frame.checkpoint.targets) != 0 && !v.TraceHasUnresolvedEffects(tr.ID) {
 		cp, err := rt.pauseReference(frame, frame.input, frame.checkpoint.ref, v)
 		if err == nil {
-			for id := range frame.checkpoint.targets {
-				cp.InteractionIDs = append(cp.InteractionIDs, id)
-			}
-			sort.Strings(cp.InteractionIDs)
-			if frame.pauseID != "" {
-				err = rt.manager.CommitApprovalPause(context.Background(), tr.ID, frame.pauseID, cp, frame.checkpoint.targets)
-			} else {
-				err = rt.manager.CommitApprovalCheckpoint(context.Background(), tr.ID, cp, frame.checkpoint.targets)
-			}
+			cp.ApprovalTargets = frame.checkpoint.targets
+			err = rt.manager.CommitToolWaitCheckpoint(context.Background(), tr.ID, frame.pauseID, cp, frame.checkpoint.targets)
 		}
 		if err == nil {
+			rt.bindApprovalCheckpoint(cp)
 			frame.cancel()
 			frame.toolChunks = nil
 			frame.loop = nil
@@ -402,6 +383,9 @@ func (rt *runtime) segmentFinished(frame *execution, runErr error) {
 	frame.cancel()
 	frame.toolChunks = nil
 	rt.active = nil
+	if terminal(state) {
+		_ = rt.flushHostCommands(context.Background())
+	}
 	close(frame.done)
 	if terminal(state) {
 		rt.schedule()
@@ -419,7 +403,7 @@ func (rt *runtime) loop() {
 		}
 		rt.publishCommitted()
 		cmd.reply <- result
-		if rt.closing && rt.active == nil {
+		if rt.closing && rt.active == nil && len(rt.commands) == 0 {
 			for _, sub := range rt.subs {
 				sub.close(nil)
 				<-sub.stopped

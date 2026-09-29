@@ -42,31 +42,36 @@ type InputState struct {
 	CommitSeq uint64            `json:"commitSeq"`
 }
 type View struct {
-	LastSeq         uint64
-	Cursor          uint64
-	BranchID        string
-	LeafID          string
-	Traces          map[string]*TraceState
-	Inputs          map[string]*InputState
-	Order           []string
-	Steering        []string
-	Follow          []string
-	Independent     []string
-	Idem            map[string]idemRecord
-	Budget          agent.Usage // compatibility: aggregate diagnostic; limits are per Trace
-	Generation      string
-	ExecutionPolicy agent.ResolvedPolicy
-	Events          []agent.Event
-	ActiveTrace     string
-	Messages        []agent.AgentMessage
-	Turns           map[string]agent.TurnRecord
-	Calls           map[string]agent.ToolRecord
-	Operations      map[string]Operation
-	Observations    map[string]ObservationRevision
-	Reconciliations map[string]Reconciliation
-	ModelAttempts   map[string]ModelAttempt
-	AttemptResults  map[string]ModelAttemptTransition
-	AttemptDetails  map[string]ModelAttemptDetailsRecord
+	LastSeq                 uint64
+	Cursor                  uint64
+	BranchID                string
+	LeafID                  string
+	Traces                  map[string]*TraceState
+	Inputs                  map[string]*InputState
+	Order                   []string
+	Steering                []string
+	Follow                  []string
+	Independent             []string
+	Idem                    map[string]idemRecord
+	Budget                  agent.Usage // compatibility: aggregate diagnostic; limits are per Trace
+	Generation              string
+	ExecutionPolicy         agent.ResolvedPolicy
+	Events                  []agent.Event
+	ActiveTrace             string
+	Messages                []agent.AgentMessage
+	HostCommandConsumptions map[string]uint64            // Consumption commit by immutable command ID.
+	HostCommands            map[string]HostCommandResult // Durable facts, independent of model history.
+	Turns                   map[string]agent.TurnRecord
+	Calls                   map[string]agent.ToolRecord
+	Operations              map[string]Operation
+	Observations            map[string]ObservationRevision
+	ToolProjections         map[string]agent.ToolOutputProjection
+	Todos                   map[string]TodoUpdate // Current full list by invocation.
+	TodoUpdates             map[string]TodoUpdate // Immutable execution receipts by call.
+	Reconciliations         map[string]Reconciliation
+	ModelAttempts           map[string]ModelAttempt
+	AttemptResults          map[string]ModelAttemptTransition
+	AttemptDetails          map[string]ModelAttemptDetailsRecord
 	// Derived from committed records; absence of a terminal is not exit proof.
 	UnfinishedAttempts []UnfinishedModelAttempt
 	FrozenExecutions   map[string]FrozenExecution

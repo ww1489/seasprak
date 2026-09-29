@@ -164,7 +164,11 @@ func TestTestkitOperationsRealBuiltinWriteRead(t *testing.T) {
 			t.Fatal(err)
 		}
 		out, err := e.Run(t.Context(), agent.ExecutionScope{SessionID: "session"}, "provider", step.name, string(raw))
-		if err != nil || out.Status != "succeeded" || out.Content != step.want || !hasIntent(sink) {
+		content := out.Content
+		if step.name == "read_file" {
+			content = decodeReadPage(t, out).Content
+		}
+		if err != nil || out.Status != "succeeded" || content != step.want || !hasIntent(sink) {
 			t.Fatalf("out=%+v err=%v", out, err)
 		}
 	}

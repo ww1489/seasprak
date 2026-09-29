@@ -3,9 +3,11 @@ package sessions
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/cloudwego/eino/schema"
 	"github.com/ww1489/seasprak/internal/agent"
 	"github.com/ww1489/seasprak/internal/agent/tools"
 	product "github.com/ww1489/seasprak/internal/errors"
@@ -134,23 +136,20 @@ func TestBackendCapabilitiesSessionUsesCurrentModeAndRechecksBeforeClaim(t *test
 					}
 					return nil
 				}}
-				s, err := CreateAgentSession(t.Context(), Options{SessionID: agent.MustID(), Workspace: t.TempDir(), StateRoot: "memory", Profile: ProfileMemory, Model: testkit.NewFake(), Policy: &agent.ResolvedPolicy{SandboxMode: mode}, Tools: []tools.Definition{def}, Operations: tools.Operations{Process: process}, ResourceScheduler: tools.NewResourceScheduler()})
+				s, err := CreateAgentSession(t.Context(), Options{SessionID: agent.MustID(), Workspace: t.TempDir(), StateRoot: "memory", Profile: ProfileMemory, Model: testkit.NewFake(testkit.Step{ToolCalls: []schema.FunctionToolCall{{CallID: "probe", Name: "probe", Arguments: `{}`}}}, testkit.Step{Text: "done"}), Policy: &agent.ResolvedPolicy{SandboxMode: mode}, Tools: []tools.Definition{def}, Operations: tools.Operations{Process: process}, ResourceScheduler: tools.NewResourceScheduler()})
 				if err != nil {
 					t.Fatal(err)
 				}
 				defer s.Close(context.Background())
-				op, err := s.ExecuteCommand(t.Context(), CommandRequest{Name: "probe", Arguments: json.RawMessage(`{}`)})
-				if err != nil {
-					t.Fatal(err)
-				}
-				waitResumeCondition(t, func() bool { return terminal(s.rt.manager.View().Operations[op.OperationID].State) })
+				receipt := submitOutput(t, s)
+				waitResumeCondition(t, func() bool { return terminal(s.rt.manager.View().Traces[receipt.TraceID].State) })
 				v := s.rt.manager.View()
-				call := v.Calls[op.OperationID]
+				call := onlyControlledCall(t, s)
 				if revoke {
-					if process.calls.Load() != 0 || call.Claimed || call.Observation == nil || call.Observation.Executed || v.Operations[op.OperationID].ErrorRef != product.CodeResourceUnavailable {
-						t.Fatalf("revoked capability ran: calls=%d call=%+v operation=%+v", process.calls.Load(), call, v.Operations[op.OperationID])
+					if process.calls.Load() != 0 || call.Claimed || call.Observation == nil || call.Observation.Executed || call.Observation.Status != "denied" || !strings.Contains(call.Observation.Content, product.CodeResourceUnavailable) || len(v.ApprovalClaims) != 0 {
+						t.Fatalf("revoked capability ran: calls=%d call=%+v", process.calls.Load(), call)
 					}
-				} else if process.calls.Load() != 1 || !call.Claimed || v.Operations[op.OperationID].State != "completed" {
+				} else if process.calls.Load() != 1 || !call.Claimed || call.Observation == nil || call.Observation.Status != "succeeded" {
 					t.Fatal("supported mode did not run exactly once")
 				}
 			})
@@ -159,9 +158,9 @@ func TestBackendCapabilitiesSessionUsesCurrentModeAndRechecksBeforeClaim(t *test
 }
 
 func TestBackendCapabilitiesApprovalDiskReopenRejectsChangedAssembly(t *testing.T) {
-	s, opts, originalProcess, op, trace := commandApprovalFixture(t, true, nil)
+	s, opts, originalProcess, callID, trace := capabilityApprovalFixture(t, true)
 	answerCommand(t, s, "allowed-once")
-	original := s.rt.manager.View().FrozenExecutions["execution:"+op.OperationID]
+	original := s.rt.manager.View().FrozenExecutions["execution:"+callID]
 	if err := s.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -178,14 +177,17 @@ func TestBackendCapabilitiesApprovalDiskReopenRejectsChangedAssembly(t *testing.
 	if originalProcess.calls.Load() != 0 || process.calls.Load() != 0 {
 		t.Fatal("opening resumed execution")
 	}
+	if snap := approvalSnapshot(t, opened); len(snap.Interactions) != 0 || len(snap.Approvals) != 0 {
+		t.Fatal("Open asked before explicit Resume")
+	}
 	_, err = opened.Resume(t.Context(), ResumeCommand{TraceID: trace, ExpectedRevision: opened.rt.manager.View().LastSeq})
 	if err != nil {
 		t.Fatal(err)
 	}
 	waitResumeCondition(t, func() bool { return terminal(opened.rt.manager.View().Traces[trace].State) })
 	v := opened.rt.manager.View()
-	if originalProcess.calls.Load() != 0 || process.calls.Load() != 0 || len(v.ApprovalClaims) != 0 || v.Calls[op.OperationID].Claimed || v.Operations[op.OperationID].ErrorRef != product.CodeStateConflict || v.FrozenExecutions[original.ID].Hash != original.Hash {
-		t.Fatal("disk reopen reused approval for another backend version")
+	if originalProcess.calls.Load() != 0 || process.calls.Load() != 0 || len(v.ApprovalClaims) != 0 || v.Calls[callID].Claimed || v.Calls[callID].Observation == nil || v.Calls[callID].Observation.Executed || v.Traces[trace].Usage.ToolExecutions != 0 || len(approvalSnapshot(t, opened).Interactions) != 0 || v.Traces[trace].State != "failed" || !strings.Contains(v.Traces[trace].Error, product.CodeResourceUnavailable) || v.FrozenExecutions[original.ID].Hash != original.Hash {
+		t.Fatal("disk reopen did not reject changed backend before asking")
 	}
 }
 
@@ -197,28 +199,23 @@ func TestBackendCapabilitiesApprovalResumeRejectsChangedAssembly(t *testing.T) {
 			process.report.Store(&report)
 			def := builtinDefinitionForSession(t, "execute")
 			def.Execution.RequestedGrantRef = "requires-approval"
-			s, err := CreateAgentSession(t.Context(), Options{SessionID: agent.MustID(), Workspace: t.TempDir(), StateRoot: "memory", Profile: ProfileMemory, Principal: "host", GenerationFingerprint: "capability-approval-v1", Model: versionedPauseModel{testkit.NewFake()}, Tools: []tools.Definition{def}, Operations: tools.Operations{Process: process}, ResourceScheduler: tools.NewResourceScheduler()})
+			s, err := CreateAgentSession(t.Context(), Options{SessionID: agent.MustID(), Workspace: t.TempDir(), StateRoot: "memory", Profile: ProfileMemory, Principal: "host", GenerationFingerprint: "capability-approval-v1", Model: versionedPauseModel{testkit.NewFake(testkit.Step{ToolCalls: []schema.FunctionToolCall{{CallID: "execute", Name: "execute", Arguments: `{"argv":["echo","hi"],"cwd":"workspace"}`}}}, testkit.Step{Text: "done"})}, Tools: []tools.Definition{def}, Operations: tools.Operations{Process: process}, ResourceScheduler: tools.NewResourceScheduler()})
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer s.Close(context.Background())
-			op, err := s.ExecuteCommand(t.Context(), atomicCommandRequest())
-			if err != nil {
-				t.Fatal(err)
-			}
-			trace := ""
+			receipt := submitOutput(t, s)
+			trace := receipt.TraceID
 			waitResumeCondition(t, func() bool {
-				for id, tr := range s.rt.manager.View().Traces {
-					trace = id
-					return tr.State == "paused" || terminal(tr.State)
-				}
-				return false
+				tr := s.rt.manager.View().Traces[trace]
+				return tr.State == "paused" || terminal(tr.State)
 			})
 			v := s.rt.manager.View()
 			if v.Traces[trace].State != "paused" {
-				t.Fatal("command did not await approval")
+				t.Fatal("model tool did not await approval")
 			}
-			original := v.FrozenExecutions["execution:"+op.OperationID]
+			callID := onlyControlledCall(t, s).Call.CallID
+			original := v.FrozenExecutions["execution:"+callID]
 			answerCommand(t, s, "allowed-once")
 			switch field {
 			case "backend":
@@ -237,15 +234,15 @@ func TestBackendCapabilitiesApprovalResumeRejectsChangedAssembly(t *testing.T) {
 			}
 			waitResumeCondition(t, func() bool { return terminal(s.rt.manager.View().Traces[trace].State) })
 			v = s.rt.manager.View()
-			if process.calls.Load() != 0 || len(v.ApprovalClaims) != 0 || v.Calls[op.OperationID].Claimed || v.Operations[op.OperationID].State != "failed" || v.FrozenExecutions[original.ID].Hash != original.Hash {
+			if process.calls.Load() != 0 || len(v.ApprovalClaims) != 0 || v.Calls[callID].Claimed || v.Calls[callID].Observation == nil || v.Calls[callID].Observation.Executed || v.FrozenExecutions[original.ID].Hash != original.Hash {
 				t.Fatal("changed assembly reused old approval")
 			}
 			want := product.CodeStateConflict
 			if field == "protection" {
 				want = product.CodeResourceUnavailable
 			}
-			if v.Operations[op.OperationID].ErrorRef != want {
-				t.Fatalf("operation error=%s want=%s", v.Operations[op.OperationID].ErrorRef, want)
+			if !strings.Contains(v.Calls[callID].Observation.Content+v.Traces[trace].Error, want) {
+				t.Fatalf("tool error=%s want=%s", v.Calls[callID].Observation.Content, want)
 			}
 		})
 	}

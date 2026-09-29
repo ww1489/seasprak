@@ -116,6 +116,11 @@ func loadPrefix(backend store.Store, sessionID string) ([]store.Commit, error) {
 }
 
 func crashWindowOf(c store.Commit) string {
+	for _, r := range c.ControlRecords {
+		if r.Type == "model_attempt" {
+			return "model_attempt"
+		}
+	}
 	for _, ev := range c.Events {
 		switch ev.Type {
 		case "input.accepted":
@@ -309,6 +314,8 @@ func receiptIn(commits ...store.Commit) (agent.InputReceipt, bool) {
 
 func expectedCalls(window string) (modelCalls, toolCalls int) {
 	switch window {
+	case "model_attempt":
+		return 0, 0
 	case windowAccepted:
 		return 0, 0
 	case windowAssistant, windowIntent:
@@ -324,6 +331,8 @@ func expectedCalls(window string) (modelCalls, toolCalls int) {
 
 func expectedUsage(window string) agent.Usage {
 	switch window {
+	case "model_attempt":
+		return agent.Usage{LogicalModelCalls: 1}
 	case windowAccepted:
 		return agent.Usage{}
 	case windowAssistant, windowIntent:

@@ -6,22 +6,23 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/cloudwego/eino-ext/components/model/agenticgemini"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	geminischema "github.com/cloudwego/eino/schema/gemini"
 	product "github.com/ww1489/seasprak/internal/errors"
+	"github.com/ww1489/seasprak/internal/llm/einoext/agenticgemini"
 	"google.golang.org/genai"
 )
 
 // RegisterGeminiGenerateContent installs only the Gemini Developer API
-// GenerateContent path. Vertex, server-side tools and explicit cache resources
-// remain unsupported until they have separate product evidence.
+// GenerateContent path. Vertex and server-side tools remain unsupported.
+// Explicit prefix resources require separate opt-in and capability evidence.
 func (c *Catalog) RegisterGeminiGenerateContent(client *http.Client, maxResponseBytes int) error {
 	if maxResponseBytes <= 0 {
 		return invalid("positive Gemini response collection limit is required")
 	}
 	copied := observedClient(client, "gemini-generate-content", maxResponseBytes)
+	cache := newGeminiCacheRegistry()
 	return c.RegisterObservedFactory("gemini-generate-content", func(ctx context.Context, r ResolvedModelConfig) (Model, error) {
 		if r.Config.Provider != "google" {
 			return nil, unsupported("Gemini provider route is unavailable")
@@ -32,9 +33,6 @@ func (c *Catalog) RegisterGeminiGenerateContent(client *http.Client, maxResponse
 		auth, ok := RequestCredential(ctx)
 		if !ok || auth.Secret == "" {
 			return nil, product.NewError(product.CodeUnauthenticated, "Gemini request credential is unavailable")
-		}
-		if r.Options.ActiveCache {
-			return nil, unsupported("Gemini explicit cache resources are not enabled")
 		}
 
 		var retryAttempts int32 = 1
@@ -58,11 +56,19 @@ func (c *Catalog) RegisterGeminiGenerateContent(client *http.Client, maxResponse
 		if err != nil {
 			return nil, err
 		}
-		inner, err := agenticgemini.New(ctx, &agenticgemini.Config{Client: apiClient, Model: r.Config.Model, MaxTokens: &maxTokens, ThinkingConfig: thinking})
+		inner, err := agenticgemini.New(ctx, &agenticgemini.Config{Client: apiClient, Model: r.Config.Model, MaxTokens: &maxTokens, ThinkingConfig: thinking,
+			NewResponseRestorer: func(ctx context.Context) (context.Context, agenticgemini.ResponseRestorer) {
+				return newGeminiResponseRestorer(ctx, maxResponseBytes)
+			},
+		})
 		if err != nil {
 			return nil, err
 		}
-		return &geminiGenerateContentModel{inner: inner}, nil
+		var effective Model = inner
+		if r.Options.ActiveCache {
+			effective = &geminiCachedModel{inner: inner, registry: cache, config: r}
+		}
+		return &geminiGenerateContentModel{inner: effective}, nil
 	})
 }
 
@@ -125,27 +131,28 @@ func geminiFinish(msg *schema.AgenticMessage) (string, bool) {
 	return finish, finish != ""
 }
 
-func geminiMessageHasUnsupportedToolContent(messages []*schema.AgenticMessage) bool {
+func validateGeminiToolHistory(messages []*schema.AgenticMessage) error {
 	for _, msg := range messages {
 		if msg == nil {
 			continue
+		}
+		if _, valid := validFunctionToolCalls(msg); !valid {
+			return invalid("Gemini function tool call is incomplete")
 		}
 		for _, block := range msg.ContentBlocks {
 			if block == nil {
 				continue
 			}
-			if block.FunctionToolCall != nil || block.FunctionToolResult != nil || block.Type == schema.ContentBlockTypeFunctionToolCall || block.Type == schema.ContentBlockTypeFunctionToolResult {
-				return true
+			if block.Type == schema.ContentBlockTypeFunctionToolCall && block.FunctionToolCall == nil {
+				return invalid("Gemini function tool call is incomplete")
+			}
+			if block.Type == schema.ContentBlockTypeFunctionToolResult && block.FunctionToolResult == nil {
+				return invalid("Gemini function tool result is incomplete")
+			}
+			if result := block.FunctionToolResult; result != nil && (result.CallID == "" || result.Name == "") {
+				return invalid("Gemini function tool result is incomplete")
 			}
 		}
-	}
-	return false
-}
-
-func rejectGeminiFunctionTools(opts []model.Option) error {
-	common := model.GetCommonOptions(nil, opts...)
-	if len(common.Tools) > 0 || len(common.DeferredTools) > 0 || common.ToolSearchTool != nil {
-		return unsupported("Gemini function tools are unavailable without provider call identities")
 	}
 	return nil
 }
@@ -158,6 +165,22 @@ func normalizeGeminiFinish(msg *schema.AgenticMessage) (string, string, error) {
 	if !ok {
 		return "", "", invalid("missing Gemini terminal finish reason")
 	}
+	for _, block := range msg.ContentBlocks {
+		if block != nil && block.Type == schema.ContentBlockTypeFunctionToolCall && block.FunctionToolCall == nil {
+			return "", raw, invalid("Gemini function tool call is incomplete")
+		}
+	}
+	seen, valid := validFunctionToolCalls(msg)
+	if !valid {
+		return "", raw, invalid("Gemini function tool call is incomplete")
+	}
+	if raw == "STOP" && seen {
+		return "tool_calls", raw, nil
+	}
+	return normalizeGeminiStreamFinish(raw)
+}
+
+func normalizeGeminiStreamFinish(raw string) (string, string, error) {
 	switch raw {
 	case "STOP":
 		return "stop", raw, nil
@@ -171,11 +194,8 @@ func normalizeGeminiFinish(msg *schema.AgenticMessage) (string, string, error) {
 }
 
 func (m *geminiGenerateContentModel) Generate(ctx context.Context, in []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
-	if err := rejectGeminiFunctionTools(opts); err != nil {
+	if err := validateGeminiToolHistory(in); err != nil {
 		return nil, err
-	}
-	if geminiMessageHasUnsupportedToolContent(in) {
-		return nil, unsupported("Gemini function tool content is unavailable")
 	}
 	capture := &usageCapture{}
 	requestCtx := withUsageCapture(ctx, capture)
@@ -192,11 +212,8 @@ func (m *geminiGenerateContentModel) Generate(ctx context.Context, in []*schema.
 }
 
 func (m *geminiGenerateContentModel) Stream(ctx context.Context, in []*schema.AgenticMessage, opts ...model.Option) (*schema.StreamReader[*schema.AgenticMessage], error) {
-	if err := rejectGeminiFunctionTools(opts); err != nil {
+	if err := validateGeminiToolHistory(in); err != nil {
 		return nil, err
-	}
-	if geminiMessageHasUnsupportedToolContent(in) {
-		return nil, unsupported("Gemini function tool content is unavailable")
 	}
 	requestCtx, cancel := context.WithCancel(ctx)
 	capture := &usageCapture{}
@@ -240,7 +257,7 @@ func (m *geminiGenerateContentModel) Stream(ctx context.Context, in []*schema.Ag
 		if combined == nil || combined.Role != schema.AgenticRoleTypeAssistant {
 			return nil, invalid("Gemini stream response role is not assistant")
 		}
-		finish, original, err := normalizeGeminiStreamFinish(state.finish)
+		finish, original, err := normalizeGeminiFinish(combined)
 		if err != nil {
 			return nil, err
 		}
@@ -249,19 +266,6 @@ func (m *geminiGenerateContentModel) Stream(ctx context.Context, in []*schema.Ag
 		return addNormalizedFinish(terminal, finish, original), nil
 	}))
 	return closeAwareChatStream(normalized, cancel), nil
-}
-
-func normalizeGeminiStreamFinish(raw string) (string, string, error) {
-	switch raw {
-	case "STOP":
-		return "stop", raw, nil
-	case "MAX_TOKENS":
-		return "length", raw, nil
-	case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY":
-		return "refusal", raw, nil
-	default:
-		return "", raw, invalid("unsupported Gemini finish reason")
-	}
 }
 
 type geminiStreamState struct {

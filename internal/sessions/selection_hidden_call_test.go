@@ -64,6 +64,15 @@ func hiddenSelectionNextRequest(t *testing.T, model *hiddenSelectionModel) hidde
 }
 
 func TestSelectionHiddenAcceptedModelCall(t *testing.T) {
+	hiddenSelectionAcceptedModelCall(t, false)
+}
+
+func TestSelectionHiddenObservationReuseAcrossActivityRenewal(t *testing.T) {
+	hiddenSelectionAcceptedModelCall(t, true)
+}
+
+func hiddenSelectionAcceptedModelCall(t *testing.T, renewActivity bool) {
+	t.Helper()
 	for _, kind := range []string{"invokable", "enhanced-invokable"} {
 		for _, enablePending := range []bool{false, true} {
 			name := "hidden"
@@ -89,6 +98,12 @@ func TestSelectionHiddenAcceptedModelCall(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer s.Close(context.Background())
+				// Reuse asserts a global commit sequence. Keep unrelated activity
+				// renewals deterministic while the final model request is blocked.
+				clock := newManualActivityClock()
+				if err := s.rt.do(t.Context(), func(rt *runtime) error { rt.clock = clock; return nil }); err != nil {
+					t.Fatal(err)
+				}
 				receipt := submitOutput(t, s)
 				frame := activityFrame(t, s)
 				if request := hiddenSelectionNextRequest(t, model); !reflect.DeepEqual(request.tools, []string{"hidden"}) {
@@ -132,10 +147,17 @@ func TestSelectionHiddenAcceptedModelCall(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if renewActivity {
+					view = hiddenSelectionRenewActivity(t, s, clock, view, receipt.TraceID)
+				}
 				before := view.LastSeq
 				out, err := executor.Run(t.Context(), call.Scope, call.Call.ProviderCallID, call.Call.Name, call.Call.Arguments)
-				if err != nil || out.Status != "denied" || out.Executed || s.rt.manager.View().LastSeq != before || runs.Load() != 0 {
-					t.Fatalf("saved observation was not reused safely: out=%+v err=%v", out, err)
+				after := s.rt.manager.View()
+				if err != nil || out.Status != "denied" || out.Executed || after.LastSeq != before || runs.Load() != 0 {
+					t.Fatalf("saved observation was not reused safely: status=%s executed=%v errorPresent=%v seq=%d->%d backend=%d", out.Status, out.Executed, err != nil, before, after.LastSeq, runs.Load())
+				}
+				if !reflect.DeepEqual(view, after) {
+					t.Fatal("saved observation reuse changed durable state")
 				}
 				close(finalGate)
 				activityWait(t, frame)
@@ -143,24 +165,52 @@ func TestSelectionHiddenAcceptedModelCall(t *testing.T) {
 				if s.rt.manager.View().Traces[receipt.TraceID].State != "completed" {
 					t.Fatal("denied call prevented the model trace from completing")
 				}
-				// The same implementation remains available to a trusted direct
-				// command, which has no model Turn or visibility requirement.
-				direct, err := s.ExecuteCommand(t.Context(), CommandRequest{Name: "hidden", Arguments: json.RawMessage(`{}`)})
-				if err != nil {
-					t.Fatal(err)
-				}
-				waitResumeCondition(t, func() bool { return s.rt.manager.View().Operations[direct.OperationID].State == "completed" })
+				// The retained controlled RunDirect path has no model visibility
+				// requirement, but still performs authorization, claim and budgeting.
+				directCall := runControlledDirect(t, def)
 				view = s.rt.manager.View()
 				if runs.Load() != 1 || model.Calls() != 3 || !reflect.DeepEqual(hiddenSelectionCall(t, view), call) {
-					t.Fatal("direct command was blocked or changed the denied model call")
+					t.Fatal("controlled direct call was blocked or changed the denied model call")
 				}
-				directCall := view.Calls[direct.OperationID]
 				if directCall.Scope.TurnID != "" || !directCall.Claimed || directCall.Observation == nil || !directCall.Observation.Executed || directCall.Observation.Status != "succeeded" {
 					t.Fatalf("direct call lost its own execution identity: %+v", directCall)
 				}
 			})
 		}
 	}
+}
+
+// A renewal legitimately advances LastSeq without touching calls, observations,
+// claims, identities or request/tool usage. Finish that independent commit before
+// taking the reuse baseline; reuse itself must still leave the entire View equal.
+func hiddenSelectionRenewActivity(t *testing.T, s *AgentSession, clock *manualActivityClock, before state.View, traceID string) state.View {
+	t.Helper()
+	clock.advance(500 * time.Millisecond)
+	waitResumeCondition(t, func() bool {
+		return s.rt.manager.View().Traces[traceID].Activity.Revision > before.Traces[traceID].Activity.Revision
+	})
+	// ReserveActivity publishes its state before the runtime installs the lease.
+	if err := s.rt.do(t.Context(), func(*runtime) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	after := s.rt.manager.View()
+	stored, err := s.rt.opts.Store.Load(t.Context(), s.rt.opts.SessionID)
+	if err != nil || len(stored.Commits) == 0 {
+		t.Fatal("could not read activity renewal commit")
+	}
+	commit := stored.Commits[len(stored.Commits)-1]
+	if stored.LastSeq != before.LastSeq+1 || commit.CommitSeq != before.LastSeq+1 || len(commit.ControlRecords) != 1 || commit.ControlRecords[0].Type != "trace" || commit.ControlRecords[0].ID != traceID || len(commit.Entries) != 0 || len(commit.Events) != 0 || len(commit.BranchUpdates) != 0 {
+		t.Fatal("activity renewal did not append exactly one trace-only commit")
+	}
+	// These are private View copies, not the manager's live state. Specify the
+	// complete expected delta, so all execution and budget facts remain checked.
+	before.LastSeq++
+	before.Traces[traceID].Activity.Revision++
+	before.Traces[traceID].Activity.Settled += 500 * time.Millisecond
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("activity renewal changed state beyond its revision and settled time")
+	}
+	return after
 }
 
 func hiddenSelectionCall(t *testing.T, view state.View) agent.ToolRecord {

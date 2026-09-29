@@ -31,6 +31,29 @@ type Preview struct {
 	Reason     string
 }
 
+// PreviewHeadTail preserves both ends of a log within a single combined
+// line/byte budget. Short output is returned verbatim. The truncation marker
+// counts against both budgets; tiny budgets use a bounded head instead.
+func PreviewHeadTail(text string, maxLines, maxBytes int) Preview {
+	if maxLines <= 0 || maxBytes <= 0 {
+		return Preview{Truncated: text != "", Reason: previewReason(text != "")}
+	}
+	if len(text) <= maxBytes && len(splitPreviewLines(text)) <= maxLines {
+		return Preview{Text: text, StartLine: 1, EndLine: len(splitPreviewLines(text))}
+	}
+	const marker = "\n[truncated]\n"
+	if maxLines < 3 || maxBytes <= len(marker) {
+		out := PreviewHead(text, maxLines, maxBytes)
+		out.Truncated, out.Reason = true, "output_limit"
+		return out
+	}
+	bytesLeft := maxBytes - len(marker)
+	linesLeft := maxLines - 1
+	head := PreviewHead(text, (linesLeft+1)/2, (bytesLeft+1)/2)
+	tail := PreviewTail(text, linesLeft/2, bytesLeft/2)
+	return Preview{Text: head.Text + marker + tail.Text, Truncated: true, StartLine: 1, EndLine: tail.EndLine, Reason: "output_limit"}
+}
+
 // PreviewHead returns complete UTF-8 lines from the beginning until either
 // limit is reached. A long individual line is cut only at a UTF-8 boundary.
 func PreviewHead(text string, maxLines, maxBytes int) Preview {
@@ -61,6 +84,7 @@ func PreviewTail(text string, maxLines, maxBytes int) Preview {
 			break
 		}
 		selected = selected[1:]
+		start++
 		truncated = true
 	}
 	textOut := strings.Join(selected, "\n")
@@ -104,7 +128,7 @@ func previewFromLines(lines []string, maxLines, maxBytes int, _ bool) Preview {
 		}
 		break
 	}
-	truncated := len(selected) < len(lines)
+	truncated := len(selected) < len(lines) || (len(selected) == 1 && len(selected[0]) < len(lines[0]))
 	if len(selected) == maxLines && len(selected) < len(lines) {
 		truncated = true
 	}

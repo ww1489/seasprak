@@ -105,6 +105,18 @@ func (t *observedTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		if chat, ok := ctx.Value(chatCollectorKey{}).(*UsageCollector); ok && t.usage.Protocol == "openai-chat" {
 			collector = chat
 		}
+		if responses, ok := ctx.Value(responsesCollectorKey{}).(*UsageCollector); ok && t.usage.Protocol == "openai-responses" {
+			collector = responses
+		}
+		if gemini, ok := ctx.Value(geminiCollectorKey{}).(*UsageCollector); ok && t.usage.Protocol == "gemini-generate-content" {
+			collector = gemini
+			collector.mu.Lock()
+			if collector.gemini.bound {
+				collector.gemini.invalid = true
+			}
+			collector.gemini.bound = true
+			collector.mu.Unlock()
+		}
 		body := WrapUsageBody(response.Body, response.Header.Get("Content-Type"), collector).(*usageReadCloser)
 		if observer, ok := ctx.Value(usageObservationKey{}).(UsageObserver); ok && observer != nil {
 			body.notify = func(snapshot UsageSnapshot) { observer.ObserveUsage(ctx, request, snapshot) }

@@ -51,7 +51,7 @@ func TestApprovalWaitsForDurableCheckpointWithoutExecuting(t *testing.T) {
 			})
 			v := manager.View()
 			tr := v.Traces[input.TraceID]
-			if tr.State != "paused" || tr.Settled || !tr.ExecutionStopped || tr.CheckpointID == "" || len(v.Interactions) != 1 || len(v.Approvals) != 1 || model.Calls() != 1 || runs.Load() != 0 || tr.Usage.ToolExecutions != 0 {
+			if tr.State != "paused" || tr.Settled || !tr.ExecutionStopped || tr.CheckpointID == "" || len(v.Interactions) != 0 || len(v.Approvals) != 0 || len(approvalSnapshot(t, s).Interactions) != 1 || model.Calls() != 1 || runs.Load() != 0 || tr.Usage.ToolExecutions != 0 {
 				t.Fatalf("approval did not safely wait: trace=%+v interactions=%d approvals=%d model=%d runs=%d", tr, len(v.Interactions), len(v.Approvals), model.Calls(), runs.Load())
 			}
 			for _, call := range v.Calls {
@@ -59,9 +59,9 @@ func TestApprovalWaitsForDurableCheckpointWithoutExecuting(t *testing.T) {
 					t.Fatalf("waiting approval manufactured a result: %+v", call)
 				}
 			}
-			for _, in := range v.Interactions {
-				cmd := state.OperationCommand{Principal: "host-user", Kind: "respond_interaction", Target: in.ID, ExpectedRevision: manager.View().LastSeq, Content: json.RawMessage(`{"decision":"allowed-once"}`)}
-				if _, err := manager.RespondApproval(t.Context(), cmd, "allowed-once", s.rt.approvalNow()); err != nil {
+			for _, in := range approvalSnapshot(t, s).Interactions {
+				cmd := InteractionResponse{InteractionID: in.ID, Decision: "allowed-once", ExpectedRevision: manager.View().LastSeq}
+				if _, err := s.RespondInteraction(t.Context(), cmd); err != nil {
 					t.Fatal(err)
 				}
 			}

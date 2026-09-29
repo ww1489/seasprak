@@ -32,5 +32,8 @@ func (rt *runtime) cancelInterrupted(ctx context.Context, tr *state.TraceState) 
 			}
 		}
 	}
-	return rt.manager.SetTraceState(ctx, tr.ID, "cancelled", true)
+	if err := rt.manager.SetTraceState(ctx, tr.ID, "cancelled", true); err != nil {
+		return err
+	}
+	return rt.flushHostCommands(ctx)
 }

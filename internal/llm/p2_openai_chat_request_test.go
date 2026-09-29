@@ -54,7 +54,7 @@ func TestP2OpenAIChatOptions(t *testing.T) {
 				case "short":
 					cfg.Capabilities.Items[llm.CapCacheShort] = v
 					requested.CacheIntent = "short"
-					wantCache = "in_memory"
+					// short leaves retention to the provider default.
 				case "long":
 					cfg.Capabilities.Items[llm.CapCacheLong] = v
 					requested.CacheIntent = "long"

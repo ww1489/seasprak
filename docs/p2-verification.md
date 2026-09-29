@@ -1,5 +1,537 @@
 # P2 实施记录与验证证据
 
+## 2026-09-28 20:06 审批期间拒绝宿主命令方案获准
+
+维护者明确批准：等待工具审批期间，SDK拒绝新的宿主ExecuteCommand，并保护已答复但尚未恢复的间隙；状态和历史查询、审批答复及取消仍可用。不采用新增host_command控制记录或延后注入上下文方案，不放宽checkpoint检查。正在以真实Session测试实现，并核查命令先启动、随后进入审批的竞争；本项尚未完成。
+
+已完成独立专项：Windows读取 `go test -mod=readonly -race ./internal/agent/tools -run '^TestRead' -count=10 -timeout=120s` exit0（4.639s）；Windows PowerShell退出码race10 exit0（11.615s）；Linux文件发现race10 exit0。进程输出四包race10首次因并行Gemini编辑中usage_body.go未用变量编译失败，随后同命令重跑exit0（agent2.746s/tools9.115s/eino11.960s/state48.016s）：`go test -mod=readonly -race ./internal/agent ./internal/agent/tools ./internal/agent/eino ./internal/sessions/state -run 'ProcessModel|ProcessLog|SaveOutputLogRejectsUnpublishableReference|HistoricalProcessFinishTools|ToolOutputProjection' -count=10 -timeout=180s`。不能把第一次编译失败记为测试断言失败或PASS；专项不代替最终全仓。历史超大固定引用仍保留未解决边界，Gemini响应修复仍待交接。未提交、未追加live。
+
+## 2026-09-28 19:46 审查修复接续，提交验收尚未完成
+
+维护者要求核对历史任务，已完成的结束，未完成的继续，并修复剩余问题。历史记录确认此前修复已进行，早期交接摘要的“尚未修复”不再代表当前状态。文件发现最终模型输出限额修复已完成；读取错误正文隔离和命令恢复调查曾因服务503中断，现接续；Gemini出站数值回放已有修复，原始响应精度仍待修。进程输出限额专项已通过，但历史状态直接重建及超大artifact元信息仍需核查，不据局部成功宣称可提交。
+
+主线程当前复验：`GOWORK=off go test -mod=readonly ./internal/llm/... ./internal/sessions ./internal/agent/tools -run 'TestGeminiNumeric|TestP2CommandShellExplicitShellExitAndOutput|TestDiscoveryModelContent|Test.*Command.*Checkpoint' -count=1 -timeout=120s`，exit1。Gemini原始响应普通/流式均将9007199254740993变为9007199254740992；独立宿主命令使审批暂停任务恢复检查返回incompatible_resume（checkpoint history projection differs）。PowerShell退出码和文件发现专项通过。另独立读取编码用例exit1，因安全正文修复尚未接齐本地编码诊断。以上失败是当前未完成项，不覆盖为历史PASS。
+
+执行顺序：保留已完成修复与红测；按原调用路径区分本地安全诊断和后端错误、恢复Gemini数值保真、隔离宿主命令历史与模型恢复点、补齐进程输出最终表示边界。各项先验证缺陷再最小修复，保持权限/预算/取消及历史事实，随后独立复审并进行Windows/Linux全仓普通、race、静态构建和提交检查。此前Gemini live复测例外与macOS延期继续保留，未追加live请求；本轮尚未提交。
+
+## 2026-09-28 17:19 维护者批准Gemini本轮免复测，P2按限定范围收口
+
+维护者明确表示Gemini若为地域问题本次可不再测，采用此前通过的记录。最新定向请求已明确返回官方地域不支持，因此停止追加Gemini请求，保留此前Generate及Stream完整工具往返成功证据作为本轮验收依据。17:13完整live的Stream末次resource_unavailable没有HTTP状态证据，其根因仍未确定；不将其追溯认定为地域问题、不删除失败记录，也不声称最新完整live退出0。此为维护者批准的复测例外，不是把SKIP计作PASS。
+
+原plan Steps1–23均按已批准范围completed：实现和确定性验收完成；Windows/Linux最终全仓普通/race、静态构建及52子案例各10轮真实Kill/reopen已通过；四工厂最新完整live通过，Gemini采用已记录分项成功证据并附本次访问限制。macOS运行继续按此前批准延期，不能宣称三平台全部认证。P4/P5/P6能力保持原边界。本次仅更新记录和状态，不发网络请求、不改生产代码、不提交或推送。最近验证命令与exit code见本文件后续原始记录。
+
+## 2026-09-28 流式定向诊断再次遇到地域拒绝
+
+完整live后仅追加一次Gemini Stream诊断，首请求HTTP400且LocationUnsupported=true，exit1（1.838s），实际1次即停止。仅新增测试专用EOF/timeout/canceled布尔分类，不输出错误正文。此次未到达上一轮末次回传失败位置，因此不能认定上一轮错误也是地域限制。未改生产、代理或凭据，未继续重试，Step23仍in_progress，等待官方服务访问条件恢复或明确延期授权。
+
+## 2026-09-28 17:13 获准完整live一轮：Gemini流式末次回传失败
+
+维护者明确授权五协议30次完整测试。执行 `GOWORK=off go test -mod=readonly -tags live ./internal/llm -count=1 -timeout=300s`，exit1（33.636s）。本轮未筛选子测试、未跳过协议，未追加重跑。唯一失败为 `TestLocalCompatibleModel/GeminiGenerateContent/stream_true`：流式文本与工具调用各HTTP200且每次observed=1/physical=1，第三次工具结果回传在invoke返回 `resource_unavailable`。本轮该失败没有HTTP状态结构日志，不能推断为429、503或地域限制。Gemini Generate三次HTTP200完整通过，另外四工厂均无失败且各自完整六次请求断言通过；此前地域拒绝未在本轮已收到的响应中出现。计划正常请求数30；末次失败未完成请求计数断言，因此不把30次全部成功或末次服务接收情况写成已证实。Step23仍in_progress，仅剩live未通过；不改生产逻辑或削弱验收以取得绿色结果。
+
+## 2026-09-28 最终live按维护者要求减量，单请求遇地域限制停止
+
+维护者选择继续实际验证但要求减少请求，因此只补当前Gemini配置的Generate完整往返，预算最多3次，不重复其他工厂与已通过的Stream。执行 `go test -mod=readonly -tags live ./internal/llm -run '^TestLocalCompatibleModel$/^GeminiGenerateContent$/^stream_false$' -count=1 -timeout=120s -v` exit1（0.922s）；第一请求HTTP400，固定安全分类 `LocationUnsupported=true`、`InvalidAPIKey=false`。实际仅1次请求，未自动重试，未继续工具步骤。该结果是当前访问地域不受支持的服务拒绝，不能作为模型/工具实现失败的证明，也不能算验收成功。没有修改地址、代理、凭据或生产代码。Step23离线已通过，最终live仍阻塞；等待维护者解决官方服务访问地域限制或明确批准延期，缩减请求授权不是延期授权。
+
+## 2026-09-28 17:01 最终离线验收完成，live综合门禁待维护者决定
+
+最终故障矩阵由主线程独立运行：`go test -mod=readonly -race ./internal/sessions ./internal/sessions/store/jsonl -run '^(TestSessionCrash|TestProjectionCrash|TestRecoveryReconcileCrash|TestRecoveryApprovalCrash|TestBlobCrashSubprocess)$' -count=10 -timeout=600s`。Windows sessions194.923s/jsonl14.370s、Linux sessions216.473s/jsonl13.008s，均exit0。共52子案例：基础12、审批/恢复18、日志投影4、Reconcile4、底层blob14，各平台每案例10轮；此前Linux中间态编译失败已由此稳定代码结果替代，不删除失败历史。
+
+故障证据映射：基础覆盖attempt/助手接纳/原观察/工具意图/结算；审批覆盖内存asked/decided、Resume受理、checkpoint关联、claim、后端进入/返回、观察提交、恢复operation结束、实际停止证明及最终结算；投影覆盖日志保存和引用提交前后；Reconcile覆盖受理与取证后的结论/新观察/release事务前后；blob覆盖同步/发布边界、部分journal尾部与定名冲突。仅证明进程终止恢复，不声称断电持久性；后端为受控合成实现，不前移P6。迟到结果与取消竞争使用已有确定性屏障/race20证据，不将其冒充进程死亡后还能发送回调。
+
+最终稳定代码Windows/Linux `go vet -mod=readonly ./...`、`go build -mod=readonly ./...`、`go test -mod=readonly ./... ./sdk/testdata/consumer -count=1 -timeout=600s`、`go test -mod=readonly -race ./... ./sdk/testdata/consumer -count=1 -timeout=900s` 全部exit0。Windows sessions普通27.781s/race137.946s；Linux普通25.566s/race136.010s。gofmt无输出、go mod verify、git diff HEAD --check通过；固定govulncheck v1.8.0 exit0，代码可达漏洞0，依赖仍有未调用包级1/模块级1提示。CI普通及race命令补入sdk/testdata/consumer，因Go默认./...不遍历testdata；此修改不代表远端CI或macOS已运行。
+
+Steps1–22保持completed。Step23实现及离线故障验收完成，但整体暂不completed：此前全包live曾失败，后来按维护者请求仅补测Gemini流式通过，且普通/流式来自不同模型配置；最终完整live未获成功证据。本轮遵循减少请求要求没有新增网络请求。需维护者选择允许一次全包live（正常30次模型请求，无测试内自动重试）或明确批准以现有分项证据结束本轮并延期完整live；不能擅自把限流要求解释成免验。macOS仍按既有批准延期、不记PASS。未提交或推送。
+
+## 2026-09-28 Step23 新增故障窗口实施中
+
+本批继续复用真实Session/Eino/JSONL与父进程Kill/Wait，未新增生产恢复状态机。主线程新增 `TestProjectionCrash` 四窗口：日志保存前/后、投影引用提交前/后；断言原观察先持久、日志孤儿不自动发布引用、已提交投影保留原效果、Open/Close模型调用0且原受控执行和保存不重跑。该测试双平台race10退出0（14.612s、16.568s）。夹具最初遗漏state目录、能力声明与必需日志redactor，均表现为配置拒绝/不进入保存窗口，修正仅限测试，未削弱生产门禁。
+
+新增 `TestRecoveryReconcileCrash`（accepted/result各before/after）和 `TestBlobCrashSubprocess`（14个底层存储窗口）已进入独立整合验收：Windows与投影测试合并race10退出0（sessions36.977s、jsonl14.600s）；Linux jsonl race10退出0（13.121s），sessions该轮编译遇到同时扩展中的审批测试中间态（未定义helper/未用变量）exit1，不能记为Linux整组合格，将在编辑结束后重跑。审批测试仍在扩展checkpoint关联、claim、目标启动及恢复退出窗口。此段是进行中记录，不代表Step23完成；不把底层blob存储测试冒充Session恢复认证。
+
+## 2026-09-28 Steps18–21 实现验收完成；Step23 补充模型尝试真实崩溃窗口
+
+逐条对照原计划Steps18–21：Responses完整输入/store=false、Claude签名/缓存/usage、Gemini opt-in缓存生命周期和DeepSeek/五协议一致性均有产品测试及已有双平台证据。本轮额外执行 Windows/Linux `go test -mod=readonly -race ./internal/llm ./internal/agent/eino ./internal/sessions -run 'Responses|Anthropic|Gemini|DeepSeek|Protocol|Factory' -count=10 -timeout=180s` 全部exit0（Windows sessions62.641s，Linux61.073s）。Windows命令还包含两个私有包目录，但该正则未选中其测试，不能记为本轮私有包专项；随后全仓套件实际运行了这些包。原plan对应Steps18–21聚合TODO已completed，认证范围仍保留同源网关与Gemini不同模型配置的限制。
+
+Step23发现现有TestSessionCrash只含五类业务窗口，未拦截model_attempt初始提交。先新增屏障识别红测exit1，再扩展既有crashStore及真实Kill/Wait/reopen路径；现为六窗口×before/after=12子案例。新增窗口断言逻辑预算已占额但物理请求/工具效果均0，尝试记录提交前0、提交后1，原模型调用身份存在，重开不执行且原受理回执幂等。初次新增用例错误套用了旧窗口预算预期，失败后根据实际提交顺序修正测试预期，未改生产预算或放宽已有窗口断言。Windows/Linux `go test -mod=readonly ./internal/sessions -run '^TestSessionCrash$' -count=10 -timeout=180s` 分别exit0（13.426s、12.791s）。
+
+新增测试后再次执行Windows/Linux全仓普通/race（均含sdk/testdata/consumer）全部exit0；Windows gofmt无输出、vet/build及diffcheck通过。本轮未发送新的live请求，遵循维护者减少请求的要求；此前分项live证据继续保留，不声称本轮完整live通过。Step23仍in_progress：需继续核对并补齐审批内存问答/claim与目标启动、blob关联、Resume执行段和Reconcile迟到结果的真实进程故障窗证据；已有普通故障注入、Close/Open与race20不自动等同这些Kill窗口全覆盖。macOS按批准延期。当前仅测试代码变化，无生产代码改动、无提交。
+
+## 2026-09-28 15:45 按维护者要求仅复验新模型流式：三次请求全部通过
+
+维护者因请求数量与限流更换模型，明确只测此前未过部分。仅执行 `go test -mod=readonly -tags live ./internal/llm -run '^TestLocalCompatibleModel$/^GeminiGenerateContent$/^stream_true$' -count=1 -timeout=120s -v`，exit0（3.634s）。流式文本→工具调用→结果回传恰好3次HTTP200；精确答案、工具名称/参数、调用身份及每次observed=1/physical=1断言通过，无自动重试，未测试普通模式或其他工厂。本模型输入usage存在，输出usage缺失，按现有能力声明保留unknown，未伪造输出计数或削弱断言。
+
+修正live测试父级请求总数检查：按实际选中的子测试累计，每个完整conversation必须3次；全选仍必须6次，避免只选流式时被硬编码6误判。只改测试计数，不改生产预算或请求策略。此前普通模式在前一个配置模型通过、本次流式在新配置模型通过；这两份证据不能合并声称同一模型的Generate/Stream均已认证，也不声称本轮全包live通过。Gemini流式基础往返子项已通过；Steps18–21/23整体状态仍取决于剩余原计划验收。没有追加网络测试、未读取或输出配置值。
+
+## 2026-09-28 15:40 Gemini 官方专属配置鉴权成功，普通往返通过，流式受503/429阻塞
+
+维护者更新配置后，定向命令 `go test -mod=readonly -tags live ./internal/llm -run '^TestLocalCompatibleModel$/GeminiGenerateContent$' -count=1 -timeout=150s -v` 首轮exit1（25.472s）：普通Generate文本→工具调用→结果回传三次HTTP200，名称/参数/身份/usage/每次单请求断言全部通过；流式首条文本请求HTTP503。一次独立完整复验exit1（20.540s）：普通文本200、工具请求503；流式文本200、工具请求429。遇429后停止继续请求，未增加生产重试或降低断言。官方根地址与凭据已可用；此前API_KEY_INVALID不再是当前阻塞。普通工具往返证据不能代替流式完整往返，尚未获得同一轮六次成功的Gemini完整live验收。当前阻塞为服务可用性/限流或配额，429具体原因未进一步分类；待服务恢复或额度确认后重测。原兼容网关工具回传400仍保留历史，不能据官方模型成功反推其确切根因。未修改生产代码或配置文件、未输出配置值；Steps18–21/23仍in_progress。
+
+## 2026-09-28 15:37 官方根地址修正后，Gemini 返回 API_KEY_INVALID
+
+维护者再次保存配置后，live测试内部确认专属配置、官方域名和根路径均匹配；普通/流式均在首条文本请求返回HTTP400。仅提取官方错误details.reason的固定分类，两路均为 `API_KEY_INVALID`，不是此前的路径404，也尚未进入工具回传。定向命令 `go test -mod=readonly -tags live ./internal/llm -run '^TestLocalCompatibleModel$/GeminiGenerateContent$' -count=1 -timeout=150s -v` exit1（0.681s；补充安全错误分类后0.633s）。`go test -mod=readonly ./internal/llm -run '^TestLiveGemini' -count=1 -timeout=120s` exit0（0.136s），验证只输出固定布尔分类且不保留私有错误正文。未改生产代码或.test_env，未认证新模型；需有效官方凭据再验。Steps18–21/23继续未完成。
+
+## 2026-09-28 15:34 新增 Gemini 专属配置复验：官方域名已命中，基础路径待修正
+
+维护者保存专属配置后，定向 live 测试确认不再派生原网关配置。测试内部仅输出布尔结构：专属配置存在、官方域名匹配，但基础路径非根路径；未输出配置值。普通/流式均在第一条文本请求返回 HTTP404，未进入工具调用阶段。命令 `go test -mod=readonly -tags live ./internal/llm -run '^TestLocalCompatibleModel$/GeminiGenerateContent$' -count=1 -timeout=150s -v` 两次exit1（0.764s、0.707s）。当前 SDK 使用官方服务根地址并自行追加版本及模型路由，已建议维护者修正基础路径后再测。此结果既不能证明新模型工具回传失败，也不能证明此前兼容网关400已解决。原配置文件未读取到工具上下文、未改写；新增诊断仅为live测试日志，不修改生产路由。
+
+## 2026-09-28 Gemini 可选身份与兼容网关分片修复，回传仍待定位
+
+已接通私有 Eino Gemini 适配器的流分片处理。锁定 genai v1.71.0 的 FunctionCall.ID 为可选字段；新响应有名称但无 ID 时分配 UUID，原供应商 ID 保真，JSON 持久化及 call/result 下一轮回传保持同一身份，历史缺身份仍拒绝。仅合并明确的“有名称空参数首片→匿名 args.arguments 字符串片段”，单调用缓存上限 1 MiB，使用完整 JSON 对象和 UseNumber 保持大整数。没有实现原生 PartialArgs/willContinue。
+
+此前新增真实工厂红测因 invalid_argument 失败；接线后通过。迁移旧测试中“可选 ID 必须由供应商提供”的错误预期，保留不完整持久历史拒绝。新增测试覆盖孤立匿名片、冲突 ID、错键、非字符串、超限、截断、非对象、尾随 JSON、业务 arguments 字段、同名独立调用和签名；真实 HTTP/SSE 工厂额外验证无终帧/截断均拒绝且仅一次请求。
+
+验证：Windows `go test -mod=readonly ./internal/llm/... -count=1 -timeout=120s` exit0；Windows/Linux `go test -mod=readonly -race ./internal/llm/... -count=10 -timeout=180s` 均exit0。最新稳定代码 Windows/Linux `go test -mod=readonly ./... ./sdk/testdata/consumer -count=1 -timeout=600s` 和相应 `-race ... -timeout=900s` 全部exit0；Windows gofmt无输出、vet/build/modverify/diffcheck通过。`go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` exit0：代码可达0，仍有未调用包级1/模块级1提示。此前高风险审批/恢复/核对/资源测试双平台race20串行已结束exit0（1888.147s）；该长任务早于本补丁启动，不替代当前完整回归。
+
+正式 live 全包 `go test -mod=readonly -tags live ./internal/llm -count=1 -timeout=300s -v` exit1（33.070s）。随后五工厂定向完整复验exit1（30.350s）：OpenAIChat、OpenAIResponses、DeepSeekChat、AnthropicMessages各6次完整往返通过；Gemini普通/流式均通过文本、工具名称/精确参数/非空ID及usage断言，但第三次工具结果回传HTTP400，安全分类仅表明网关报告必需字段错误，不能确定缺哪个字段或认定供应商根因。隔离实验分别省略可选wire ID、包装response.output仍同样400，两项临时请求改写均已撤销，未进入生产。诊断已收敛为固定计数/布尔，不再记录任意参数键或凭据引用。
+
+Steps18–21/23继续in_progress；剩余live阻塞从工具接收前移为结果回传。需要网关脱敏验证详情或可运行的Gemini工具往返请求样例才能进一步定位；不以重试、虚构结果、跳过验收或把其他协议成功冒充Gemini成功。macOS仍按批准延期。
+
+## 2026-09-28 维护者授权从现有配置派生四协议live并发现Gemini兼容缺口
+
+维护者明确允许根据.test_env已有信息自行完善四协议配置再测试。实现测试专用 `resolveLiveConnection`：协议专属三项齐全时优先；专属配置完全缺失时仅复用OPENAI原模型、原凭据、同一origin，调整SDK要求的路径根。任一专属字段存在但不完整则拒绝，不把其他端点的凭据补入；拒绝含userinfo/query/fragment/转义路径的URL。配置只在live测试进程内派生，不工具读取、不打印或复制密钥到文件、不改.test_env、不猜其他域名/模型。默认离线测试使用合成值验证隔离及拒绝边界。
+
+真实工厂测试 `go test -mod=readonly -tags live ./internal/llm -run '^TestLocalCompatibleModel$' -count=1 -timeout=300s -v` exit1（28.756s）。OpenAIChat、OpenAIResponses、DeepSeekChat、AnthropicMessages各Generate/Stream完整文本→工具→答案、6次物理请求及usage断言通过；这认证现有兼容网关/原模型的这四个工厂基础往返，不认证各品牌官方模型、原生推理或缓存命中。Gemini文本连通，但工具验收失败，不能标五协议live通过。
+
+新增仅输出结构计数的有界Gemini诊断（不输出响应正文、工具参数值、供应商错误、签名、模型或认证字段）。独立Gemini复验exit1：HTTP200普通响应含1个有name/args对象的functionCall但无ID；流式响应含10个无ID functionCall片段，仅1片有name，均为args对象，无partialArgs/willContinue，STOP存在。当前严格身份/完整调用契约拒绝，尚未确定无ID生成与匿名片段合并的安全兼容策略；未拼造调用身份、未修改生产门禁或跳过断言。此问题替代之前“Gemini缺配置”的阻塞原因。
+
+离线llm完整普通exit0（1.597s），新配置/诊断及验收负控race20 exit0（2.186s），llm vet及diffcheck通过。双平台高风险race20另在执行中，待收结果；Step18–21仍in_progress，当前live缺口收窄为Gemini工具身份与流片段兼容性。历史四协议缺配置记录仅为此前状态。
+
+## 2026-09-28 14:06 缓存档位按 pi 策略对齐并完成回归
+
+按维护者确认，缓存策略统一采用 pi 的语义：`none` 禁用产品主动缓存字段；`short` 不强制写入具体时长，使用供应商短期默认；`long` 仅在能力已验证时发送协议对应的长期保留值。当前实际映射为 Claude short省略TTL、long=`1h`；OpenAI Chat/Responses short省略保留字段、long=`24h`；Gemini显式缓存仍独立opt-in，普通请求不因short/long自动创建资源。所有显式Gemini资源依赖供应商TTL到期回收，不新增主动DELETE或后台续期。
+
+先改测试期望并运行缓存专项，旧实现按预期失败：Anthropic仍发送`ttl:5m`、OpenAI Chat/Responses仍发送`in_memory`。随后仅修改对应L1请求装饰逻辑及测试断言，未改Eino核心或增加第二套缓存管道。`go test -mod=readonly -race ./internal/llm ./internal/agent/eino ./internal/sessions -run 'Cache|TestP2OpenAIChatOptions|TestP2ModelSwitchActualRequestOptionsCacheAndInventory' -count=10 -timeout=300s` exit0（4.072s/1.230s/6.638s）。
+
+最新完整验证串行通过：Windows普通、Windows race、Linux缓存race10、Linux普通、Linux race、漏洞扫描和live命令均exit0；普通/race全仓包含sdk消费者，live为OpenAIChat通过、其余四协议因缺配置SKIP。`go vet`、`go build`、`go mod verify`、`gofmt -l .`和`git diff HEAD --check`均通过；漏洞扫描报告代码可达漏洞0，但依赖树存在未调用漏洞提示。此项问题已记录，历史主动DELETE缺口说明改为“按维护者批准不属于P2出口”。
+
+## 2026-09-28 pi/Zero缓存保留与自动到期核对，修正主动删除范围
+
+维护者明确指出应按缓存档位保留、到期自动删除，要求对照pi与Zero。按dg-piagent源码兜底路径检查本地pi `5cd93f688`、Zero `99721c76`，未升级依赖或修改参考仓库。
+
+pi的CacheRetention为none/short/long：Anthropic短档省略ttl使用服务默认、long且兼容支持时发送ttl=1h，none不注入断点（packages/ai/src/api/anthropic-messages.ts:50–74）；Responses long且能力支持时发送prompt_cache_retention=24h，short省略使用默认（openai-responses.ts:58–85）。这是请求策略，实际缓存过期由供应商管理，不是pi后台定时DELETE。所查Google GenerateContent路径未创建显式缓存、未设置其TTL，仅解析cachedContentTokenCount，不能推导pi为Gemini也实现同样分档资源管理。
+
+Zero的Anthropic cacheControl只有type=ephemeral字段，没有ttl或统一none/short/long策略（internal/providers/anthropic/types.go:32–44）；OpenAI传prompt_cache_key，没有检出prompt_cache_retention字段；Gemini解析缓存token统计，没有检出cachedContents资源创建/删除管理。其当前provider实现同样不能作为主动远端删除的必要性证据。
+
+Google GenerateContent官方文档明确：显式缓存TTL到期自动删除，未指定TTL默认1小时；手动DELETE是另一个可选操作。来源：https://ai.google.dev/gemini-api/docs/generate-content/caching （本次已读取，页面2026-09-11更新）。不能把其他Gemini API的隐式缓存文档混用为此资源契约，也不把TTL到期等同全部供应商的精确物理清除承诺。
+
+修正此前将主动DELETE列为P2必须实现的过度要求：按维护者指定方向，P2使用供应商TTL自动回收，保留本地到期检查、远端404/失效后的完整回退、预算和句柄隔离，不新增删除调度或后台服务。当前Gemini仍采用供应商默认TTL，long无保证时明确降级，不擅自新增未经确认的统一时长映射。开发04、需求覆盖及原plan剩余说明同步；历史记录保留，不将未实现的DELETE写成已实现。仅文档/范围澄清，无生产代码变化；四协议live仍缺配置，18–21与23不因此直接完成。
+
+## 2026-09-28 13:55 双平台崩溃矩阵十轮通过
+
+Windows与Ubuntu-24.04依次执行 `GOWORK=off go test -mod=readonly ./internal/sessions -run '^TestSessionCrash$' -count=10 -timeout=900s`，完整TestSessionCrash所含故障窗口各重复10轮，串行命令exit0，总耗时37.090s。未缩减该测试的子用例；此项补齐本轮最新代码的崩溃重复验收，不替代其他并发专项或真实服务认证。
+
+Step23仍进行中，剩余高风险竞态矩阵证据复核与外部认证条件。Gemini主动DELETE的回收策略正在向维护者说明，尚未批准延期，原plan和设计边界不擅自改变。
+
+## 2026-09-28 13:49 最新Windows/Linux全仓普通与竞态通过
+
+最新稳定代码串行四条门禁全部exit0，总耗时368.397s：Windows `GOWORK=off go test -mod=readonly ./... -count=1 -timeout=600s` → Windows `go test -mod=readonly -race ./... -count=1 -timeout=900s` → Ubuntu-24.04原生同两条命令。每条后均检查非零即退出，末尾exit0，不从混合编码输出猜测测试结果或包级耗时。另Linux原生 `go build ./...`、`go vet ./...` 及文档更新后的 `git diff HEAD --check` exit0。SDK的testdata消费者已另行完整普通和双平台race10认证，不依赖 `./...` 通配符隐式覆盖testdata。
+
+当前原plan Steps1–17和Step22已完成；18–21与23保留in_progress，具体剩余为Gemini主动远端删除生命周期、四协议真实服务配置/认证，以及最终高风险/崩溃故障矩阵证据复核。macOS按已批准延期，不计通过。此次全仓绿测不抹去上述缺口，不宣布P2整体完成；没有提交或推送。
+
+## 2026-09-28 13:47 五协议会话集成通过及最新静态/live门禁
+
+`TestP2ProtocolFactorySessionCalculationAndDiskReplay` 双平台 `-race -count=10 -timeout=300s` 串行退出0（总体113.768s；终端混合编码，包耗时不另行推断）。五协议均真实发起HTTP，初始任务物理/逻辑模型各2次、工具1次、2个accepted attempt，产品call ID与provider call ID分离；真实工具计算结果进入下一请求，公开答案为5。Claude opaque/Gemini签名及内部来源摘要留在磁盘历史，公开快照与持久事件无该私有数据；Open零HTTP/零工具，显式第二次输入仅新增1次HTTP并保留私有回放。没有新生产协议补丁。
+
+原plan Step22更新completed；当前公开SDK交付与兼容已由普通SDK/架构、双平台完整consumer race10、快照/核对race20及五协议会话集成验证。18–21仍in_progress，明确保留Gemini主动远端资源删除生命周期与四协议live未认证；没有把供应商TTL或本地失效冒充主动DELETE。开发04补当前缓存范围和旧私有历史无来源标记时的兼容拒绝；开发06补公开快照/核对定义；requirements-coverage补已验调用链索引及已实现shell/日志状态。
+
+最新稳定代码静态链全部exit0：`gofmt -l .`无输出、`go vet ./...`、`go build ./...`、`go mod verify`（all modules verified）、`git diff HEAD --check`、固定 `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...`。漏洞扫描可达0，仍有未调用的包级1/模块级1提示，不宣称依赖完全无漏洞。新增文件清单已核对，无exe/test产物；代码/文档等文本冲突标记、常见密钥模式检查无匹配；`.test_env`受Git忽略，未读取值。
+
+`GOWORK=off go test -mod=readonly -tags live ./internal/llm -count=1 -timeout=300s -v` exit0（8.401s）：OpenAIChat Generate/Stream共6个真实请求通过；OpenAIResponses/DeepSeek/Anthropic/Gemini分别缺配置SKIP，不记认证通过。Windows/Linux最新全仓普通/race链仍在执行，结果另记，不用之前全仓证据代替。
+
+## 2026-09-28 13:42 Steps16–17完成与SDK双平台专项收口
+
+原plan的 `p2-builtins-selection` 已更新completed：文件发现/精确编辑/TODO/search_tools及Step17逐项选择契约已有独立功能和双平台race20证据，本轮相关完整包继续通过。Windows tools/eino/sessions/state/consumer普通exit0（0.765/0.625/19.851/0.300/2.485s）；Linux同组exit0（0.998/0.572/18.744/0.196/3.206s）。最终全仓门禁由Step23跟踪，不再让其他步骤未完成无限阻塞16–17状态。
+
+SDK/consumer/architecture普通exit0（5.936/2.593/0.305s）；完整consumer race10 Windows128.500s、Linux121.855s均exit0。Linux快照/核对专项race20两包exit0（1.563s/24.909s）。首次WSL bash嵌套引号使正则管道被错误拆分exit1，改直接--exec参数后专项通过；后续第二次WSL启动出现E_UNEXPECTED（exit4294967295），不计测试失败或PASS，未重启WSL，重试后上述完整包通过。SDK剩余前置为五协议真实Session集成验收；本步无新增SDK功能缺口。
+
+五协议续派任务实际因执行服务额度中断且未创建集成文件，状态交接确认无写入/运行任务。主线程接手新增 `internal/sessions/protocol_factory_integration_test.go`，五实际HTTP工厂→Session→Executor→calculate(2,3)→答案5，再Close/Open及显式新输入回放。初始Claude/Gemini fixture误用匿名/fixture provider被请求前拒绝，修正为显式合成凭据与正确provider（不改生产门禁），普通exit0（0.876s）；双平台race10运行中。此处属于测试夹具修正，不虚构为生产缺陷修复。
+
+## 2026-09-28 13:31 SDK公开核对闭环与快照竞态复验
+
+主线程新增 `sdk/testdata/consumer/reconcile_pipeline_test.go`：从真实模型工具执行错误生成unknown，通过公开Snapshot取得call/observation身份与版本，调用Reconcile→GetOperation→Snapshot。断言陈旧revision返回state_conflict、零查询/零提交；受信只读查询一次、新观察version2链接version1、原call/原观察不被覆盖；重复幂等请求不再次查询；关闭再Open从磁盘恢复两个版本和completed operation，不自动执行工具/模型。未伪造内部manager状态，也没有增加另一条核对执行路径。
+
+普通定向 `go test -mod=readonly ./sdk/testdata/consumer -run '^TestSDKConsumerReconcileUnknownThroughSnapshot$' -count=1 -timeout=120s` exit0（0.237s）。Windows快照/核对专项 `go test -mod=readonly -race ./internal/sessions ./sdk/testdata/consumer -run 'TestSnapshotAttemptAndObservationProjection|TestSDKConsumerSnapshot|TestSDKConsumerReconcile' -count=20 -timeout=300s` 两包exit0（1.614s/20.104s）。相关完整包、Linux同组复验仍在运行；此处不以专项绿测宣称Step22或全仓已完成。消费者文件本身仅引用标准库和sdk，复用同包已有注入模型fixture；真实HTTP工厂审批链由独立factory_approval_test覆盖。
+
+## 2026-09-28 13:21 Step17功能验收交接及快照红测最小修复
+
+Step17逐项交接确认默认模型下一Trace、下一Turn原子激活、隐藏工具拒绝、superseded/幂等、原审批快照恢复、pending磁盘恢复、撤销前复核和真实请求有效选项/缓存隔离均有证据；双平台相关race20通过（sessions658.742s/685.931s）。无原请求任意重绑不属于现合同缺口，缺原实例按incompatible_resume拒绝，合法精确请求重放绑定已有验证；P4/P5能力不前移。仅新增selection_boundary_contract_test.go，无生产修复。合并16–17待办待最新集成门禁后关闭，不将Step22编译红测当Step17新缺陷。
+
+主线程接手SDK中断后的实现：新增ModelAttemptView/ObservationView及单文件SDK别名；同一View投影attempt合并终态，观察仅公开ID/version/关联及状态/效果/退出等事实，不公开原正文/后端错误/内部证据引用。加入Snapshot字段及构造接线，修复尚未实现字段导致的编译阻断。此前默认consumer红测已独立复现，现 `GOWORK=off go test -mod=readonly ./internal/sessions ./sdk/testdata/consumer -run 'TestSnapshotAttemptAndObservationProjection|TestSDKConsumerSnapshotIncludesAttemptAndObservationViews' -count=1 -timeout=120s` exit0（0.147s/0.237s）。这仅为最小红绿，真实Reconcile消费者闭环、扩大race和最终门禁仍待补，不宣布Step22完成。
+
+## 2026-09-28 13:08 五协议独立验证通过，SDK修复执行中断
+
+主线程 `GOWORK=off go test -mod=readonly -race ./internal/llm -run P2ProtocolContract -count=10 -timeout=180s` exit0（4.001s），随后agent/eino完整普通exit0（0.746s）。重复的协议交接通知不视为新一轮证据；真实Session集成另行继续。
+
+SDK快照修复执行服务因账户额度不足返回403并中断，属于开发执行环境问题，不是产品模型工厂测试失败；未重试该服务。主线程核对快照字段仍未加入，并独立执行 `go test -mod=readonly ./sdk/testdata/consumer -run '^TestSDKConsumerSnapshotIncludesAttemptAndObservationViews$' -count=1 -timeout=120s` exit1（0.257s），仍为attempts0/observations0。主线程接手此最小快照投影修复，保留Step22进行中，不以任务退出替代验收或删除红测。
+
+## 2026-09-28 13:06 五协议统一契约与私有回放门禁交接
+
+交接五实际Catalog工厂Generate/Stream统一calculate工具→答案、单/双工具、缺usage及取消矩阵，双平台llm普通/race和矩阵race10通过。默认红测修复跨模型私有签名静默接受、Claude正向思考映射none仍发送两项缺陷。私有回放来源摘要绑定provider/protocol/model/configVersion/endpoint/accountScope，输出附幂等Extra键，输入不兼容或无来源时请求前unsupported_capability且HTTP0；普通文本/无签名公开推理不受限制。这是兼容来源标记，不是权限证明。
+
+旧历史含私有签名但无来源标记将明确拒绝，不自动迁移；需在后续文档收尾明确该兼容边界。主线程已读replay_compatibility.go，并启动独立P2ProtocolContract race10后agent/eino完整普通测试，结果待收。交接计算仍位于L1测试，不能替代实际Executor执行，因此续派仅新增sessions五工厂真实HTTP→Session→受控工具→第二轮模型集成，验证持久身份/预算/私有标记保存与公开投影隔离，不修改其他任务正在处理的快照及selection生产区域。
+
+协议整组仍in_progress，待上述全链和最终稳定代码门禁完成再关闭；四协议真实凭据缺失继续未认证。
+
+## 2026-09-28 13:04 SDK消费者验收发现公开快照真实缺口
+
+新增消费者测试通过实际工厂审批/关闭重开/显式恢复、事件提交顺序与溢出、消息脱敏副本和用户shell输出限额；交接双平台相应专项race10通过。但完整consumer普通/race10 exit1：真实模型2次/工具1次后公开Snapshot的ModelAttempts为0、Observations为0，缺原Step22要求的请求尝试终态及Reconcile所需观察ID/version，保留默认红测不跳过。主线程已读红测与state类型，不能用之前完整套件绿测宣称现公开查询链完整。
+
+已确认按原Step22扩展最小快照投影及必要sdk别名：同一已提交View构造隔离map，尝试视图合并AttemptResults终态而非直接暴露初始started；观察提供核对所需身份/版本及安全内容，排除内部checkpoint/target/私有provider记录。续派先使红测转绿，再补实际Reconcile→GetOperation→Snapshot的只读取证、版本追加、CAS及不重跑断言。无新增公开cursor订阅API；按cursor网络重连属于后续入口能力，不顺带扩展。
+
+Step22保持in_progress。完整全仓检查等当前修改稳定再统一执行；此轮未提交推送、不读取凭据。
+
+## 2026-09-28 12:49 原计划逐项收尾继续
+
+重新读取Steps17–22原验收定义，继续三个互不重叠工作范围：选择/恢复对照验收（sessions）；五实际工厂同一计算工具任务及私有签名跨协议拒绝契约（llm）；SDK公开别名、快照与真实消费者验收（sdk/tests）。先核对原需求是否真实未交付，再默认红测及最小修复，不将P4 skill/P5子Agent的完整能力前移为P2新功能。主线程保持负责集成、文档及最终门禁。
+
+原待办ID保持，Step22从pending更新in_progress；16–17搜索已验但模型选择整体验收仍在收尾；18–21说明更新为Gemini显式缓存最小路径已验、统一契约验收中。四协议真实凭据缺失仍记未认证，用户尚未确认延期，不擅自记通过。当前不再在文件持续编辑时启动最终全仓测试，待交接稳定后串行运行。
+
+## 2026-09-28 12:39 Gemini显式缓存最小路径交接
+
+已交接明确opt-in的system/tools/toolConfig前缀缓存，conversation覆盖数0、完整对话作为后缀；共享PrefixCacheProjection与创建转换，无公共TTL配置，供应商默认有效期、合法名称/ExpireTime校验、工厂闭包作用域registry、同键在途去重、过期清理，以及预算约束内完整请求回退。流已输出后不回放；创建者取消不传播为独立等待者的取消。交接模型层Windows/Linux普通/race及架构检查通过，尚未视为整个Step20完成。
+
+主线程已读gemini_cache.go实际投影摘要、身份隔离、registry等待及异常回退路径；将128条工程上限移到internal/config.GeminiCacheRegistryEntries，模型层仅保留常量引用，语义不变。独立执行 `GOWORK=off go test -mod=readonly -race ./internal/llm/... -run 'Gemini.*Cache|PrefixCache' -count=10 -timeout=180s` exit0（llm 2.870s），随后架构测试exit0（0.248s）。两个私有适配器包在该筛选下均no tests to run，不将其退出0记为私有包专项覆盖；通过证据为产品llm中的缓存测试和架构检查。
+
+明确剩余边界：无远端DELETE、后台续期或主动提前清理，远端资源依赖供应商TTL；不缓存conversation前缀。设计中的资源删除要求仍需核对落实或维护者明确缩减，不能把本版最小路径称完整生命周期。真实Gemini端点未配置，最小缓存长度、命中及费用未认证；需最终全仓/live及文档更新，不关闭协议待办。
+
+## 2026-09-28 12:33 Eino普通搜索持久选择闭环交接
+
+search_tools已复用Eino toolsearch.NewTyped生成的匹配工具，通过现有mailbox/acceptActiveTools提交pending，下一Turn原子激活；不安装上游按历史自动开放的中间件。交接真实Session测试目标执行1次、同批抢跑0次；重开保留原Turn与pending，不开放额外工具；声明级策略与后端可用性检查不替代实际参数授权。报告Windows/Linux专项普通及race20通过，无新增公开字段。
+
+主线程已读search_tools.go实际匹配、产品callID绑定、pending合并及既有selection提交路径，独立执行 `GOWORK=off go test -mod=readonly -race ./internal/sessions ./internal/agent/eino ./sdk/testdata/consumer -run 'P2SelectionSearchTools|SDKConsumerSearchTools' -count=20 -timeout=300s` exit0（sessions80.362s、eino1.235s、consumer26.224s）。工具搜索选择及恢复专项二十轮竞态通过，不替代模型选择恢复整体验收。原计划既有16–17待办说明已更新为实现交接完成、独立及整体验收中，status仍in_progress。模型重绑/跨配置与checkpoint整体验收仍需核对；skill索引和父子invocation完整能力应按既定P4/P5边界核实，不以本次普通搜索测试证明，也不擅自前移实现。
+
+## 2026-09-28 12:18 真实工厂 live 验收交接与主线程复验
+
+live_test.go已改走Catalog→RegisterFactory→Bind→预算观察→Generate/Stream；新增默认离线live_acceptance_test.go断言空/错误文本、缺结束标记、错误工具参数不能通过，并验证工具结果调用身份。主线程已读live入口并独立执行 `GOWORK=off go test -mod=readonly -tags live ./internal/llm -count=1 -timeout=300s -v` exit0（6.363s）。交接真实OpenAIChat两路径各完成pong文本、一次无副作用lookup、工具结果后pong，总6次物理请求，usage与SDK数值一致。
+
+配置可验证范围仅OpenAIChat；OpenAIResponses/DeepSeekChat/AnthropicMessages/GeminiGenerateContent均因缺各自MODEL/BASE_URL/API_KEY配置跳过，不能记五工厂live完成。未读取或输出配置值、未写凭据文件、未提升Capability为Verified。后四协议需要维护者本地补配置或明确延期验收；其他离线实现继续推进，原Step23保持进行中。
+
+## 2026-09-28 12:17 Gemini 隐式缓存门禁修复及显式资源继续实施
+
+已交接options.go最小修复：Gemini未ExplicitCacheResource时不因short/long能力声明启用ActiveCache，保持完整输入的默认隐式路径，原因gemini_explicit_cache_not_requested。新增真实HTTP两轮Generate/Stream测试。主线程独立 `GOWORK=off go test -mod=readonly -race ./internal/llm -run 'TestGeminiImplicit|TestGeminiCache|TestResolveOptions' -count=10 -timeout=180s` exit0（1.551s），其中实际新测试名TestGeminiCacheDefaultRemainsImplicit被命中。此时显式资源仍未交付，Step20不关闭。
+
+主线程确认私有适配器允许增加纯投影helper，创建与实际payload摘要共享现有转换逻辑，更新私有PATCH_NOTES，不新增公开SDK字段。最小TTL策略为供应商默认（不发送臆造固定TTL），按有效返回ExpireTime管理复用；缺失有效句柄/到期信息不得当作可靠可复用资源。无长保留配置时long降级short并明确记录原因，不冒称长TTL保证；none禁止主动创建。继续闭包registry、严格前缀/后缀等价、作用域隔离、辅助请求预算及完整回退的红测和实现，待最终接线验证。
+
+## 2026-09-28 12:14 Linux全仓运行遇到新增功能实施中间态
+
+WSL全仓串行命令exit1，普通测试未通过，后续`&&`连接的race未执行。输出含新增gemini_cache_test.go调用不存在的schema.AssistantAgenticMessage导致llm编译失败，以及新增TestP2SelectionSearchToolsNextTurn等待模型请求超时（10.02s）。两处位于仍在实施的Gemini缓存和工具搜索工作范围，不能将本次当稳定代码Linux最终验收，亦不将Windows此前通过扩展到新代码。输出存在编码显示异常，已核对实际新增测试文件；不推断其他未可核实结论。
+
+主线程暂不并发修改这两个正在交付的范围，等待各自完成红绿与交接后再串行跑Linux全仓普通/race；不通过重跑覆盖本次失败记录。后续全仓验收应在生产改动与测试均稳定后启动，避免再以编辑中工作树采集最终门禁。
+
+## 2026-09-28 12:09 继续剩余功能并同步原计划待办
+
+已更新原计划frontmatter中既有待办说明（不改计划正文、不新建重复TODO）：14–15保持completed；16–17明确Step16文件工具/TODO/用户shell已实现且双平台专项、Windows全仓回归通过，Step17工具搜索闭环仍实施中；18–21列明Responses/Claude/DeepSeek已验子项和Gemini显式缓存/统一契约缺口；Step23改in_progress，保留Linux最终全仓/live等待。
+
+继续委派普通search_tools固定generation候选→下一Turn选择的真实闭环，以及Gemini opt-in显式缓存生命周期，分别独占sessions/agent与llm Gemini区域；不放宽当轮可见清单、权限或物理请求预算。主线程启动WSL Linux全仓普通后串行race，结果待收。当前主线程 `GOWORK=off go test -mod=readonly -tags live ./internal/llm -count=1 -timeout=300s` exit0（2.703s），但源码核对现有TestLocalCompatibleModel仅直接HTTP状态检查，未走Catalog、未断言回答，不可作为五工厂真实认证。已安排补真实工厂live验收，缺凭据协议明确skip，不查看或输出.test_env内容，不以已有绿色结果掩盖验收不足。
+
+## 2026-09-28 12:07 最新静态、依赖与固定漏洞门禁通过
+
+主线程串行检查exit0：`gofmt -l .`无输出；`GOWORK=off go vet ./...`、`go build ./...`通过；`go mod verify`输出all modules verified；`git diff HEAD --check`通过，仅LF/CRLF转换提示；`go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...`可达符号漏洞0，仍提示当前代码未调用的导入包级1项、依赖模块级1项漏洞。以上为增量事件优化后的最新工作树验证，不将未调用提示隐去，也不以diff检查替代新文件卫生检查。live、Linux最终全仓及未实现功能仍待完成；未提交推送。
+
+## 2026-09-28 12:05 主线程串行专项与Windows全仓普通/race通过
+
+主线程同一串行命令全部exit0（总412.295s）：`GOWORK=off go test -mod=readonly -race ./internal/sessions ./internal/sessions/state -run 'Activity|Reservation|TestFileDiscovery|CommittedEvent|Subscription' -count=20 -timeout=300s`（sessions250.767s/state2.004s）；随后 `go test -mod=readonly ./... -count=1 -timeout=300s`（sessions20.876s）；再 `go test -mod=readonly -race ./... -count=1 -timeout=300s`（sessions115.462s）。本轮包含增量事件读取、TODO、shell和活动正常结束竞态修复后的集成代码，替代此前这些路径的待收集状态。
+
+这证明当前Windows完整套件通过，不消除历史真实租约迟到的所有可能因素，不替代Linux全仓、最新静态/漏洞/live及未实现工具搜索和协议缓存能力的验收。下一步刷新剩余验证及功能状态，不能用全仓绿测关闭整个P2。
+
+## 2026-09-28 11:57 增量事件发布优化交接，主线程串行复验启动
+
+已交付Manager.EventsAfter：同锁按durable序号二分定位已提交后缀、仅深拷贝事件并返回已提交cursor；publishCommitted仅替换读取来源，保留发布/推进逻辑。主线程已读方法和实际调用点。测试覆盖空/重复/超前cursor、重开、Payload及序号/Scope隔离、无订阅推进、新订阅不补旧历史、顺序/去重/慢订阅溢出及Append失败不发布。
+
+默认分配红绿证据：空邮箱处理在1/256条历史时从73/847次分配降到3/3次。相同128页历史race基准Windows约523.50ms→5.87µs，Linux563.42ms→13.13µs；这些为测量样本，不是延迟保证。真实278KB流程模型2次/Search1次不变。交接双平台事件/活动/文件发现普通及race20、sessions/state全包普通/race、SDK文件发现race20通过。
+
+主线程开始串行独立 `GOWORK=off go test -mod=readonly -race ./internal/sessions ./internal/sessions/state -run 'Activity|Reservation|TestFileDiscovery|CommittedEvent|Subscription' -count=20 -timeout=300s`，成功后执行全仓普通及全仓race，结果待收，不提前记通过。保持提交候选全量复制、其他View读取、租约和预算规则；显式View及提交前仍有约23–27ms样本成本，大历史/存储/调度仍可能真实迟到，不把历史11.4ms实例宣称已完全根治。
+
+## 2026-09-28 11:30 续租迟到分段证据与增量事件读取优化启动
+
+性能调查已证明全量JSON复制和View持锁竞争有显著成本，但未完全归因原始11.4ms迟到。原记录触发至处理采样283.7643ms包含调度/邮箱/采样前检查，采样至Append返回225.728ms包含候选复制等，不可统称排队或存储写入。新增真实会话诊断保持模型2次/Search1次；轮询View显著放大等待。约6.57MB合成历史race续租Windows505.57ms/Linux600.81ms，并行View读时约1.222s/1.436s；候选复制为主要测得成本，不能把合成基准冒充原实例计时。
+
+主线程核实publishCommitted每次均调用Manager.View复制整个会话，即使无订阅者。已确认最小内部优化范围并继续实施：state提供只深拷贝已提交事件后缀的游标读取，publishCommitted使用该快照；保留顺序、cursor、新订阅行为、隔离及失败Append不发布。先默认行为测试和同规模前后基准，再双平台普通/race；不改Manager.commit候选原子性、不改租约或预算、不新增SDK API。全量commit复制及外部View轮询仍是剩余成本，不预先宣称真实迟到全部解决。
+
+本轮调查仅新增activity_latency_diagnostics_test.go与state/activity_latency_benchmark_test.go，交接双平台诊断/基准/vet退出0；优化尚未交付。WSL本轮已恢复可运行，未重启。原计划与未完成状态保持，不以测量完成替代产品修复完成。
+
+## 2026-09-28 11:12 活动续租与正常结束竞态修复交接
+
+已确定性复现正常结束在续租closed/epoch检查后、独立allowed检查前关闭有效租约，导致尚未到期也报budget_exhausted。修复activity.go同一临界区检查closed/epoch/截止，并在提交前遇closed直接退出；未扩大预算或跨过旧截止继续授权。交接红测固定500ms正常结束、1s旧截止，修复前exit1，修复后双平台race20 exit0，Settled500ms/Reserved0/Revision2。主线程已读实际锁与提交路径，独立执行 `GOWORK=off go test -mod=readonly -race ./internal/sessions ./internal/sessions/state -run 'Activity|Reservation|TestFileDiscovery' -count=20 -timeout=300s` exit0（sessions 205.471s、state 1.747s）。确认该范围二十轮竞态复验通过，不替代真实续租迟到调查或最终全仓验证。
+
+交接双平台活动/文件发现普通及race20、完整sessions普通/race、SDK文件发现race20通过，原主线程失败命令重跑也通过；这些不能覆盖另一类真实迟到。真实记录显示旧截止1.6221973s，续租触发1.1241206s、mailbox采样1.4078849s、追加返回1.6336129s，已晚约11.4ms，当前安全规则必须取消。没有证据指向UTC丢单调时间；正常结束竞态不是原始所有失败的唯一已证根因。
+
+已续派单独性能因果调查，分段测量mailbox排队、视图复制、提交与Append以及诊断开销，不放宽期限、不以重跑绿代替解决。崩溃计数不足仍保留待自然失败诊断的历史限制；整组步骤及最终验收暂不关闭。
+
+## 2026-09-28 11:02 崩溃窗口计数失败诊断交接（根因未定）
+
+已确认原trace.settled_after模型1次/工具0次计数在父进程Kill和重开之前采集，不能解释成重开后丢失；trace.settled窗口也包含执行失败终态。可控租约过期实验能产生相同1/0及activity reservation expired，但原自然失败未保存Trace.Error/租约元数据，不能认定同根因。仅在recovery_test.go原计数失败分支补执行元数据诊断，保留2/1断言，不修改活动或shell实现。主线程已检查新增诊断范围。
+
+交接Windows目标窗口普通/race各20轮exit0，最终诊断改动后普通1轮exit0；这是重跑证据，不表示原故障已根治。Linux本轮未运行：WSL返回Wsl/Service/E_UNEXPECTED，独立wsl true探测exit4294967295，未重启服务以免影响并行活动诊断。后续需收集新增自然失败元数据，并在WSL恢复后补验证；不把此前Linux其他范围通过替代本轮。
+
+shell补查尚未证实的边界：管道io.Copy若返回非ErrClosed读取错误，OutputIncomplete未置true；与进程错误并存时读取错误可能被遮蔽。当前没有受支持实际路径红测，保留未验证事项，不为假设增加接口或宣称修复。活动租约诊断仍负责活动代码，避免重复修改。
+
+## 2026-09-28 10:53 shell 输出证据修复交接及 TODO/安全独立结果
+
+shell交接已用真实辅助进程TCP握手红测证明：输出管道被WaitDelay关闭时，Cmd.Wait可能优先返回ExitError或取消错误，原先仅检查ErrWaitDelay会漏报OutputIncomplete；原100ms启动时间假设在负载下也不可靠。修复collectHostShellOutput显式管理合并管道，分别记录EOF/强制关闭与进程Wait事实，保留真实退出码、超时/取消，不宣称后代全部终止。交接Windows/Linux shell普通及race各20轮通过，主线程已读实现，独立Windows `GOWORK=off go test -mod=readonly -race ./internal/sessions -run '^TestP2CommandShell' -count=20 -timeout=240s` exit0（66.576s），确认shell专项二十轮竞态复验通过，不替代仍待完成的全仓门禁。
+
+交接完整sessions仍有失败：新活动续租测试等待超时、mailbox停在activityRenewalContextGate.Err，以及TestSessionCrash/trace.settled_after模型/工具次数少于预期；不按较早全仓绿测关闭这些问题。活动路径由原诊断继续处理，另续派崩溃窗口因果取证，避免并行修改同一活动实现或放宽调用次数断言。
+
+主线程TODO四包独立race10 exit0：tools1.260s、sessions55.544s、state1.555s、consumer30.489s。固定 `GOWORK=off go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` exit0：可达符号漏洞0；另报告导入包级1项、依赖模块级1项当前代码未调用的漏洞，不表述为依赖完全无漏洞。最终稳定代码全仓门禁/live及未解故障仍待完成。
+
+## 2026-09-28 10:51 TODO 持久化交接与独立验收启动
+
+默认sessionTodos仅在未注入Todos时装配，宿主注入原样保留、不双写；按invocation覆盖最新列表、按callID保存不可变回执。主线程已阅读sessions/todos.go与state/todos.go：mailbox外消费票据，mailbox内复核策略/取消/claim，现有Manager.commit追加todo_update后发布；同一持久事实重建成功观察及原tool.finished，避免效果提交与结果记录之间崩溃导致重跑。恢复指纹区分session-journal-v1和host-injected，未新增公开Snapshot字段。invokeTodos保留产品错误码，明确拒绝与Append效果未知分离，取消本身不证明无副作用。
+
+交接报告Windows全仓普通/race及Linux四个受影响包普通/race通过，另保留此前Pause等待超时失败，不据随后绿测认定其根因已解决；活动租约和shell专项调查仍在运行。主线程已启动四包 `GOWORK=off go test -mod=readonly -race ./internal/agent/tools ./internal/sessions ./internal/sessions/state ./sdk/testdata/consumer -run Todos -count=10 -timeout=240s` 独立验收，结果待收。交接使用govulncheck@latest，不能替代既定固定版本证据；主线程另启动 `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...`。不据交接关闭Step16或整个P2，live及最终稳定代码全仓门禁仍待完成。
+
+## 2026-09-28 10:42 文件发现独立竞态复验失败：活动租约待诊断
+
+主线程 `GOWORK=off go test -mod=readonly -race ./internal/sessions ./sdk/testdata/consumer -run 'TestFileDiscovery|TestSDKConsumerFileDiscoveryThroughSession' -count=10 -timeout=180s` exit1。sessions 95.254s，`TestFileDiscoverySessionGrepModesAndLimits/content` 在4.32s时失败：trace错误含context canceled与budget_exhausted: activity reservation expired，模型检查observed=1/model=2/problem=nil，配置ActivityBudget30m、Activity.Settled约3.432s；公开consumer包19.571s通过。不能把本轮主线程验收记为通过，也不能仅凭输出归因为文件发现逻辑错误或既往审批时钟缺陷。
+
+已续派先检查activity.go租约续租/到期epoch、真实时间与单调时间、mailbox调度证据，再确定性红测及最小修复；不扩大预算、不加sleep、不削弱断言。交接中的两平台通过记录作为此前执行事实保留，不覆盖本次失败；Step16仍未关闭。
+
+## 2026-09-28 10:40 文件发现 Session/SDK 端到端交接
+
+新增 `internal/sessions/file_discovery_session_test.go` 与 `sdk/testdata/consumer/file_discovery_session_test.go`，未修改生产实现。交接报告真实Session多轮ls→glob→grep由上一轮结果生成下一轮参数，模型4次/List1次/Search2次；grep模式、offset、命中/字符/字节限额由下一轮模型核验；权限拒绝三工具各后端0次。外部consumer仅导入公开sdk及Eino模型类型（并非仅stdlib+sdk），模型3次/List1次/Search1次。50KiB断言针对结构化文件发现JSON正文，不宣称既有通用输出包装后的总字节数也在此限额内。
+
+两平台普通及race10交接通过。主线程已阅读真实模型包装及公开后端接线，独立启动 `GOWORK=off go test -mod=readonly -race ./internal/sessions ./sdk/testdata/consumer -run 'TestFileDiscovery|TestSDKConsumerFileDiscoveryThroughSession' -count=10 -timeout=180s`，结果待收集，不先记主线程通过。
+
+上游路径限制取得运行证据：固定Eino v0.9.21内存后端写入root/a.go、root/sub/b.go后，Windows路径清理为反斜杠而前缀检查拼接正斜杠，ls/glob/grep均0条；Linux均2条；精确Write→Edit→Read两平台成功。探针在上述默认测试中，不以静态推测作为复用限制。该证据支持只复用其精确编辑、而文件发现另用已有doublestar/标准库实现的选择；不扩大为对其他Eino后端的判断。Step16仍等待TODO持久化及shell失败修复和集成门禁，不关闭整组。
+
+## 2026-09-28 10:28 文件工具/DeepSeek交接及全仓门禁结果
+
+文件工具子项交接：公开精确编辑old_string/new_string/replace_all；List新增Limit、Search新增模式与简单截取字段；目录500/glob1000/grep100条及50KiB完整JSON，grep每行500个Unicode字符，稳定排序并提示截断。测试后端精确编辑复用Eino内存后端，glob复用已依赖doublestar、grep标准库regexp；上游路径层Windows分隔符问题为未直接复用的理由，主线程还需审查证据。交接报告Windows/Linux tools/testkit普通/race及SDK契约专项通过；尚缺新增Session文件发现端到端验收，不能关闭整个Step16。
+
+DeepSeek子项交接：固定SDK通过ACL WithExtraFields发送原生thinking.type enabled/disabled，未指定不发送，不使用reasoning_effort替代；非法映射/独立token预算拒绝零HTTP。报告两平台定向普通/race通过；其较早完整llm失败发生于主线程Claude红绿过程中，主线程最新两次全仓运行的llm包已通过，不保留为当前Claude阻塞。仍需真实端点认证。主线程已审查deepseek.go实际ACL选项接线并独立执行 `GOWORK=off go test -mod=readonly -race ./internal/llm -run TestP2DeepSeek -count=10 -timeout=180s`，exit0（1.534s）。
+
+最新Windows `GOWORK=off go test -mod=readonly ./... -count=1 -timeout=300s` exit1，仅 `TestP2CommandShellInheritedOutputCannotOutliveTimeout` 在commands_shell_wait_test.go:23失败（未报告继承输出截断，0.66s）；sessions包49.145s。命令使用成功后才运行race的串联，因此全仓race未执行，不记通过。已单独安排先调查实际Windows进程/Wait/输出事实，再最小修复，禁止凭重跑或放宽断言消除失败。
+
+`GOWORK=off go vet ./...`、`go build ./...`、`go mod verify`、`gofmt -l .` 串联exit0，依赖输出all modules verified，格式无输出。TODO持久化首次交接仅调查未改代码：主线程已确认nil时装配Session持久后端、非nil完全保留宿主归属不双写；暂不新增公开Snapshot字段，内部journal与重开验收；后端切换纳入恢复兼容性。继续实施，不重复等待维护者确认已可由最小方案决定的接线。
+
+## 2026-09-28 10:26 新编辑契约的 Session 集成回归
+
+主线程Windows全仓普通 `GOWORK=off go test -mod=readonly ./... -count=1 -timeout=300s` exit1（sessions 62.824s）：`TestTestkitTicketSessionLifecycle` 的 edit夹具仍提交patchRef，未到后端；取消夹具仍把原始context.Canceled预期为failed，而当前文件错误投影已保留cancelled。读取新schema及既有取消测试确认后，迁移该Session夹具为old_string/new_string，分别断言取消为cancelled、非取消拒绝为failed，原票据、零写入、预算、持久事实和重放拒绝断言全部保留。
+
+专项 `go test -mod=readonly -race ./internal/sessions -run '^TestTestkitTicketSessionLifecycle$' -count=10 -timeout=180s` exit0（16.983s）。另Responses执行接线增加外部旧cache scope覆盖断言后，专项race10 exit0（1.208s）；`git diff HEAD --check` exit0，仅现有CRLF转换警告。全仓普通/race及vet/build/mod verify/格式检查已重新启动，不能沿用此前全仓通过结论；其他并行实现尚未全部交接。
+
+## 2026-09-28 10:20 Responses 可信缓存作用域接线（验证中）
+
+按模型设计的 L3 可信 Session 作用域要求，先复现主动缓存在无作用域时仍发送1次HTTP的红测，再补内部 WithSessionCacheScope 与结构化身份元组SHA-256路由键，包含 Session/provider/protocol/endpoint/account/model/config/policy，不含凭据，不随 turn/attempt 改变。仅在已认证 ActiveCache 时注入上游 WithResponsesPromptCacheKey，仍完整 input、store=false、EnableAutoCache=false；none 不注入缓存键/保留参数。无可信作用域时请求前 invalid_argument、HTTP与观察均0。
+
+`agent/eino/validated_model.go` 从实际执行 ScopeFromContext 的 SessionID 注入，覆盖而不信任外部遗留 context 值。真实 ValidatedModel→Catalog→Responses HTTP 红绿测试验证同Session跨Turn同键、跨Session异键、每次占额1。另有Generate/Stream原生请求测试及provider/endpoint/account/model/config/policy隔离测试；夹具曾误将短保留值写作in-memory，已按固定SDK实际wire值in_memory纠正，不将此夹具失败记产品缺陷。双平台专项race10已通过：Windows `GOWORK=off go test -mod=readonly -race ./internal/llm ./internal/agent/eino -run 'TestResponses.*Cache|TestSessionPromptCache|TestAnthropic' -count=10 -timeout=180s` exit0（llm 2.099s、eino 1.234s）；WSL Ubuntu-24.04同参数原生执行exit0，输出编码异常。Windows全仓普通复验仍在运行；尚不关闭Step18整个验收。
+
+## 2026-09-28 10:14 Claude 显式缓存首轮红绿证据
+
+新增 `TestAnthropicExplicitCacheBoundaries` 经真实工厂 Generate/Stream 捕获请求体，先复现 none 仍发送5/6处调用方旧标记、short/long同时出现顶层自动缓存的问题（行为红测exit1；此前夹具类型编译失败及并行DeepSeek文件未完成导致的编译失败不作为行为证据）。修复采用私有适配器公开 SetContentBlockCacheControl/SetToolInfoCacheControl，复制消息/块/工具/Extra后清旧标记，再在前导system末合法文本块、末工具、末user合法块布置统一TTL的最多三个断点；关闭顶层自动缓存，none清除主动标记，tool_result保持原调用关联。原始历史和工具定义不变，每次HTTP和计数观察均1。
+
+主线程验证：`GOWORK=off go test -mod=readonly ./internal/llm -run '^TestAnthropic' -count=1 -timeout=120s` exit0；Windows `go test -mod=readonly -race ./internal/llm -run '^TestAnthropic|^TestP2FactoryClaude' -count=10 -timeout=180s` exit0（2.131s）；WSL Ubuntu-24.04 原生 `env GOWORK=off go test -mod=readonly -race ./internal/llm -run TestAnthropic -count=10 -timeout=180s` exit0（输出编码异常，不从乱码推断耗时）。这些是定向证据，尚未执行最终全仓门禁及live，不据此关闭整个协议组。
+
+## 2026-09-28 10:05 工具复用与有界输出方案调整（已批准，实施中）
+
+用户确认优先复用当前 Eino v0.9.21 能力，完善剩余事项。此前把本项目尚未接入的能力笼统描述为框架缺失，并将 ls 复杂分页作为基础完成条件，混淆了上游事实与产品设计；本次明确纠正。Pi 的 ls/find/grep 采用数量及字节限额和截断提示，Zero 的目录/搜索工具也不提供目录游标分页；Eino ls 直接返回后端路径，内存后端排序，glob 工具排序，grep 在取得匹配后排序并应用 offset/head_limit，不能据此宣称后端按页扫描。
+
+当前批准的差异：ls/glob 采用稳定排序、数量及字节上限、明确截断原因和缩小查询提示，不实现复杂游标/目录快照分页；grep 优先复用 Eino 模式及简单结果截取。
+
+### Step 19.1：Claude 显式缓存断点接线（本轮执行细化）
+
+- 前提及输入：现有 `anthropic.go` 仅配置顶层自动 CacheControl；私有 `agenticclaude.SetContentBlockCacheControl/SetToolInfoCacheControl` 已支持请求副本标记。沿用已解析的 ActiveCache/CacheIntent 及能力门禁，不新增公开选项。
+- 方法与顺序：先以真实工厂 HTTP 请求红测覆盖 Generate/Stream；在模型适配器调用前复制消息、块、工具及需要修改的 Extra，清除旧缓存标记，只在启用策略时标记前导 system 的末个合法文本块、末个工具、末个 user 的合法内容块（包含 tool_result）。全部采用已验证 short=5m/long=1h，同次最多三个断点，不混用顶层自动缓存，不改变历史、私有签名或工具顺序。
+- 失败及约束：none 或未认证主动缓存策略不保留调用方旧主动标记；不以缓存作为授权，不额外重试/发请求。无合法块不伪造块；无效内容沿既有验证拒绝。修改范围仅 Claude 产品适配器、独立 helper 和测试，不修改框架协议转换。
+- 交付及验收：默认测试断言断点位置/数量/TTL、关闭策略、合并工具结果、原对象未修改和 HTTP/预算观察均一次；受影响模型包 Windows/Linux 普通及 race 后，再做全仓门禁。未通过前不关闭 Step19。
+
+read 的版本绑定行/字节续读保持不变。公开精确编辑参数及 replace_all 复用上游语义，仍经过本项目受控端口、版本校验和执行记录。write_todos 必须接入现有任务调用范围与 journal，Eino AddSessionValue 本身不作为本项目落盘证据。原计划正文保留，以本节及现行工具设计记录批准差异；未完成项仍保持进行中，不因缩减分页要求直接标完成。
+
+执行顺序与验收：先以默认测试复现文件工具契约/有界输出缺口，再接通受控后端并验证错误码、权限拒绝零调用及真实效果；TODO 通过既有 mailbox/state commit 接线，验证调用隔离、提交失败及只读重开；并行补 DeepSeek 原生 thinking 选项的真实 HTTP 契约。其后继续工具选择与其余缓存协议项，逐项审查接线并更新原待办。最终仍须全仓普通/race、构建/静态检查、漏洞、live 与跨平台证据；macOS 继续按批准延期，不记通过。当前尚无本轮实现通过结论。
+
+## 2026-09-28 09:49 Steps14–21当前状态核对
+
+本节为当前状态，后续旧日期记录保留历史，不将已解决缺陷继续列为当前阻塞。Step14按新批准的运行期审批契约完成实现与双平台专项验证；单调时间修复已由主线程race20通过。Step15版本观察、只读取证、原子release及unknown限制已实现；主线程 `GOWORK=off go test -mod=readonly -race ./internal/sessions ./internal/sessions/state -run 'Reconcile|Reconciliation|UnknownEffect|Unresolved' -count=20 -timeout=300s` 退出0（60.006s/1.449s）。结合原双平台受影响包证据，原p2-approval-reconcile待办更新为completed。完整子进程故障矩阵、最终全仓/live/漏洞门禁归Step23，不重复当作各前序步骤尚未实现。
+
+Step16：read/用户shell/日志已实现并验证；ls分页排序、glob/grep模式限额、公开精确edit契约、invocation TODO持久事实仍待完成。List/Search公开扩展已获准，但尚未实现，属于实施排期遗漏而非继续等待授权。
+
+Step17：模型/工具选择及有键重绑已有实现；search_tools下轮开放闭环和无原请求模型恢复绑定仍有缺口，不能关闭。Step18：Responses完整回放及加密推理补偿通过，可信Session缓存键接线及私有必需数据缺失边界仍待完成/核对。Step19：Claude基本协议和redacted回放补丁完成，显式缓存断点及数量/TTL验证尚缺。Step20：Gemini工具ID/签名往返已修复并接入默认依赖，显式缓存创建、复用、失效重建及辅助请求预算尚缺。Step21：DeepSeek仍拒绝thinking控制，五工厂统一工具任务与跨协议私有数据兼容性契约尚未完成。macOS按已批准延期，不阻塞这些步骤。
+
+## 2026-09-28 09:42 审批时间误判根因与修复交接
+
+Linux真实时钟诊断在PartialAnswers失败复现中捕获墙钟回拨约1.079s/2.759s，而单调时间分别前进约72ms/104ms。运行期审批创建时UTC()剥离单调时间，导致“签发时间之前”检查误判expired，虽然实际仍有近24h期限。最小修复保留运行期单调时间，仅在公开快照副本转换UTC，不改变24h期限或用假时钟掩盖原测试。确定性测试先红后绿验证保留单调分量、签发/到期边界及快照不改内部期限。
+
+原始扩大race中的ModelSelection/turn失败未捕获时钟样本，不能断言其历史实例已精确归因；该路径使用相同有效期逻辑。交接报告Windows/Linux受影响普通/race及两原测试二十轮通过。主线程已读新测试与快照转换，并独立执行 `GOWORK=off go test -mod=readonly -race ./internal/sessions -run 'TestApprovalRuntimeDeadlineRetainsMonotonicTime|TestApprovalPartialAnswersKeepUnansweredOriginalCallsWaiting|TestApprovalResumeUsesCommittedModelSelection|TestApprovalClaimRechecksExpiryAndPolicyAfterAuthorization' -count=20 -timeout=300s`，退出0（包耗时158.631s）。审批相关四项二十轮竞态复验通过；完整门禁仍待执行，不标P2完成。
+
+## 2026-09-28 09:27 全仓普通通过与公开投影交接
+
+主线程 `GOWORK=off go test -mod=readonly ./... -count=1 -timeout=300s` 退出0（26.011s），包括正式私有适配器及产品原协议红测所在llm包。此为当前一次Windows全仓普通证据，不替代race/live/完整功能验收。
+
+公开投影修复已交接：事件保存展示投影、Snapshot深拷贝消息切片，剥离私有签名和供应商扩展，内部历史及ConvertToLLM保留原数据；主线程已读PublicMessage并独立执行 `GOWORK=off go test -mod=readonly -race ./internal/agent ./internal/sessions -run 'TestPublicMessage|TestSessionPublicMessage' -count=10 -timeout=180s`，退出0（agent 1.177s，sessions 3.397s），公开投影十轮竞态复验通过。交接报告该专项Windows/Linux通过，但Linux扩大race出现ApprovalPartialAnswers的enhanced-invokable及ApprovalResumeUsesCommittedModelSelection/turn过期失败；已安排先诊断/复现再最小修复，不先放宽期限或凭重跑绿推断根因。旧已写事件正文未迁移，保持历史原样。全仓收口仍阻塞，P2待办不关闭。
+
+## 2026-09-28 09:26 默认依赖接线完成交接
+
+生产与测试已统一引用仓库私有Gemini/Claude适配器，go.mod旧两模块require移除，版本未升级，go.sum历史校验保留。主线程独立全仓*.go搜索确认零旧适配器导入；测试注释区分私有补丁认证与原始上游版本，未削减协议断言。
+
+交接报告GOWORK=off下Windows/Linux Go1.27模型层及私有包普通/race、architecture、模型层vet/build通过。主线程已启动 `GOWORK=off go test -mod=readonly ./... -count=1 -timeout=300s` 全仓普通复验，结果待收集；并行公开投影任务尚未交接，最终稳定代码仍须完整门禁，不据此标P2完成。macOS按既定决定延期。
+
+## 2026-09-28 09:23 Gemini能力门禁与空载荷修复
+
+追加核查通过真实Catalog工厂Generate/Stream确认：未声明CapTools、DeferredTools、ToolSearchTool、混合server-tools及Vertex路由均unsupported_capability且零实际HTTP/观察请求。既有Catalog门禁足够，无须恢复普通函数工具一概拒绝。
+
+新可控模型测试先复现Type=FunctionToolCall但payload=nil被Generate/Stream误判成功；normalizeGeminiFinish补完整性检查后返回invalid_argument，底层调用次数保留为1。该红绿测试是内部消息完整性证据，不冒称HTTP供应商夹具。主线程确认工厂已引用私有适配器，并独立执行 `GOWORK=off go test -mod=readonly -race ./internal/llm -run 'Test(P2Factory|Gemini|Anthropic)' -count=10 -timeout=180s` 退出0（包耗时1.966s）。这证明该产品工厂与能力门禁测试集合在默认依赖图下通过十轮竞态验证，不依赖临时工作区。公开投影与全仓验证仍未完成。
+
+## 2026-09-28 09:20 私有补丁副本迁入交接
+
+已迁入internal/llm/einoext两个供应商适配器最小生产闭包、离线HTTP测试及LICENSE/NOTICE/PATCH_NOTES，共24文件。Gemini最新同帧签名修复已在私有副本先复现旧行为红测再同步，不需重复复制。产品现有版本提升五项直接依赖，无版本升级、无嵌套模块或本地replace。主线程已读补丁来源/差异/切回上游说明，并独立执行 `GOWORK=off go test -mod=readonly -race ./internal/llm/einoext/... -count=10 -timeout=180s` 退出0：Claude 1.243s，Gemini 1.632s。此结果验证正式私有包在产品默认依赖图下通过，不依赖临时工作区；仍不替代工厂统一接线后的整体验收。
+
+旧生产和测试import仍需统一切换并移除两上游module的过渡require，已安排精确import修改，防止Claude新旧包重复类型注册。正式产品回放/架构与默认依赖图验证待接线后进行；公开数据投影和Gemini能力门禁追加核查并行进行，不标P2完成。
+
+## 2026-09-28 09:19 Gemini产品工厂交接
+
+最新隔离签名补丁主线程Windows显式生产文件+两离线测试文件 `go test -race ... -run TestOffline -count=10 -timeout=180s` 退出0（1.752s），不是上游完整套件验收。产品工厂接线报告Gemini/Claude两轮真实HTTP及JSON回放在临时GOWORK下Windows/Linux普通/race10通过；GOWORK=off回放仍失败，尚未正式接入私有副本。
+
+主线程审查gemini.go确认响应与历史ID校验、不伪造ID及STOP工具结束归一化；进一步要求核查移除旧一概拒绝后DeferredTools/ToolSearchTool、未声明工具仍请求前拒绝，以及缺工具payload的响应完整性。临时工作区引入额外模块和传递版本变化，最终必须按产品默认依赖图复验；此时不能宣布默认产品已交付。公开SDK最终事件/Snapshot的私有数据投影修复仍在进行。
+
+## 2026-09-28 09:17 同帧签名修复交接
+
+隔离Gemini副本conv.go新增同响应signature-only附着当前最后有效块，新增signature_parts_test.go真实Stream→Concat→JSON→下一次HTTP往返三类打包红绿覆盖。主线程已读实际分支，正独立运行Windows离线race十轮；产品复制任务仍运行中，待其交接后必须同步conv.go、新测试及PATCH_NOTES，不能把旧私有副本当最新补丁。
+
+本轮Linux独立复验尝试在WSL启动阶段返回Wsl/Service/E_UNEXPECTED，Go测试未启动，工具未显示明确数值退出码；不记Linux最新签名补丁race通过，不以此前补丁版本的Linux绿测替代。未重启WSL以免打断并行验证。公开投影修复和产品工厂接线仍在进行。
+
+## 2026-09-28 09:10 补丁独立审查与Linux复验
+
+Linux实际 `GOWORK=/mnt/d/Code/owner_agents/eino-ext-p2-fixes/p2-validation.work go test -race ./internal/llm -run TestP2FixedAdapter -count=10 -timeout=180s` 退出0；仍是临时工作区依赖证据，不能代表正式默认依赖。WSL输出存在编码显示问题，不据乱码推断额外通过项。
+
+独立审查发现两项验收阻塞：Claude块级Extra在内部持久化及模型回放可保留，但message.finalized与Snapshot目前使用完整消息，私有opaque可能被公开；Gemini同一响应parts中的functionCall后signature-only分块可能丢签名或错索引，现有独立帧测试未覆盖。已分别安排真实Session公开投影红测及完整HTTP同帧签名往返红测后修复；内部回放必须保真，不删除私有记录。正式补丁副本尚在准备，Gemini后续修复需同步后才验收。不宣称现有十轮绿测覆盖这些新发现。
+
+## 2026-09-28 09:08 补丁正式交付方式确认
+
+维护者选择将两个适配器的必要源码作为仓库内私有补丁副本，保留许可证与准确来源，由产品直接引用；不发布远程fork。原因是依赖模块的replace不会自动传递给外部SDK消费者，临时GOWORK绿测不构成可分发修复。开始在internal/llm下隔离供应商适配责任，复制最小生产闭包并记录基线及后续回归上游条件，不修改Eino核心，不用本地绝对replace。
+
+另已核实WSL Ubuntu-24.04可直接运行go1.27.0，已启动Linux实际产品固定协议race十轮，不沿用此前“只有Go1.22”的环境报告。Gemini产品工厂仍有旧的函数工具拒绝逻辑，单独执行先红后绿的产品工厂接线验证；正式副本与工厂尚未整合，不宣称默认依赖或全仓已通过。
+
+## 2026-09-28 08:53 上游补丁与产品红测独立验证
+
+隔离eino-ext副本基线3603a39473c3e7b2aa3bfc11216487c94b8c7fd9，匹配Gemini v0.2.5及Claude v0.1.7。补丁保留真实调用ID/请求回传/独立流式索引，以及Claude redacted块Extra和JSON回放；没有改Eino核心或产品go.mod/sum。主线程审查转换差异后，通过副本内临时p2-validation.work显式GOWORK注入两模块，执行产品原测试 `go test -race ./internal/llm -run TestP2FixedAdapter -count=10 -timeout=180s` 退出0（包1.442s）。历史红测未删除，首次在补丁依赖下转绿。
+
+此结果仅证明临时开发工作区下定向契约通过，不代表默认依赖已修复；go.work还可能影响模块版本选择，正式接入须核对依赖图并固定可复现来源。独立审查正在核查流式合并、空Reasoning/Extra持久化与公开投影不泄漏。正式依赖集成、完整门禁和Linux race仍待完成，macOS继续延期不记PASS；未提交推送或发布PR。
+
+## 2026-09-28 08:31 最小上游适配补丁获准
+
+维护者批准以效果优先修复Gemini/Claude适配器，允许必要的临时fork作为此前“不维护fork”的限定例外。优先修复eino-ext转换层并复用原SDK，不修改Eino核心，不伪造供应商ID，不丢弃必需私有回放数据。仅从转换后结果无法恢复的数据，可能通过修复接收与发送两端解决；此前“薄适配绝对无法恢复”的表述过强，保留历史调查但不视为所有方法均已排除。
+
+实施先在隔离上游副本验证真实红测与补丁，不修改Go模块缓存。记录基线、许可证、补丁和切回上游条件；最终依赖必须可复现且无本地绝对路径replace。未经另外明确授权不提交、推送或发布PR。当前仅批准方法，不代表已修复或P2完成；原计划文件不修改。
+
+## 2026-09-28 08:03 两项范围阻塞调查结论
+
+Gemini/Claude专项调查完成但未修改代码。固定 `agenticgemini v0.2.5` 已丢弃供应商 FunctionCall.ID、回放ID及跨帧独立调用身份；固定 `agenticclaude v0.1.7` 已在适配器转换阶段丢弃 `redacted_thinking`，流式路径也无分支。当前产品工厂已对Gemini函数工具内容请求前拒绝；不能在internal/llm伪造供应商ID、拼造redacted内容或修改Eino/fork。两个固定适配器红测继续保留，协议步骤不能宣称完成；需要升级依赖、上游未发布修复或范围调整才能继续。
+
+内建工具调查确认生产路径已有 `write_file`/`edit_file`/`write_todos`/`ls`/`glob`/`grep` 接线，但真实验收缺口需要扩展SDK别名暴露的 `ListRequest`（分页上限）和 `SearchRequest`（glob/grep模式及匹配限额）契约；当前testkit List/Search明确unsupported，且文件操作错误码投影不足以断言版本冲突/模式错误。因用户规则要求发现公开契约变化先停止，任务未自行修改。需确认公开字段迁移后才能补真实后端和消费者测试。
+
+
+
+主线程执行 `go test ./... -count=1 -timeout=300s` 退出1（34.485s）。除internal/llm固定协议红测外，cmd、agent、eino、tools、architecture、sessions、state、store、testkit、sdk均通过。失败仍为Gemini v0.2.5工具调用ID/跨帧独立调用丢失，以及Claude v0.1.7 redacted_thinking生成/流式/回放丢失；协议修复任务已启动，不能以局部绿测或删除红测收口。
+## 2026-09-28 Open审批创建时机修复交接
+
+主线程复核生产接线：Start不再重建审批，prepareApprovalResume只在显式Resume受理后的原GenResume回调调用；安全暂停后的bindApprovalCheckpoint只绑定已有问题，不创建历史问题。跨实例应按Open→Resume→新询问→Respond→Resume使用。tool_intent分支在同一mailbox内先checkToolPolicy再claimRuntimeApproval，未发现跨mailbox的有效期窗口；新增过期/撤销屏障测试覆盖先前授权失效后零intent、零额度和零执行。
+
+实现报告Open可写/只读两分支先红后绿、Windows/Linux受影响普通/race通过。主线程独立执行三项关键测试 `go test -race ./internal/sessions -run 'TestApprovalDiskOpenDoesNotAskOrWrite|TestApprovalClaimRechecksExpiryAndPolicyAfterAuthorization|TestApprovalReopenExplicitResumeWithoutAnswerWaitsAgain' -count=20 -timeout=240s` 退出0（包耗时51.766s），覆盖打开零审批、授权后过期/撤销以及重开显式恢复重新询问。该专项通过不替代完整审批/P2验收。
+
+## 2026-09-28 审批迁移交接与独立审查缺口
+
+审批请求/决定/回执已移至sessions运行实例内存，持久claim仍保存执行意图和预算，checkpoint仅保存原调用中断目标。交接报告Windows/Linux受影响包通过，但主线程审查发现session.go初始化直接restoreApprovalRequests，会在Open时创建新待审批项，与已确认的“Open不询问，仅显式Resume后按需重新询问”不符。已要求先补磁盘Open/read-only快照零新审批红测，再迁移创建时机，保留原GenResume与防重跑约束。原审批待办继续in_progress，不能据局部绿测关闭。
+
+同时要求核查一次许可有效期在原子claim所在mailbox边界的检查，防止此前策略检查与真正claim之间过期。主线程已启动现有审批专项race独立复验，后续修复仍需重跑。全仓Gemini/Claude缺口尚未解决，macOS按已批准延期，不作为本轮需重复确认的事项；最终漏洞检查使用已固定v1.8.0，不因PATH缺工具跳过。
+
+## 2026-09-28 公开读取后端迁移验证交接
+
+完整快照契约注释及05/06迁移说明已补充。新增SDK外部消费者通过CreateAgentSession→SubmitInput→模型read_file→注入后端验证行/byte真实续读与版本冲突；主线程已审查测试，确认正常路径模型3次、Read/Open各2次，冲突路径Read2次/Open1次，持久观察检查完整JSON及state_conflict，而非仅直接调用fixture接口。消费者未导入internal；模型夹具因公开模型接口签名依赖Eino类型，仍有Eino导入，不宣称整个消费者只有sdk一个第三方依赖。
+
+实现报告Windows/Linux定向普通/race十轮及独立consumer测试通过；主线程独立执行 `go test -race ./sdk/testdata/consumer -run TestSDKConsumerReadSnapshotThroughSession -count=10 -timeout=120s` 退出0（包耗时38.941s），公开读取后端迁移的十轮竞态复验通过。实际宿主旧后端仍须迁移，macOS未认证，Step16其他文件工具及TODO能力尚未验收，不关闭原待办。
+
+## 2026-09-28 文件读取契约迁移获准
+
+维护者在明确得知旧后端预裁剪会导致重复截取、ReadRequest新增Mode会影响无字段名结构体字面量后，选择允许调整读取契约，要求现有注入后端迁移为完整快照语义。这是独立于ExecuteCommand的限定兼容性例外：内建read_file发送lines/bytes，FileOperations.Read返回完整、版本稳定的不可变快照引用，由工具层投影范围；后端不得按Offset/Limit先裁剪该快照。须保留授权/版本检查，旧后端迁移和公开消费者验证仍待完成，不能把批准当验收通过。
+
+字节模式2000行限额及末尾无换行计数已有实现交接，主线程独立 `go test -race ./internal/agent/tools ./internal/testkit/operations -run Read -count=10 -timeout=120s` 退出0，两包耗时分别4.755s、1.384s。该结果覆盖读取双限额及续页回归，不替代尚待完成的公开SDK消费者迁移验证或Step16其他能力验收。
+
+## 2026-09-28 读取实现交接与需求复核
+
+读取范围实现已接入 Executor 的 Read→受控快照 Open→有界投影路径；主线程读取 read.go 后发现 bytes 分支虽统计换行却未执行2000行上限，尚不满足 Step16 的行/字节双限额。已要求先补真实 Executor 超过2000短行且小于50KiB的红测，再修复并验证 nextRead 版本、偏移及无丢失续读；Step16不关闭。交接报告中的 Windows/Linux 局部通过不能替代这一缺口验收。报告曾使用 govulncheck@latest，不纳入最终固定工具证据，最终仍需按v1.8.0执行。
+
+Responses 裸上游探针已改为v0.2.4已知行为刻画，保留单次HTTP、item身份、完成状态和请求约束；产品完整回放断言不变。主线程独立 `go test -race ./internal/llm -run 'TestP2FixedAdapterResponses|TestResponsesReasoning|TestP2OpenAIResponses' -count=10 -timeout=120s` 退出0（2.007s）。Include属于私有推理回放字段，不能直接将缓存参数的能力门禁套用于它。后续只读核对确认 Step18 的能力限制针对缓存键/保留参数，不要求 encrypted_content 独立 opt-in；保留工厂显式 Include、store=false 和完整回放，不新增公开能力常量。先前“无条件 Include 违反门禁”的判断撤回。官方字段允许 nullable，服务端未返回签名不能一概判为错误；对于确实必需但漏返的私有回放数据，当前 Generate/Stream 尚缺明确条件与拒绝接纳的验收证据，单列待核实，不据此宣称完整 Responses 协议已认证。
+
+## 2026-09-28 Responses 推理回放独立复验
+
+Responses 实现交接后，主线程审查 responses.go/transport.go/usage_body.go 的实际接线：使用请求私有采集器原字节透传，真实 item ID 关联 reasoning，完整终态后补一次私有签名；store=false、关闭自动状态链保持。主线程独立 `go test -race ./internal/llm -run 'TestP2FixedAdapterResponsesEncryptedContentReplay|TestResponsesReasoning|TestP2OpenAIResponses' -count=10 -timeout=120s` 退出0（包耗时2.159s）。这是产品定向回归，不是全仓或五协议认证。
+
+审查另发现新增裸上游 done-only 探针被刻意留作默认失败：本产品薄适配已修复的缺陷，应保留历史红证据，并将裸上游探针改为固定版本行为刻画，同时保留产品工厂完整回放的强断言；已安排修正，不删除尚未修复的 Gemini/Claude 产品缺口红测。请求 include 的能力边界继续核查。实现报告中的全仓/live 检查失败，不构成通过证据；审批迁移稳定后须重新验收。
+
+## 2026-09-28 审批生命周期再次确认与实施恢复
+
+维护者在本轮执行前明确选择：一次性审批仅存当前运行实例内存，关闭后失效，不随会话历史恢复；工具执行意图、原子预算与调用 claim、结果和 unknown 限制仍须持久保存。此确认取代附带旧计划 Step14 的审批决定持久恢复要求，不修改原计划文件。尚未执行的调用显式恢复时重新判断权限并按需询问；已完成结果复用，未知效果不得因重新审批而重跑；Open 不执行也不重新弹出历史审批。用户 ExecuteCommand 独立免审批不变。本会话可复用授权、永久授权规则不因本次调整自动纳入实现。
+
+已重新打开原 p2-approval-reconcile 待办进行迁移与回归，p2-builtins-selection 保持进行中；不新增重复待办。实际 Git 分支 feat/p0-p1-runtime，现有未提交修改保留。本轮先复用已存在的运行期审批与文件读取测试，确认红测后实施，尚无本轮通过证据，不宣称 P2 完成。未提交、未推送。
+
+本轮协议复验 `go test ./internal/llm -run 'TestP2FixedAdapter|TestResponsesReasoning' -count=1 -timeout=60s` 退出 1（1.032s）：responses_reasoning.go 五处引用 UsageCollector.responses，但该字段尚未接入，属于当前工作区编译失败，测试未执行。已安排补齐 Responses 推理回放接线并验证真实 HTTP 路径，不能将编译修复代替协议行为验收。
+
+## 2026-09-27 18:25 Linux 模型重绑复验失败
+
+主线程 Linux `go test -race ./internal/sessions -run P2ModelSwitch -count=10 -timeout=600s` 退出1：TestP2ModelSwitchDiskRebindAcceptedModelPreservesBuild/A 在 selection_rebind_test.go:165 复合断言失败（完成状态、模型/工具次数、checkpoint相等）。当前输出没有逐字段信息，不能推断重复执行或活动续期是原因。已安排保留原断言/等待限制，先补安全诊断并Linux专项复现，再按证据修复。此前Windows定向通过不覆盖此次失败，Step17继续未完成。
+
+## 2026-09-27 18:22 回执重放修复交接
+
+实现报告同键回执回归已修复：无效候选只使可选进程内重绑不生效，不改变历史回执；后续Resume仍拒绝缺失有效模型。默认next_trace与下一轮next_turn分别按原摘要校验并支持重绑，不替换实例或较新的默认选择。主线程已核对两个FindOperation分支均返回原receipt/err，不再返回重绑错误，并启动Linux `go test -race ./internal/sessions -run P2ModelSwitch -count=10 -timeout=600s` 独立复验，结果待收集。
+
+新增组合断言覆盖原Scope/FrozenCall/checkpoint/调用集合；报告A→B最终usage为3/3/2，默认B为2/2/1，定向Windows普通及race十轮通过。无键或缺原请求历史仍缺恢复绑定，Step17不关闭；固定adapter协议红测仍未修，不能称全仓通过。
+
+## 2026-09-27 18:07 独立复核后续
+
+独立复核通过pending首次重开内容校验及有键next-turn B重绑路径，但确认新增重绑失败会截断原历史回执，违反同键同内容重放契约。已安排先红测再修复：重复请求仍返回原回执，不合格实例不绑定，Resume继续明确拒绝；不改变已有实例、默认选择或持久状态。补实际组合的完整Scope/FrozenCall/调用数量和usage断言，以及默认B选择的重开路径。默认选择、无幂等键/缺原请求恢复不能借next-turn测试宣称通过；无键公共重绑契约仍未批准。
+
+## 2026-09-27 18:04 选择恢复修复交接（待独立复核）
+
+实现报告：首次重开前修改pending名称/版本/模型身份的三项真实JSONL红测已修复，选择内容重算原operation摘要，工具版本对照受信generation定义，不仅比较同源View。A→B实际执行并审批暂停的磁盘恢复，通过保持Options.Model=A并重放原SelectNextTurnModel及幂等键重新绑定受信B实例；仅恢复缺失的进程内绑定，不追加revision、不替换已有实例、不放宽build指纹。报告选择普通/race各十轮退出0，主线程已安排原审查者独立复核，不能据报告直接关闭Step17。
+
+无幂等键或无法重放原请求的历史选择仍缺模型重绑路径，新增按operation ID绑定入口尚未批准；这是明确未完成边界，不称所有跨模型重开均可恢复。全仓协议默认红测仍在，完整门禁未通过。
+
+## 2026-09-27 17:59 固定协议适配器真实红测
+
+新增默认测试 internal/llm/p2_fixed_adapter_protocol_test.go，真实固定依赖+本地HTTP夹具共5个测试/10个叶用例，8失败、2对照通过。Gemini同步/流式响应和回放ID丢失、跨帧两个独立调用合并为1；Responses仅output_item.done携带的encrypted_content未保留/回放（同步及added阶段对照通过）；Claude redacted_thinking同步/流式丢失且未回放，普通thinking签名对照成立。离线 `go test -mod=readonly ./internal/llm -run '^TestP2FixedAdapter' -count=1 -timeout=45s -v` 退出1；不是产品五协议交付绿测，当前默认套件含明确未解决红测。
+
+本地上游副本未发现修复，不代表远端无修复。主线程正在只查询三个适配器远端latest元数据，不修改go.mod/sum、不改模块源码、不引入fork或伪造供应商ID。查明可用版本与兼容性后再确定修复方法，不能通过删除失败断言或改为skip宣称P2完成。
+
+## 2026-09-27 17:51 五协议剩余交付核查
+
+只读源码调查确认五协议工厂已存在，但 Steps18–21 未完成：Gemini 固定adapter未保留工具调用/结果ID且跨帧边界需探针，显式缓存生命周期未接线；Responses 加密推理的请求include与流式done回放待补；Claude 显式缓存断点、redacted_thinking回放待补；DeepSeek thinking控制字段和私有签名兼容性、五工厂工具往返统一契约待验证。已有usage presence等覆盖不重复列为缺失。
+
+仅运行 go test -list 的调查结果不是测试通过证据，原计划协议筛选存在未命中。已安排使用固定真实依赖与本地HTTP夹具先复现上游转换缺陷；不改模块缓存、不擅自升级、不修改Eino或维护fork。Gemini缺供应商ID继续明确拒绝，不自行生成供应商身份。修复方法必须保留完整回放、传输计量及既定依赖边界，必要范围变更另行确认。
+
+## 2026-09-27 17:49 用户 shell 日志整合交接
+
+用户 shell 现已复用 PrepareOutputLog/SaveOutputLog，新增 CommandResult.Truncated/Artifact/LogError；实际退出状态先确定，再处理日志，最后提交一条 command 历史，不创建模型调用、审批、预算、票据或投影事实。主线程已读取实际 ExecuteCommand 接线，确认产物绑定使用 Session/host/历史ID，历史提交失败会清除返回引用，保留真实执行结果；不因此重跑。
+
+交付报告的 Windows/Linux 定向普通、race 及 SDK/架构测试退出0；此前真实红测为长输出未截断、未脱敏、零保存及无独立日志错误。完整日志仍依赖注入后端，没有本地持久产物实现；长输出缺脱敏器时隐藏正文并报日志错误。主线程四包十轮日志/用户shell/消费者竞态复验已完成：`go test -race ./internal/agent/tools ./internal/sessions ./internal/testkit/operations ./sdk/testdata/consumer -run 'TestP2Command(Log|Shell)|TestProcessLog|TestProcessOutputIsSaved|TestOutputArtifacts|TestConsumer.*Command' -count=10 -timeout=600s` 退出0，四包均命中测试，耗时分别2.458s、260.271s、1.177s、1.808s；不得将定向测试视为最终全仓验收。其他 Step16 文件语义、TODO 持久化和 Step17 审查缺口仍待完成。
+
+## 2026-09-27 17:47 选择事务独立审查
+
+只读审查确认 BeginTurnID 同ID调用在计数前返回，选择激活、Turn快照和usage通过同一commit提交，执行侧只在成功后更新。但发现两项待修：①checkpoint pending例外只比较同源日志/View，首次Manager创建前篡改pending内容但保留原operation摘要的情况缺少重新核对；②原Options.Model=A，实际切B后暂停，重开时单一Options.Model回退与原build指纹无法同时恢复B。后者是基线已有缺口，不称本次回归。已安排先加真实磁盘失败测试，再最小修复；涉及新增受信模型解析公共配置时须先确认，不以放宽build检查解决。Step17保持进行中。审查定向四包普通测试退出0，不替代尚缺测试或全仓门禁。
+
+## 2026-09-27 17:40 恢复实施
+
+维护者确认余额已恢复。已恢复用户 shell 日志整合及选择事务只读审查，先核对中断前部分文件，不重建原待办。此前 403 保留为历史中断记录，不代表当前仍阻塞，也不代表未完成项目已验收。
+
+SDK 外部文件后端新增默认消费者测试，实际实现 FileOperations 并调用 Write/Edit；初次编译失败明确为缺少公开 sdk.FileEffect。现已在唯一公开生产文件 sdk/sdk.go 补类型别名。随后定向 race 首次重跑遇到并行日志提取中 logNotSaved 重复声明；日志帮助函数提取完成后再次执行 `go test -race ./sdk/testdata/consumer -run TestConsumerCanImplementFileOperations -count=10` 退出 0（1.153s）。这是公开类型可实现性的编译与调用证据，不代替受控文件后端认证，不标 Step22 完成。
+
+## 2026-09-27 17:05 执行中断与恢复交接
+
+用户 shell 日志整合及选择激活/恢复的独立审查均因执行服务返回 HTTP 403 / INSUFFICIENT_BALANCE 中断。这是开发服务不可用，不是项目模型测试失败；两项不能标记完成，不反复重试、不自行更换账号或服务。已有工作区改动保留，下一次继续须先核对中断任务是否留下部分修改，再完成用户 shell 日志接线、选择独立审查和稳定代码全仓门禁。P2 仍未完成，本轮未提交推送。
+
+隐藏工具复用调查已复核测试差异：通过手动时钟隔离无关活动续期，原全局序号、调用/预算/身份断言均保留，并增加完整 View 相等断言。确定性续期实验仅新增一条 trace 记录，能使原全局序号断言失败；这不能证明原 Linux 偶发失败必然同因。报告的 Windows/Linux `go test -race ./internal/sessions -run '^(TestSelectionHidden|TestActivity)' -count=20` 均退出 0（108.747s/104.499s），不替代主线程全仓验收。
+
+主线程 Linux 选择专项 `-run P2Selection -race -count=10` 退出 0；日志专项四包 `-run ProcessLog -race -count=10` 退出 0，但仅 tools/sessions 命中测试，state/testkit 未命中不记通过。模型进程日志已接线的结果不等于用户 shell 日志整合已完成。
+
+## 2026-09-27 16:05 继续实施：ExecuteCommand 契约迁移已批准
+
+维护者明确选择直接修改现有 ExecuteCommand 为用户 shell，不新增 ExecuteShell、不保留任意登记工具调用入口；旧请求字段及持久化操作回执可按新语义迁移。这是对先前 SDK 源兼容约束的限定例外，模型工具与其他公开 API 不变。实现及整体验证仍在进行，不能据此标 Step 16/22 完成。
+
+日志预览已取得两个真实红测：超长单行返回 Truncated=false；尾部按字节丢弃前行后 StartLine/EndLine 仍使用旧位置。最小修复后 `go test ./internal/agent/tools -run TestPreview -count=1` 退出 0；新增头尾合并预览的初始失败为缺少新函数的编译红，不算既有行为红。`go test -race ./internal/agent/tools -run TestPreview -count=10` 退出 0（1.173s）。PreviewHeadTail 保留短输出原文，长输出的标记、头尾共同受行/字节限额约束；尚需接入最终输出链路，函数测试不替代产品验收。
+
+外部 SDK 新增 `TestConsumerExecuteCommandIsUserShell`：只 import sdk，以工作区外的显式 cwd 两次调用新 CommandRequest，断言各执行一次、真实退出、模型调用 0、历史已保存，并显式使用公开 CommandResult。首次两次编译失败来自迁移中残留 directBuildFingerprint；清理该旧分支后 Windows 普通和 race10 均退出 0（race 1.532s），Linux 实际 race10 退出 0（1.191s）。Windows `go test -race ./internal/sessions -run 'TestP2CommandShell|TestP2CommandLegacy' -count=10 -timeout=180s` 退出 0（16.120s）；Linux `-run TestP2Command -count=10` 退出 0。以上是迁移中定向证据，仍需稳定代码全仓门禁；其他并行 Step16/17 红测尚未解决前不宣称全仓通过。
+
+另以真实 Executor 红测复现 read_file 的 version 参数未传入 FileOperations.Read（实际为空），按读版本优先、兼容旧 ExpectedVersion 的最小修复后 `go test -race ./internal/agent/tools -run TestBuiltinReadFile -count=10` 退出 0（1.382s）。读取的完整模式/续读元数据验收仍未完成。
+
 ## 2026-09-27 15:38 范围变更记录：用户 shell 与日志简化
 
 维护者确认：只有用户直接 shell 脱离工具审批、Agent 预算、执行票据、工作区访问限制和持久化执行去重；模型/受控工具全部保留现有保护。用户 shell 仍有初始 cwd、输出、退出码、超时、主动取消及真实退出状态，不自动重试/恢复；来源必须由受信宿主入口建立。日志按 Zero 式短输出直返、超长尽力保存脱敏全文及头尾预览，保存失败不改原结果、不重跑，不新增日志审批/独立票据。

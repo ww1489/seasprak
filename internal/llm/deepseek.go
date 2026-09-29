@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/cloudwego/eino-ext/components/model/agenticdeepseek"
+	"github.com/cloudwego/eino-ext/libs/acl/openai"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
@@ -21,8 +22,18 @@ func (c *Catalog) RegisterDeepSeekChat(client *http.Client, maxResponseBytes int
 		if !r.Config.NoCredentials && !ok {
 			return nil, invalid("DeepSeek request credential missing")
 		}
+		if r.Options.ThinkingBudgetTokens != 0 {
+			return nil, unsupported("DeepSeek independent thinking budget is not supported")
+		}
+		thinking := r.Options.NativeThinking
 		if r.Options.EffectiveThinking != "" {
-			return nil, unsupported("DeepSeek thinking control is not exposed by the fixed adapter")
+			want := "enabled"
+			if r.Options.EffectiveThinking == "off" {
+				want = "disabled"
+			}
+			if thinking != want {
+				return nil, unsupported("DeepSeek thinking mapping must match its native toggle")
+			}
 		}
 		maxTokens := r.Options.MaxOutputTokens
 		inner, err := agenticdeepseek.New(ctx, &agenticdeepseek.Config{
@@ -35,13 +46,24 @@ func (c *Catalog) RegisterDeepSeekChat(client *http.Client, maxResponseBytes int
 		if err != nil {
 			return nil, err
 		}
-		return &deepSeekModel{inner: inner, secret: auth.Secret}, nil
+		return &deepSeekModel{inner: inner, secret: auth.Secret, thinking: thinking}, nil
 	})
 }
 
 type deepSeekModel struct {
-	inner  Model
-	secret string
+	inner    Model
+	secret   string
+	thinking string
+}
+
+// thinkingOptions uses the fixed ACL client's extension point; DeepSeek's
+// thinking.type toggle is distinct from OpenAI reasoning_effort.
+func (m *deepSeekModel) thinkingOptions(opts []model.Option) []model.Option {
+	if m.thinking == "" {
+		return opts
+	}
+	out := append([]model.Option(nil), opts...)
+	return append(out, openai.WithExtraFields(map[string]any{"thinking": map[string]any{"type": m.thinking}}))
 }
 
 func (*deepSeekModel) UsesObservedTransport() bool { return true }
@@ -82,7 +104,7 @@ func normalizeDeepSeekFinish(msg *schema.AgenticMessage) (string, string, error)
 func (m *deepSeekModel) Generate(ctx context.Context, in []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
 	capture := &usageCapture{}
 	requestCtx := withUsageCapture(ctx, capture)
-	msg, err := m.inner.Generate(requestCtx, in, opts...)
+	msg, err := m.inner.Generate(requestCtx, in, m.thinkingOptions(opts)...)
 	if err != nil {
 		return nil, safeModelError(err)
 	}
@@ -98,7 +120,7 @@ func (m *deepSeekModel) Stream(ctx context.Context, in []*schema.AgenticMessage,
 	requestCtx, cancel := context.WithCancel(ctx)
 	capture := &usageCapture{}
 	requestCtx = withUsageCapture(requestCtx, capture)
-	inner, err := m.inner.Stream(requestCtx, in, opts...)
+	inner, err := m.inner.Stream(requestCtx, in, m.thinkingOptions(opts)...)
 	if err != nil {
 		cancel()
 		return nil, safeModelError(err)

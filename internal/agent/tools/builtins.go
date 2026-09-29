@@ -18,12 +18,15 @@ type BuiltinOptions struct {
 	Artifacts agent.ArtifactStore
 }
 
-// NewBuiltinDefinitions returns the stable P2 file/process tool definitions.
+// NewBuiltinDefinitions returns the stable P2 file/process/control tool definitions.
 // Backend availability is checked by Executor immediately before a claim; a
 // definition being visible is not permission to execute it.
 func NewBuiltinDefinitions(_ BuiltinOptions) []Definition {
 	return []Definition{
-		builtinDefinition("ls", "List a directory using the controlled file backend.", `{"type":"object","properties":{"root":{"type":"string"},"cursor":{"type":"string"}},"additionalProperties":false}`, "file-operations", "read", func(raw json.RawMessage, d ExecutionDescription) (ExecutionDescription, error) {
+		{Name: "search_tools", Version: "search-tools-v1", Description: "Search available tools and request activation on the next turn. Use select:name for exact selection; tools remain unavailable in the current batch.", Schema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","minLength":1},"max_results":{"type":"integer","minimum":1,"maximum":100}},"required":["query"],"additionalProperties":false}`), Execution: ExecutionDescription{BackendID: "trusted-run", Effect: "none", Concurrency: "shared"}, Run: func(context.Context, json.RawMessage) (string, error) {
+			return "", fmt.Errorf("session tool search is unavailable")
+		}},
+		builtinDefinition("ls", "List a directory using the controlled file backend.", `{"type":"object","properties":{"root":{"type":"string","minLength":1},"limit":{"type":"integer","minimum":1,"maximum":500}},"required":["root"],"additionalProperties":false}`, "file-operations", "read", func(raw json.RawMessage, d ExecutionDescription) (ExecutionDescription, error) {
 			var in struct{ Root, Cursor string }
 			if err := json.Unmarshal(raw, &in); err != nil || in.Root == "" {
 				return d, fmt.Errorf("root is required")
@@ -32,7 +35,7 @@ func NewBuiltinDefinitions(_ BuiltinOptions) []Definition {
 			d.Effect, d.Concurrency = "read", "shared"
 			return d, nil
 		}),
-		builtinDefinition("read_file", "Read a bounded file range through the controlled file backend.", `{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1},"version":{"type":"string"}},"required":["path"],"additionalProperties":false}`, "file-operations", "read", func(raw json.RawMessage, d ExecutionDescription) (ExecutionDescription, error) {
+		builtinDefinition("read_file", "Read a bounded file range through the controlled file backend.", `{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1},"byteOffset":{"type":"integer","minimum":0},"byteLimit":{"type":"integer","minimum":1},"version":{"type":"string"}},"required":["path"],"not":{"allOf":[{"anyOf":[{"required":["offset"]},{"required":["limit"]}]},{"anyOf":[{"required":["byteOffset"]},{"required":["byteLimit"]}]}]},"additionalProperties":false}`, "file-operations", "read", func(raw json.RawMessage, d ExecutionDescription) (ExecutionDescription, error) {
 			var in struct {
 				Path, Version string
 				Offset, Limit int64
@@ -53,16 +56,16 @@ func NewBuiltinDefinitions(_ BuiltinOptions) []Definition {
 			d.Effect, d.Concurrency = "write", "exclusive"
 			return d, nil
 		}),
-		builtinDefinition("edit_file", "Apply an exact edit through the controlled file backend.", `{"type":"object","properties":{"path":{"type":"string"},"patchRef":{"type":"string"},"expectedVersion":{"type":"string"}},"required":["path","patchRef"],"additionalProperties":false}`, "file-operations", "write", func(raw json.RawMessage, d ExecutionDescription) (ExecutionDescription, error) {
-			var in struct{ Path, PatchRef, ExpectedVersion string }
-			if err := json.Unmarshal(raw, &in); err != nil || in.Path == "" || in.PatchRef == "" {
-				return d, fmt.Errorf("path and patchRef are required")
+		builtinDefinition("edit_file", "Apply an exact edit through the controlled file backend.", `{"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string","minLength":1},"new_string":{"type":"string"},"replace_all":{"type":"boolean"},"expectedVersion":{"type":"string"}},"required":["path","old_string","new_string"],"additionalProperties":false}`, "file-operations", "write", func(raw json.RawMessage, d ExecutionDescription) (ExecutionDescription, error) {
+			var in agent.AuthorizedFileEdit
+			if err := json.Unmarshal(raw, &in); err != nil || in.Path == "" || in.OldString == "" || in.OldString == in.NewString {
+				return d, fmt.Errorf("path and distinct exact old_string/new_string are required")
 			}
 			d.Resources = []agent.ExecutionResource{{Identity: "path:" + in.Path, ExpectedVersion: in.ExpectedVersion}}
 			d.Effect, d.Concurrency = "write", "exclusive"
 			return d, nil
 		}),
-		builtinDefinition("glob", "Search paths through the controlled file backend.", `{"type":"object","properties":{"root":{"type":"string"},"pattern":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":1}},"required":["root","pattern"],"additionalProperties":false}`, "file-operations", "read", func(raw json.RawMessage, d ExecutionDescription) (ExecutionDescription, error) {
+		builtinDefinition("glob", "Search paths through the controlled file backend.", `{"type":"object","properties":{"root":{"type":"string"},"pattern":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":1000}},"required":["root","pattern"],"additionalProperties":false}`, "file-operations", "read", func(raw json.RawMessage, d ExecutionDescription) (ExecutionDescription, error) {
 			var in struct {
 				Root, Pattern, Cursor string
 				Limit                 int
@@ -74,7 +77,7 @@ func NewBuiltinDefinitions(_ BuiltinOptions) []Definition {
 			d.Effect, d.Concurrency = "read", "shared"
 			return d, nil
 		}),
-		builtinDefinition("grep", "Search file content through the controlled file backend.", `{"type":"object","properties":{"root":{"type":"string"},"query":{"type":"string"},"cursor":{"type":"string"},"limit":{"type":"integer","minimum":1}},"required":["root","query"],"additionalProperties":false}`, "file-operations", "read", func(raw json.RawMessage, d ExecutionDescription) (ExecutionDescription, error) {
+		builtinDefinition("grep", "Search file content through the controlled file backend.", `{"type":"object","properties":{"root":{"type":"string"},"query":{"type":"string"},"glob":{"type":"string"},"case_insensitive":{"type":"boolean"},"output_mode":{"enum":["content","files_with_matches","count"]},"offset":{"type":"integer","minimum":0},"head_limit":{"type":"integer","minimum":1,"maximum":100}},"required":["root","query"],"additionalProperties":false}`, "file-operations", "read", func(raw json.RawMessage, d ExecutionDescription) (ExecutionDescription, error) {
 			var in struct {
 				Root, Query, Cursor string
 				Limit               int

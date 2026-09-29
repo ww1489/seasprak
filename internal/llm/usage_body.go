@@ -45,8 +45,9 @@ type UsageSnapshot struct {
 	MessageStopped bool
 }
 
-// UsageCollector belongs to exactly one HTTP response. It retains at most one
-// bounded JSON document/SSE frame in memory; raw bytes never leave this object.
+// UsageCollector belongs to exactly one HTTP response. It retains one bounded
+// JSON document/SSE frame plus optional, separately bounded protocol metadata.
+// Raw protocol metadata is never exposed through UsageSnapshot.
 type UsageCollector struct {
 	mu           sync.Mutex
 	protocol     string
@@ -58,8 +59,10 @@ type UsageCollector struct {
 	ended        bool
 	previousCR   bool
 	previousLF   bool
-	discardFrame bool            // Skip an oversized frame, but keep observing later terminal events.
-	chat         *chatCollection // Optional fail-closed Chat metadata, under mu.
+	discardFrame bool                          // Skip an oversized frame, but keep observing later terminal events.
+	chat         *chatCollection               // Optional fail-closed Chat metadata, under mu.
+	gemini       *geminiArgumentCollection     // Private exact arguments, under mu.
+	responses    *responsesReasoningCollection // Private Responses replay metadata, under mu.
 }
 
 // NewUsageCollector requires an explicit positive buffer limit supplied by
@@ -132,6 +135,10 @@ func (b *usageReadCloser) Close() error {
 	return err
 }
 func (c *UsageCollector) disable(reason string) {
+	if c.gemini != nil && reason != "invalid_usage_measurement" && reason != "invalid_usage_frame" {
+		c.gemini.invalid = true
+		c.gemini.exhausted = reason == "usage_buffer_limit"
+	}
 	if c.chat != nil {
 		c.chat.invalid = true
 	}
@@ -146,12 +153,14 @@ func (c *UsageCollector) consume(data []byte, readErr error) {
 	// Anthropic terminal evidence must survive disabled usage statistics. Reuse
 	// the same bounded SSE framing; never buffer or decode oversized frames.
 	terminalOnly := c.protocol == "anthropic-messages" && c.format == "sse"
-	if c.ended || (c.disabled && !terminalOnly) {
+	geminiLines := c.gemini != nil && c.format == "sse"
+	captureGemini := c.gemini != nil && !c.gemini.invalid && !c.gemini.closed
+	if c.ended || (c.disabled && !terminalOnly && !captureGemini) || c.gemini != nil && c.gemini.closed {
 		return
 	}
 	// Byte-wise framing avoids a transient allocation proportional to Read size.
 	for _, b := range data {
-		if c.format == "sse" {
+		if c.format == "sse" && !geminiLines {
 			if b == '\n' && c.previousCR {
 				c.previousCR = false
 				continue
@@ -161,7 +170,9 @@ func (c *UsageCollector) consume(data []byte, readErr error) {
 				b = '\n'
 			}
 		}
-		frameEnd := c.format == "sse" && b == '\n' && c.previousLF
+		// The pinned Gemini SDK yields on each data line, before the blank
+		// SSE delimiter. Capture before returning that same Read to its scanner.
+		frameEnd := c.format == "sse" && b == '\n' && (geminiLines || c.previousLF)
 		c.previousLF = b == '\n'
 		if c.discardFrame {
 			if frameEnd {
@@ -193,12 +204,12 @@ func (c *UsageCollector) consume(data []byte, readErr error) {
 			c.parseSSE(c.buffer)
 			clear(c.buffer)
 			c.buffer = c.buffer[:0]
-			if c.disabled && !terminalOnly {
+			if c.disabled && !terminalOnly && !captureGemini {
 				break
 			}
 		}
 	}
-	if c.disabled {
+	if c.disabled && !captureGemini {
 		if readErr != nil {
 			clear(c.buffer)
 			c.buffer = nil
@@ -239,6 +250,9 @@ func (c *UsageCollector) close() {
 func (c *UsageCollector) finish() {
 	if c.format == "json" {
 		c.parseJSON(c.buffer)
+	} else if c.gemini != nil && len(bytes.TrimSpace(c.buffer)) != 0 {
+		// bufio.ScanLines also emits the final unterminated data line at EOF.
+		c.parseSSE(c.buffer)
 	} else if len(bytes.TrimSpace(c.buffer)) != 0 {
 		c.disable("incomplete_sse_frame")
 	}
@@ -318,6 +332,12 @@ type geminiUsage struct {
 }
 
 func (c *UsageCollector) parseJSON(data []byte) {
+	if c.gemini != nil {
+		c.collectGeminiArguments(data)
+	}
+	if c.responses != nil {
+		c.collectResponsesReasoning(data)
+	}
 	if c.chat != nil {
 		c.collectChat(data)
 	}

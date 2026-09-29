@@ -95,7 +95,8 @@ type CheckpointRef struct {
 	LeafID                 string               `json:"leafId"`
 	HistoryCommit          uint64               `json:"historyCommit"`
 	ExtensionStateCommit   uint64               `json:"extensionStateCommit"`
-	InteractionIDs         []string             `json:"interactionIds,omitempty"`
+	InteractionIDs         []string             `json:"interactionIds,omitempty"`  // Legacy recovery identities only.
+	ApprovalTargets        map[string]string    `json:"approvalTargets,omitempty"` // Original call ID to Eino interrupt target; never permission.
 	EinoVersion            string               `json:"einoVersion"`
 	CodecVersion           string               `json:"codecVersion"`
 	BuildCompatibility     string               `json:"buildCompatibility"`
@@ -120,6 +121,14 @@ func (m *Manager) SaveRecords(ctx context.Context, expectedRevision uint64, reco
 	if expectedRevision != m.view.LastSeq {
 		return product.NewError(product.CodeStateConflict, "session revision changed")
 	}
+	if len(records.Approvals) != 0 {
+		return product.NewError(product.CodePermissionDenied, "approval permissions are runtime-only")
+	}
+	for _, in := range records.Interactions {
+		if in.Kind == "approval" {
+			return product.NewError(product.CodePermissionDenied, "approval requests are runtime-only")
+		}
+	}
 	var controls []store.Record
 	for _, r := range records.ModelAttempts {
 		controls = append(controls, record("model_attempt", r.ID, r))
@@ -132,9 +141,6 @@ func (m *Manager) SaveRecords(ctx context.Context, expectedRevision uint64, reco
 	}
 	for _, r := range records.Interactions {
 		controls = append(controls, record("interaction", r.ID, r))
-	}
-	for _, r := range records.Approvals {
-		controls = append(controls, record("approval", r.ID, r))
 	}
 	for _, r := range records.Checkpoints {
 		controls = append(controls, record("checkpoint_ref", r.ID, r))

@@ -216,6 +216,7 @@ func (m *ValidatedModel) requestContext(ctx context.Context) (context.Context, e
 		return ctx, product.NewError(product.CodeBudgetExhausted, "model budget exhausted")
 	}
 	request := llm.RequestIdentity{ModelCallID: identity.ModelCallID, AttemptID: identity.ID, Purpose: "agent"}
+	ctx = llm.WithSessionCacheScope(ctx, ScopeFromContext(ctx, m.scope).SessionID)
 	return llm.WithRequestObservation(ctx, request, m.budg), nil
 }
 

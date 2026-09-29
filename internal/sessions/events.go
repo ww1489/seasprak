@@ -20,6 +20,8 @@ type ResumeEligibility struct {
 }
 
 type Snapshot struct {
+	ModelAttempts    map[string]ModelAttemptView
+	Observations     map[string]ObservationView
 	Revision         uint64
 	Resume           map[string]ResumeEligibility
 	Interactions     map[string]state.Interaction
@@ -273,8 +275,8 @@ func (rt *runtime) publishToolOutput(ctx context.Context, scope agent.ExecutionS
 }
 
 func (rt *runtime) publishCommitted() {
-	v := rt.manager.View()
-	for _, ev := range v.Events {
+	events, _ := rt.manager.EventsAfter(rt.cursor)
+	for _, ev := range events {
 		if ev.DurableSeq == nil || *ev.DurableSeq <= rt.cursor {
 			continue
 		}

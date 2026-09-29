@@ -8,12 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloudwego/eino-ext/components/model/agenticclaude"
 	"github.com/cloudwego/eino/schema"
 	"github.com/ww1489/seasprak/internal/agent"
 	"github.com/ww1489/seasprak/internal/config"
 	product "github.com/ww1489/seasprak/internal/errors"
 	"github.com/ww1489/seasprak/internal/llm"
+	"github.com/ww1489/seasprak/internal/llm/einoext/agenticclaude"
 )
 
 func TestP2TransportClaudeSDKAttemptsShareThreeRequests(t *testing.T) {

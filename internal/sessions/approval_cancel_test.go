@@ -96,7 +96,7 @@ func TestApprovalCurrentPolicyAndExpiryRejectBeforeResume(t *testing.T) {
 					t.Fatal(err)
 				}
 			} else {
-				expiry := f.manager.View().Interactions[response.InteractionID].ExpiresAt
+				expiry := approvalSnapshot(t, f.s).Interactions[response.InteractionID].ExpiresAt
 				clock := &manualActivityClock{now: expiry}
 				if err := f.s.rt.do(t.Context(), func(rt *runtime) error { rt.clock = clock; return nil }); err != nil {
 					t.Fatal(err)

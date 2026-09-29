@@ -67,9 +67,10 @@ type SummaryMessage struct {
 }
 
 type CommandMessage struct {
-	Name    string          `json:"name"`
-	Content json.RawMessage `json:"content,omitempty"`
-	Result  json.RawMessage `json:"result,omitempty"`
+	ExcludeFromContext bool            `json:"excludeFromContext,omitempty"`
+	Name               string          `json:"name"`
+	Content            json.RawMessage `json:"content,omitempty"`
+	Result             json.RawMessage `json:"result,omitempty"`
 }
 
 type OpaqueMessage struct {

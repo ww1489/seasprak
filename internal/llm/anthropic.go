@@ -6,11 +6,11 @@ import (
 	"net/http"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/cloudwego/eino-ext/components/model/agenticclaude"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/cloudwego/eino/schema/claude"
 	product "github.com/ww1489/seasprak/internal/errors"
+	"github.com/ww1489/seasprak/internal/llm/einoext/agenticclaude"
 )
 
 // RegisterAnthropicMessages installs the direct Anthropic Messages adapter.
@@ -47,13 +47,6 @@ func (c *Catalog) RegisterAnthropicMessages(client *http.Client, maxResponseByte
 			}
 			config.Thinking = thinking
 		}
-		if r.Options.ActiveCache {
-			cache, err := anthropicCache(r.Options.CacheIntent)
-			if err != nil {
-				return nil, err
-			}
-			config.CacheControl = cache
-		}
 		inner, err := agenticclaude.New(ctx, config)
 		if err != nil {
 			return nil, err
@@ -63,6 +56,9 @@ func (c *Catalog) RegisterAnthropicMessages(client *http.Client, maxResponseByte
 }
 
 func anthropicThinking(options EffectiveOptions) (*anthropic.ThinkingConfigParamUnion, error) {
+	if (options.EffectiveThinking == "off") != (options.NativeThinking == "none") {
+		return nil, unsupported("Anthropic thinking mapping cannot honor off")
+	}
 	switch options.NativeThinking {
 	case "none":
 		value := anthropic.ThinkingConfigParamUnion{OfDisabled: &anthropic.ThinkingConfigDisabledParam{}}
@@ -84,7 +80,7 @@ func anthropicCache(intent string) (*anthropic.CacheControlEphemeralParam, error
 	cache := anthropic.NewCacheControlEphemeralParam()
 	switch intent {
 	case "short":
-		cache.TTL = anthropic.CacheControlEphemeralTTLTTL5m
+		// Match pi: omit TTL and use the provider's short-retention default.
 	case "long":
 		cache.TTL = anthropic.CacheControlEphemeralTTLTTL1h
 	default:
@@ -168,6 +164,10 @@ func (m *anthropicMessagesModel) Generate(ctx context.Context, in []*schema.Agen
 	if err := m.validateThinking(opts); err != nil {
 		return nil, err
 	}
+	in, opts, err := anthropicCacheRequest(in, opts, m.options)
+	if err != nil {
+		return nil, err
+	}
 	capture := &usageCapture{}
 	requestCtx := withUsageCapture(ctx, capture)
 	msg, err := m.inner.Generate(requestCtx, in, opts...)
@@ -184,6 +184,10 @@ func (m *anthropicMessagesModel) Generate(ctx context.Context, in []*schema.Agen
 
 func (m *anthropicMessagesModel) Stream(ctx context.Context, in []*schema.AgenticMessage, opts ...model.Option) (*schema.StreamReader[*schema.AgenticMessage], error) {
 	if err := m.validateThinking(opts); err != nil {
+		return nil, err
+	}
+	in, opts, err := anthropicCacheRequest(in, opts, m.options)
+	if err != nil {
 		return nil, err
 	}
 	requestCtx, cancel := context.WithCancel(ctx)

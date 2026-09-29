@@ -82,8 +82,16 @@ func ResolveOptions(config ModelConfig, requested RequestedOptions) (EffectiveOp
 	}
 	out := EffectiveOptions{RequestedThinking: requested.Thinking, RequestedCacheIntent: requested.CacheIntent, Version: config.Parameters.PolicyVersion, ImplicitCacheMayApply: true}
 	fail := func(err error) (EffectiveOptions, error) { return EffectiveOptions{}, err }
-	if requested.ServerSideEffects || requested.StatefulContinuation || requested.ExplicitCacheResource || requested.AutoFailover {
+	if requested.ServerSideEffects || requested.StatefulContinuation || requested.AutoFailover {
 		return fail(unsupported("requested service-side operation is not enabled"))
+	}
+	if requested.ExplicitCacheResource {
+		if config.Provider != "google" || config.Protocol != "gemini-generate-content" {
+			return fail(unsupported("explicit cache resources are unavailable for this protocol"))
+		}
+		if requested.CacheIntent != "none" && !supported(config.Capabilities.Capability(CapCacheResource)) {
+			return fail(unsupported("explicit cache resource capability is required"))
+		}
 	}
 	if !supported(config.Capabilities.Capability(CapText)) {
 		return fail(unsupported("text capability is required"))
@@ -191,6 +199,24 @@ func ResolveOptions(config ModelConfig, requested RequestedOptions) (EffectiveOp
 	}
 	if out.CacheIntent == "short" && !out.ActiveCache && out.CacheReason == "" {
 		out.CacheReason = "no_verified_active_cache_strategy"
+	}
+	// Gemini retention declarations alone do not authorize creation of billable
+	// server-side cache resources. Ordinary calls keep provider implicit caching.
+	if config.Protocol == "gemini-generate-content" {
+		if requested.ExplicitCacheResource {
+			out.ActiveCache = out.CacheIntent != "none"
+			if !out.ActiveCache {
+				out.CacheReason = "active_cache_disabled_implicit_cache_not_controlled"
+			} else if requested.CacheIntent == "long" {
+				out.CacheIntent = "short"
+				out.CacheReason = "provider_default_retention_long_not_guaranteed"
+			} else {
+				out.CacheReason = "provider_default_retention"
+			}
+		} else if out.ActiveCache {
+			out.ActiveCache = false
+			out.CacheReason = "gemini_explicit_cache_not_requested"
+		}
 	}
 	return out, nil
 }

@@ -116,10 +116,16 @@ type TurnRecord struct {
 }
 
 type ToolObservation struct {
-	Status     string
-	Content    string
-	SideEffect string
-	Executed   bool
+	Status         string
+	Content        string
+	SideEffect     string
+	Executed       bool
+	Process        bool
+	ExitCode       int
+	Terminated     bool
+	ExecutionError string
+	Truncated      bool
+	LogError       string
 }
 
 type ToolRecord struct {
@@ -127,6 +133,7 @@ type ToolRecord struct {
 	Scope       ExecutionScope
 	Claimed     bool
 	Observation *ToolObservation
+	Projection  *ToolOutputProjection
 }
 
 // ToolCallSource resolves accepted calls and prevents replaying an occupied execution.

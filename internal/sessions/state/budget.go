@@ -12,6 +12,10 @@ import (
 func (m *Manager) SaveTraceBudget(ctx context.Context, id string, usage agent.Usage) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.saveTraceBudget(ctx, id, usage, nil, nil)
+}
+
+func (m *Manager) saveTraceBudget(ctx context.Context, id string, usage agent.Usage, snapshot *agent.TurnRecord, activations []Selection) error {
 	tr := m.view.Traces[id]
 	if tr == nil {
 		return product.NewError(product.CodeNotFound, "trace not found")
@@ -40,6 +44,10 @@ func (m *Manager) SaveTraceBudget(ctx context.Context, id string, usage agent.Us
 	next.Usage = usage
 	controls := []store.Record{record("trace", id, next)}
 	var events []agent.Event
+	for _, selected := range activations {
+		controls = append(controls, record("selection", selected.ID, selected))
+		events = append(events, m.event("selection.activated", selected.Scope.TraceID, usage.ModelCallID, selected))
+	}
 	if usage.ModelCallID != "" {
 		turn, exists := m.view.Turns[usage.ModelCallID]
 		if exists && (turn.TraceID != id || turn.InvocationID != tr.InvocationID || turn.Ended) {
@@ -47,6 +55,9 @@ func (m *Manager) SaveTraceBudget(ctx context.Context, id string, usage agent.Us
 		}
 		if !exists {
 			turn = agent.TurnRecord{ID: usage.ModelCallID, TraceID: id, InvocationID: tr.InvocationID}
+			if snapshot != nil {
+				turn = *snapshot
+			}
 			events = append(events, m.event("turn_start", id, turn.ID, turn))
 		}
 		turn.TransportRequests = usage.ModelRequests
@@ -71,11 +82,11 @@ func (m *Manager) SaveTraceBudget(ctx context.Context, id string, usage agent.Us
 func (m *Manager) ClaimTool(ctx context.Context, frozen agent.FrozenCall, usage agent.Usage) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.claimTool(ctx, frozen, usage, nil)
+	return m.claimTool(ctx, frozen, usage, false)
 }
 
-func (m *Manager) claimTool(ctx context.Context, frozen agent.FrozenCall, usage agent.Usage, approval *ApprovalClaim) error {
-	if description := m.view.FrozenExecutions["execution:"+frozen.CallID]; description.RequestedGrantRef != "" && approval == nil {
+func (m *Manager) claimTool(ctx context.Context, frozen agent.FrozenCall, usage agent.Usage, runtimeApproved bool) error {
+	if description := m.view.FrozenExecutions["execution:"+frozen.CallID]; description.RequestedGrantRef != "" && !runtimeApproved {
 		return product.NewError(product.CodePermissionDenied, "tool claim requires a one-time approval")
 	}
 	call, ok := m.view.Calls[frozen.CallID]
@@ -98,9 +109,6 @@ func (m *Manager) claimTool(ctx context.Context, frozen agent.FrozenCall, usage 
 	next.Usage = usage
 	call.Claimed = true
 	controls := []store.Record{record("trace", tr.ID, next), record("tool_call", frozen.CallID, call)}
-	if approval != nil {
-		controls = append(controls, record("approval_claim", approval.ApprovalID, *approval))
-	}
 	_, err := m.commit(ctx, controls, nil, []agent.Event{m.event("tool.state_changed", tr.ID, call.Scope.TurnID, call)})
 	return err
 }

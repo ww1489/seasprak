@@ -89,16 +89,7 @@ func (m *Manager) classify(cmd agent.InputCommand, target agent.TargetAgent) (st
 		}
 		return "prompt", "", nil
 	case "command":
-		if cmd.TargetTraceID != "" {
-			return "", "", product.NewError(product.CodeInvalidArgument, "direct command cannot target a trace")
-		}
-		if m.view.HasUnresolvedEffects() {
-			return "", "", product.NewError(product.CodeReconciliationRequired, "unresolved tool effects block new work")
-		}
-		if active := m.view.Traces[m.view.ActiveTrace]; active != nil && active.State == "paused" {
-			return "", "", product.NewError(product.CodeReconciliationRequired, "interrupted execution blocks new work")
-		}
-		return "command", "", nil
+		return "", "", product.NewError(product.CodeUnsupportedCapability, "command inputs cannot execute host shell")
 	case "steering", "follow_up":
 		tr := m.view.Traces[cmd.TargetTraceID]
 		if cmd.TargetTraceID == "" {

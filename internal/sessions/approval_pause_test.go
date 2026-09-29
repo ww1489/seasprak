@@ -68,7 +68,7 @@ func TestPauseDuringApprovalCheckpointSavePreservesAnswerableCheckpoint(t *testi
 	v := f.manager.View()
 	tr := v.Traces[f.input.TraceID]
 	cp := v.Checkpoints[tr.CheckpointID]
-	if tr.State != "paused" || len(cp.InteractionIDs) != 1 || len(v.ApprovalBindings) != 1 || f.runs.Load() != 0 || tr.Usage.ToolExecutions != 0 {
+	if tr.State != "paused" || len(cp.ApprovalTargets) != 1 || len(v.ApprovalBindings) != 0 || f.runs.Load() != 0 || tr.Usage.ToolExecutions != 0 {
 		t.Fatalf("late pause lost its original target: %+v", tr)
 	}
 	answerApproval(t, f, "allowed-once")
@@ -133,7 +133,7 @@ func TestPauseDuringApprovalPreparationPreservesAnswerableCheckpoint(t *testing.
 	v := f.manager.View()
 	tr := v.Traces[f.input.TraceID]
 	cp := v.Checkpoints[tr.CheckpointID]
-	if tr.State != "paused" || len(cp.InteractionIDs) != 1 || len(v.ApprovalBindings) != 1 || f.runs.Load() != 0 || f.model.Calls() != 1 {
+	if tr.State != "paused" || len(cp.ApprovalTargets) != 1 || len(v.ApprovalBindings) != 0 || f.runs.Load() != 0 || f.model.Calls() != 1 {
 		t.Fatalf("pause lost approval target: trace=%+v interactions=%v bindings=%d", tr, cp.InteractionIDs, len(v.ApprovalBindings))
 	}
 	answerApproval(t, f, "allowed-once")
