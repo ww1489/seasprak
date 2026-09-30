@@ -25,16 +25,27 @@ func toolArgumentHash(raw []byte) string {
 func (rt *runtime) saveFrozenExecution(ctx context.Context, scope agent.ExecutionScope, frozen agent.FrozenExecution) error {
 	v := rt.manager.View()
 	call, ok := v.Calls[frozen.CallID]
-	modelOrigin := frozen.Origin == "model" && acceptedAttemptForCall(v, call)
-	directOrigin := frozen.Origin == "direct" && frozen.OperationID != "" && call.Call.OperationID == frozen.OperationID
-	if !ok || call.Claimed || call.Observation != nil || (!modelOrigin && !directOrigin) ||
+	_, workflowCall := v.WorkflowNodeForCall(frozen.CallID)
+	modelOrigin := frozen.Origin == "model" && !workflowCall && acceptedAttemptForCall(v, call)
+	directOrigin := frozen.Origin == "direct" && !workflowCall && frozen.OperationID != "" && call.Call.OperationID == frozen.OperationID
+	// A workflow node call is bound by its registered node, never by a model
+	// response; its descriptor carries the stable nodeExecutionId.
+	node, _ := v.WorkflowNodeForCall(frozen.CallID)
+	workflowOrigin := frozen.Origin == "workflow_node" && workflowCall && rt.acceptedCall(v, call) && frozen.NodeExecutionID == node.ID && frozen.ProviderCallID == ""
+	if !ok || call.Claimed || call.Observation != nil || (!modelOrigin && !directOrigin && !workflowOrigin) ||
 		!rt.matchesCallScope(scope, call) || frozen.Scope != call.Scope || frozen.ID != "execution:"+frozen.CallID ||
-		(frozen.Origin != "model" && frozen.Origin != "direct") || frozen.ProviderCallID != call.Call.ProviderCallID ||
+		(frozen.Origin != "model" && frozen.Origin != "direct" && frozen.Origin != "workflow_node") || frozen.ProviderCallID != call.Call.ProviderCallID ||
 		frozen.Tool != call.Call.Name || frozen.Generation != call.Call.Generation || frozen.OperationID != call.Call.OperationID ||
 		frozen.OriginalArgumentsHash != toolArgumentHash([]byte(call.Call.Arguments)) ||
 		frozen.FinalArgumentsHash != toolArgumentHash(frozen.FinalArguments) || frozen.PolicyRef != v.ExecutionPolicy.Ref {
 		return product.NewError(product.CodePermissionDenied, "frozen execution does not match the accepted call or policy")
 	}
+	return rt.commitFrozenDescriptor(ctx, v, frozen)
+}
+
+// commitFrozenDescriptor checks the descriptor itself after its caller has
+// bound it to an accepted call of a known origin, then commits it.
+func (rt *runtime) commitFrozenDescriptor(ctx context.Context, v state.View, frozen agent.FrozenExecution) error {
 	if digest, err := frozen.Digest(); err != nil || frozen.Hash == "" || frozen.Hash != digest {
 		return product.NewError(product.CodePermissionDenied, "frozen execution hash is invalid")
 	}

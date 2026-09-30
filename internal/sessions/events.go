@@ -38,7 +38,16 @@ type Snapshot struct {
 	Operations       map[string]state.Operation
 	Selections       map[string]state.Selection
 	Reconciliations  map[string]state.Reconciliation
-	RepairRequired   bool
+	// Invocations are delegated child runs; child messages are never history.
+	Invocations map[string]state.Invocation
+	// PendingReconciliations lists calls that Reconcile would accept now.
+	PendingReconciliations []PendingReconciliation
+	RepairRequired         bool
+	// WorkflowNodes are the durable workflow node records by nodeExecutionId.
+	WorkflowNodes map[string]state.WorkflowNodeRun
+	// Transient is the latest display-only aggregation at Cursor. It is empty
+	// for read-only or reopened sessions and never replaces durable facts.
+	Transient TransientView `json:"-"`
 }
 type queuedEvent struct {
 	event agent.Event
@@ -189,7 +198,9 @@ func (rt *runtime) saveAttemptResult(ctx context.Context, scope agent.ExecutionS
 	if err := rt.manager.SaveAttemptResult(ctx, scope, id, status, finish, msg, calls, details); err != nil {
 		return err
 	}
-	delete(rt.modelChunks, rt.manager.View().ModelAttempts[id].StreamID)
+	stream := rt.manager.View().ModelAttempts[id].StreamID
+	delete(rt.modelChunks, stream)
+	rt.transient.dropModel(stream)
 	return nil
 }
 
@@ -214,6 +225,7 @@ func (rt *runtime) publishModelSnapshot(ctx context.Context, scope agent.Executi
 		rt.modelChunks = map[string]uint64{}
 	}
 	rt.modelChunks[update.StreamID] = update.ChunkSeq
+	rt.transient.setModel(scope.TraceID, update)
 	// Decode then re-encode the allowlist, so unknown fields cannot become public.
 	raw, err := json.Marshal(update)
 	if err != nil {
@@ -246,7 +258,7 @@ func (rt *runtime) publishToolOutput(ctx context.Context, scope agent.ExecutionS
 	call, exists := view.Calls[update.CallID]
 	trace := view.Traces[scope.TraceID]
 	if !exists || trace == nil || trace.State != "running" || !call.Claimed || call.Observation != nil ||
-		!acceptedAttemptForCall(view, call) || !rt.matchesCallScope(scope, call) || call.Call.CallID != update.ToolCallID ||
+		!rt.acceptedCall(view, call) || !rt.matchesCallScope(scope, call) || call.Call.CallID != update.ToolCallID ||
 		update.StreamID == "" || update.ChunkSeq == 0 || update.Text == "" || len(update.Text) > config.ToolOutputChunkBytes ||
 		(update.Stream != "output" && update.Stream != "stdout" && update.Stream != "stderr") {
 		return product.NewError(product.CodeStateConflict, "tool output does not belong to an active claimed call")
@@ -259,6 +271,7 @@ func (rt *runtime) publishToolOutput(ctx context.Context, scope agent.ExecutionS
 		rt.active.toolChunks = make(map[string]toolChunkPosition)
 	}
 	rt.active.toolChunks[update.CallID] = toolChunkPosition{streamID: update.StreamID, seq: update.ChunkSeq}
+	rt.transient.appendTool(scope.TraceID, update.ToolOutputDelta)
 	// Re-encode the public allowlist; the internal call identity and unknown
 	// fact fields never enter the SDK event payload or the durable journal.
 	public, err := json.Marshal(update.ToolOutputDelta)

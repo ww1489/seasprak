@@ -36,8 +36,13 @@ func (rt *runtime) validateResume(ctx context.Context, traceID string, view stat
 		return state.CheckpointRef{}, product.NewError(product.CodeReconciliationRequired, "unknown tool effects block resume")
 	}
 	cp, ok := view.Checkpoints[tr.CheckpointID]
-	if !ok || cp.Scope.SessionID != rt.opts.SessionID || cp.Scope.BranchID != view.BranchID || cp.Scope.TraceID != traceID || cp.Scope.InvocationID != tr.InvocationID || cp.Scope.ExecutionID != tr.ExecutionID || cp.Scope.Generation != tr.Generation || cp.Scope.Generation != rt.generation || cp.Target != tr.Target || cp.Target.Name != "main" || cp.Target.Version != "main-v1" || cp.Target.Generation != rt.generation {
+	if !ok || cp.Scope.SessionID != rt.opts.SessionID || cp.Scope.BranchID != view.BranchID || cp.Scope.TraceID != traceID || cp.Scope.InvocationID != tr.InvocationID || cp.Scope.ExecutionID != tr.ExecutionID || cp.Scope.Generation != tr.Generation || cp.Scope.Generation != rt.generation || cp.Target != tr.Target || cp.Target.Version == "" || cp.Target.Generation != rt.generation {
 		return fail("checkpoint target or execution binding differs")
+	}
+	// Only the exact saved agent definition may resume; workflows use their
+	// own node-level recovery and never this runner checkpoint.
+	if def, err := rt.definitionFor(cp.Target); err != nil || def.Kind != agent.AgentKindAgent {
+		return fail("checkpoint target is not registered in this build")
 	}
 	build := resumeBuildFingerprint(rt.opts)
 	if build == "" || cp.BuildCompatibility != build || cp.EinoVersion != "0.9.21" || cp.CodecVersion != "1" || cp.EnvironmentFingerprint != rt.opts.Workspace+"\n"+rt.opts.ResourceEnvironment {

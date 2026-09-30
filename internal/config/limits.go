@@ -2,14 +2,66 @@ package config
 
 import "time"
 
+// Web limits protect the local HTTP transport, not Agent execution budgets.
+const (
+	WebJSONBytes         = 4 << 20
+	WebHeaderBytes       = 32 << 10
+	WebReadHeaderTimeout = 5 * time.Second
+	WebIdleTimeout       = time.Minute
+	WebShutdownTimeout   = 5 * time.Second
+)
+
+// Attachment limits apply to the raw request body independently of the JSON
+// limit; no request encoding can raise them. Names are display data only.
+const (
+	WebAttachmentBytes       = 8 << 20
+	WebAttachmentsPerSession = 64
+	WebAttachmentNameBytes   = 255
+	// InputAttachments bounds the attachments referenced by one input;
+	// InputAttachmentTextBytes bounds each text attachment given to a model.
+	InputAttachments         = 8
+	InputAttachmentTextBytes = 256 << 10
+)
+
+// Session display metadata limits. Metadata is not a session fact.
+const (
+	SessionNameBytes        = 256
+	SessionLabels           = 16
+	SessionLabelBytes       = 64
+	SessionMetadataKeysKept = 64
+)
+
 // ToolOutputChunkBytes is the maximum UTF-8 text size of one temporary output event.
 const ToolOutputChunkBytes = 50 << 10
+
+// Temporary display aggregation held in the session mailbox for snapshots.
+// Per-stream previews keep the newest bytes and mark truncation; the session
+// total drops the oldest streams first. None of this is durable.
+const (
+	TransientToolPreviewBytes = 64 << 10
+	TransientSessionBytes     = 1 << 20
+)
+
+// SSE transport: heartbeat interval and per-write deadline. There is no total
+// stream write timeout.
+const (
+	WebSSEHeartbeat     = 15 * time.Second
+	WebSSEWriteDeadline = 10 * time.Second
+)
 
 // GeminiFunctionArgumentsBytes bounds gateway JSON argument fragments per call.
 const GeminiFunctionArgumentsBytes = 1 << 20
 
 // GeminiCacheRegistryEntries bounds cached and in-flight resources per registered factory.
 const GeminiCacheRegistryEntries = 128
+
+// Delegation limits: concurrent child invocations per trace, nesting layers,
+// and the bounded child text returned as the single parent tool result.
+const (
+	SubagentConcurrency = 4
+	SubagentDepth       = 4
+	DelegateResultBytes = 32 << 10
+)
 
 // ApprovalValidity is checked both at the decision and atomic claim boundaries.
 const ApprovalValidity = 24 * time.Hour

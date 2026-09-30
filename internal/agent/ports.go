@@ -141,6 +141,14 @@ type ToolCallSource interface {
 	LookupTool(context.Context, ExecutionScope, string) (ToolRecord, error)
 }
 
+// WorkflowToolSource resolves the product call a workflow node registered
+// before running. The call is found by its product CallID: it has no model
+// provider call, Turn or selection, because its binding is fixed by the
+// compiled definition.
+type WorkflowToolSource interface {
+	LookupWorkflowTool(context.Context, ExecutionScope, string) (ToolRecord, error)
+}
+
 type FrozenCall struct {
 	ProviderCallID    string
 	CallID            string

@@ -26,12 +26,10 @@ func (rt *runtime) saveToolProjection(ctx context.Context, scope agent.Execution
 
 func (rt *runtime) LookupToolProjection(ctx context.Context, scope agent.ExecutionScope, callID string) (*agent.ToolOutputProjection, error) {
 	value, err := rt.call(ctx, func(rt *runtime) (any, error) {
-		if !rt.matchesExecution(scope) {
+		if !rt.matchesToolExecution(scope) {
 			return nil, product.NewError(product.CodeStateConflict, "tool projection execution is not active")
 		}
-		if scope.TurnID == "" {
-			scope.TurnID = rt.active.turnID
-		}
+		scope = rt.ownTurn(scope)
 		view := rt.manager.View()
 		call, ok := view.Calls[callID]
 		if !ok || call.Scope.SessionID != scope.SessionID || call.Scope.TraceID != scope.TraceID || call.Scope.InvocationID != scope.InvocationID || call.Scope.TurnID != scope.TurnID {

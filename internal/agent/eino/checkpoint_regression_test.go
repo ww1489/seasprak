@@ -238,6 +238,8 @@ type phaseModel struct {
 	later         atomic.Int32
 	sawToolResult atomic.Bool
 	once          sync.Once
+	decorate      func(*schema.AgenticMessage)
+	inspect       func([]*schema.AgenticMessage)
 }
 
 func (m *phaseModel) note(in []*schema.AgenticMessage) {
@@ -254,12 +256,26 @@ func (m *phaseModel) note(in []*schema.AgenticMessage) {
 
 func (m *phaseModel) Generate(ctx context.Context, in []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
 	m.note(in)
-	return m.inner.Generate(ctx, in, opts...)
+	if m.inspect != nil {
+		m.inspect(in)
+	}
+	msg, err := m.inner.Generate(ctx, in, opts...)
+	if msg != nil && m.decorate != nil {
+		m.decorate(msg)
+	}
+	return msg, err
 }
 
 func (m *phaseModel) Stream(ctx context.Context, in []*schema.AgenticMessage, opts ...model.Option) (*schema.StreamReader[*schema.AgenticMessage], error) {
-	m.note(in)
-	return m.inner.Stream(ctx, in, opts...)
+	if m.decorate == nil && m.inspect == nil {
+		m.note(in)
+		return m.inner.Stream(ctx, in, opts...)
+	}
+	msg, err := m.Generate(ctx, in, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return schema.StreamReaderFromArray([]*schema.AgenticMessage{msg}), nil
 }
 
 type phaseTool struct {

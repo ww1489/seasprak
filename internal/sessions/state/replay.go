@@ -19,6 +19,12 @@ func applyCommit(v *View, c store.Commit) error {
 	if err := validateApprovalCommit(v, c); err != nil {
 		return err
 	}
+	if err := validateChildResumeCommit(v, c); err != nil {
+		return err
+	}
+	if err := validateChildCompletionCommit(v, c); err != nil {
+		return err
+	}
 	consumesHostCommands := false
 	for _, r := range c.ControlRecords {
 		if r.Type == "host_command_consumed" {
@@ -45,7 +51,11 @@ func applyCommit(v *View, c store.Commit) error {
 		if r.ParentID != v.LeafID {
 			return product.NewError(product.CodeIncompatibleVersion, "history parent is not the selected leaf")
 		}
+		if _, exists := v.Nodes[r.ID]; exists {
+			return product.NewError(product.CodeIncompatibleVersion, "duplicate history entry")
+		}
 		v.Messages = append(v.Messages, msg)
+		indexEntry(v, r.ID, r.ParentID, c.CommitSeq)
 		v.LeafID = r.ID
 	}
 	v.LastSeq = c.CommitSeq
@@ -101,6 +111,10 @@ func applyControl(v *View, r store.Record) error {
 		return applyResourceHoldRelease(v, r)
 	case "reconciliation":
 		return applyReconciliation(v, r)
+	case "invocation":
+		return applyInvocation(v, r)
+	case "workflow_node":
+		return applyWorkflowNode(v, r)
 	case "input":
 		var in InputState
 		if err := json.Unmarshal(r.Payload, &in); err != nil {
@@ -158,12 +172,7 @@ func applyControl(v *View, r store.Record) error {
 	case "budget":
 		return json.Unmarshal(r.Payload, &v.Budget)
 	case "active_cursor":
-		var cursor struct{ BranchID, LeafID string }
-		if err := json.Unmarshal(r.Payload, &cursor); err != nil {
-			return err
-		}
-		v.BranchID = cursor.BranchID
-		v.LeafID = cursor.LeafID
+		return applyActiveCursor(v, r, v.LastSeq+1)
 	default:
 		return product.NewError(product.CodeIncompatibleVersion, "unknown required control record")
 	}

@@ -40,6 +40,9 @@ type execution struct {
 	resume                *state.CheckpointRef
 	resumeID              string
 	toolChunks            map[string]toolChunkPosition // mailbox-owned, one execution segment only
+	workflowStop          *workflowStop                // set by a workflow segment that stopped at a node boundary
+	workflowFrom          string                       // stopped execution a resumed workflow segment continues
+	childResume           *childResume                 // interrupted delegated child recovered before parent continuation
 }
 type toolChunkPosition struct {
 	streamID string
@@ -64,6 +67,9 @@ type runtime struct {
 	defaultModelID string
 	approvals      map[string]*runtimeApproval // mailbox-owned, never recovered as permission
 	approvalOps    map[string]state.Operation
+	transient      transientView // mailbox-owned display aggregation, never persisted
+	registry       *agent.AgentRegistry
+	delegations    delegationSlots // process-local child admission, never persisted
 }
 
 func (rt *runtime) writable() error {
@@ -126,6 +132,9 @@ func (s *AgentSession) ContinueQueue(ctx context.Context, traceID string) error 
 		}
 		if tr.Generation != rt.generation {
 			return nil, product.NewError(product.CodeIncompatibleVersion, "queued generation cannot be replaced")
+		}
+		if err := rt.executable(tr); err != nil {
+			return nil, err
 		}
 		view := rt.manager.View()
 		if view.HasUnresolvedEffects() {
@@ -197,6 +206,11 @@ func (rt *runtime) schedule() {
 			continue
 		}
 		if tr.Generation != rt.generation {
+			return
+		}
+		// A saved target this build cannot run keeps the queue blocked in
+		// order; it is never re-routed or started with another definition.
+		if rt.executable(tr) != nil {
 			return
 		}
 		if err := rt.manager.SetTraceState(context.Background(), tr.ID, "running", false); err != nil {
@@ -276,6 +290,36 @@ func (rt *runtime) segmentFinished(frame *execution, runErr error) {
 	if runErr == nil && frame.ctx.Err() != nil {
 		runErr = frame.ctx.Err()
 	}
+	if frame.childResume != nil && rt.manager.Fault() == nil {
+		// Cancellation may win before beginActivity ever enters the child. The
+		// accepted invocation still needs a stopped nonterminal fact before the
+		// common cancellation/Close finalizer examines the original parent call.
+		inv := v.Invocations[frame.childResume.inv.ID]
+		if inv.State == "running" && runErr != nil {
+			inv.State = "interrupted"
+			rt.releaseDelegation(inv.TraceID)
+			if err := rt.manager.SaveInvocation(context.Background(), inv); err != nil {
+				runErr = errors.Join(runErr, err)
+			}
+			v = rt.manager.View()
+			tr = v.Traces[frame.scope.TraceID]
+		}
+	}
+	// Child recovery first commits the original delegate result, then starts a
+	// normal parent segment from the existing consumed input and history. The
+	// same Resume operation remains accepted until that parent segment exits.
+	if frame.childResume != nil && !rt.closing && frame.ctx.Err() == nil && tr.State == "running" && runErr == nil && rt.manager.Fault() == nil {
+		used, limits := tr.Usage, tr.Limits
+		frame.cancel()
+		ctx, cancel := context.WithCancel(context.Background())
+		next := &execution{scope: frame.scope, ctx: ctx, cancel: cancel, done: frame.done, budget: agent.NewBudget(limits), resumeID: frame.resumeID, currentModel: frame.currentModel}
+		// Both phases belong to the one durably accepted resumed execution.
+		next.budget.Restore(used)
+		rt.setBudgetPersistence(next)
+		rt.active = next
+		go rt.runSegment(next, frame.input.InputID)
+		return
+	}
 	if frame.resumeID != "" && rt.manager.Fault() == nil {
 		next := "completed"
 		if tr.State == "cancelling" || rt.closing {
@@ -288,6 +332,11 @@ func (rt *runtime) segmentFinished(frame *execution, runErr error) {
 		}
 		v = rt.manager.View()
 		tr = v.Traces[frame.scope.TraceID]
+	}
+	if frame.workflowStop != nil && !rt.closing && frame.ctx.Err() == nil && tr.State == "running" && runErr == nil {
+		if runErr = rt.commitWorkflowStop(frame); runErr == nil {
+			return
+		}
 	}
 	if !rt.closing && frame.ctx.Err() == nil && tr.State == "running" && runErr == nil && frame.checkpoint != nil && frame.checkpoint.valid && len(frame.checkpoint.targets) != 0 && !v.TraceHasUnresolvedEffects(tr.ID) {
 		cp, err := rt.pauseReference(frame, frame.input, frame.checkpoint.ref, v)
@@ -378,7 +427,16 @@ func (rt *runtime) segmentFinished(frame *execution, runErr error) {
 		if runErr != nil && !cancellationOnly(runErr) {
 			_ = rt.manager.SaveTraceError(context.Background(), tr.ID, runErr.Error())
 		}
+		if terminal(state) {
+			// Registered workflow node calls that were never claimed never
+			// started; a terminal trace keeps no pending call.
+			_ = rt.closeWorkflowCalls(context.Background(), tr.ID)
+		}
 		_ = rt.manager.SetTraceState(context.Background(), tr.ID, state, terminal(state))
+		rt.settleTraceOperations(tr.ID)
+	}
+	if terminal(state) {
+		rt.transient.dropTrace(tr.ID)
 	}
 	frame.cancel()
 	frame.toolChunks = nil

@@ -25,6 +25,33 @@ func TransformContext(in []AgentMessage) ([]AgentMessage, error) {
 	return out, nil
 }
 
+// ProjectHistory applies the newest compaction on the selected path: the
+// result is that summary followed by the path from its FirstKeptID. Kept
+// entries precede the summary on the path, so they are re-emitted after it.
+func ProjectHistory(path []AgentMessage) []AgentMessage {
+	for i := len(path) - 1; i >= 0; i-- {
+		s := path[i]
+		if s.Kind != KindCompactionSummary || s.Summary == nil || s.Summary.FirstKeptID == "" {
+			continue
+		}
+		kept := -1
+		for j := 0; j < i; j++ {
+			if path[j].ID == s.Summary.FirstKeptID {
+				kept = j
+				break
+			}
+		}
+		if kept < 0 {
+			continue
+		}
+		out := make([]AgentMessage, 0, 1+(i-kept)+(len(path)-i-1))
+		out = append(out, s)
+		out = append(out, path[kept:i]...)
+		return append(out, path[i+1:]...)
+	}
+	return path
+}
+
 // ConvertToLLM projects already selected messages. It does not read the network or history.
 func ConvertToLLM(in []AgentMessage) ([]*schema.AgenticMessage, error) {
 	selected, err := TransformContext(in)

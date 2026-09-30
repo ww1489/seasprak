@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 
 	"github.com/ww1489/seasprak/internal/agent"
 	product "github.com/ww1489/seasprak/internal/errors"
@@ -22,6 +23,9 @@ type ReconcileQueryFunc func(context.Context, ReconcileQueryRequest) (ReconcileE
 func (f ReconcileQueryFunc) Query(ctx context.Context, request ReconcileQueryRequest) (ReconcileEvidence, error) {
 	return f(ctx, request)
 }
+
+// OriginalGrantRef asks Reconcile to use the grant of the original frozen call.
+const OriginalGrantRef = "\x00original"
 
 type ReconcileCommand struct {
 	TraceID            string `json:"traceId"`
@@ -63,6 +67,42 @@ func (e ReconcileEvidence) clone() ReconcileEvidence {
 	e.RemainingUnknown = append([]string(nil), e.RemainingUnknown...)
 	e.ConflictRestrictions = append([]string(nil), e.ConflictRestrictions...)
 	return e
+}
+
+// PendingReconciliation is the identity of a claimed call whose latest
+// observation Reconcile would currently accept.
+type PendingReconciliation struct {
+	TraceID, InvocationID, CallID, ObservationID string
+	ObservationVersion                           uint64
+}
+
+// pendingReconciliations mirrors the eligibility checks of validateReconcile.
+func pendingReconciliations(view state.View) []PendingReconciliation {
+	latest := map[string]state.ObservationRevision{}
+	for _, r := range view.Observations {
+		if r.Version > latest[r.CallID].Version {
+			latest[r.CallID] = r
+		}
+	}
+	out := []PendingReconciliation{}
+	for id, call := range view.Calls {
+		r, ok := latest[id]
+		tr := view.Traces[call.Scope.TraceID]
+		if !ok || !call.Claimed || tr == nil || tr.InvocationID != call.Scope.InvocationID || (tr.State != "paused" && tr.State != "cancelling" && !terminal(tr.State)) {
+			continue
+		}
+		if r.Observation.SideEffect != "unknown" && r.Observation.Status != "outcome_unknown" && !view.ReconciliationUnresolved(id) {
+			continue
+		}
+		out = append(out, PendingReconciliation{TraceID: call.Scope.TraceID, InvocationID: call.Scope.InvocationID, CallID: id, ObservationID: r.ID, ObservationVersion: r.Version})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].TraceID != out[j].TraceID {
+			return out[i].TraceID < out[j].TraceID
+		}
+		return out[i].CallID < out[j].CallID
+	})
+	return out
 }
 
 func (rt *runtime) validateReconcile(view state.View, cmd ReconcileCommand) (state.ObservationRevision, state.TraceState, error) {
@@ -113,6 +153,11 @@ func (s *AgentSession) Reconcile(ctx context.Context, cmd ReconcileCommand) (sta
 		}
 		if (cmd.QueryID == "") == (cmd.EvidenceRef == "") {
 			return nil, product.NewError(product.CodeInvalidArgument, "exactly one reconciliation evidence source is required")
+		}
+		// Network callers cannot know the internal grant; resolve it from the
+		// original frozen call before digesting so replays stay equivalent.
+		if cmd.GrantRef == OriginalGrantRef {
+			cmd.GrantRef = frozenGrant(rt.manager.View(), cmd.CallID)
 		}
 		content, err := reconcileCommandContent(cmd)
 		if err != nil {

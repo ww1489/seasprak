@@ -1,5 +1,24 @@
 # 逐条需求覆盖表
 
+## 2026-09-30 子 Agent 安全恢复增量
+
+- 子调用压缩仅作用于 child 内存消息副本，通过现有 Eino 摘要适配器计入共享 Trace 预算，不写父历史、Turn 或维护 operation；产品回归为 `TestChildCompactsItsOwnContextWithoutTouchingParent`。
+- 单个根 child 的 Close→Open→显式 Resume 已接通：要求持久父 Trace 已停止、无 claimed/unknown 子工具，兼容构建/完整模型配置/环境/原历史与冻结策略；复用原 invocation、parent call 与 consumed input。恢复受理、子结果与整批工具收尾各自原子提交，重放拒绝缺失映射、缺失记录或调用身份篡改。取消、再次 Close、冻结参数、UTF-8 截断及父模型实际输入有默认套件回归。
+- 当前限制明确保留：多 interrupted 根 child 的联合恢复不支持；有 claimed 子工具或嵌套委派的 child 不能重跑；子 Agent/委派子工作流的审批交互恢复及独立子模型尝试记录仍未交付。不得将本增量或通过的浏览器用例视为完整 P3 交付。
+- 最新全仓、平台及真实模型浏览器结果见 [P3 验证记录](../p3-verification.md)，其中保留历史失败及 403 专项排查；只有实际通过的复验记录才计作通过，macOS 延期记为未验证。
+
+## 2026-09-29 P3 实施启动
+
+- 批准范围与网络契约见 [13 P3 Web 接入契约](13-p3-web-contract.md)，运行证据见 [P3 验证记录](../p3-verification.md)。新增 cmd/web，不修改 cmd/agentd 边界；A2UI 从预留改为本期子集实现目标。
+- 原 P4 的历史树/分支、预算/压缩条目及原 P5 的静态 Agent 注册/委派/工作流执行恢复前移 P3；资源/Skills、动态导入/补参/reload 及完整扩展生命周期仍留原阶段。
+- Step 1 契约与框架探针已落地；cmd/web 启动和 Step 3 本机认证/JSON/错误基础已实现，Windows/Linux 全仓普通及 race 通过。会话业务 API、资源级授权、快照 DTO、SSE、A2UI 及后续核心能力未交付，不能将整个 P3 或 Step 3 标为完成。最终 live 遇 Gemini503、macOS运行未执行，详见验证记录；原 P2 未关闭证据继续保留。
+
+## 2026-09-29 嵌套扩展与 Snapshot 性能增量
+
+- Eino 适配层静态注册支持嵌套 JSON 对象/数组和 json.Number。`checkpoint_extra_test.go` 包含旧标量 checkpoint 恢复及 gob 类型矩阵；`checkpoint_extra_reopen_test.go` 以两个全新进程验证工具前/后 Pause→Open→Resume，四处私有扩展和 Number 保真，模型/工具不重跑。RawMessage 在框架内部复制后成为 []byte 的限制经维护者确认保留，不承诺端到端命名类型保真。
+- Snapshot 消费独占 Manager.View 副本，展示阶段不再进行第二次整消息 JSON 深复制；原 PublicMessage 仍保留复制语义。恢复校验、存储读取、公开投影规则和通用状态复制不变。完整嵌套夹具双平台前后各五轮有可重复收益，详见验证记录；不推广为磁盘后端性能认证。
+- Linux 全仓通过；Windows 首次全仓 race 两项 consumer 租约过期失败，随后该用例 race10和全仓原范围复验通过，原因未定。此偶发失败单独保留，不称已修复或全部稳定性验收完成。macOS/live仍延期。
+
 ## 2026-09-29 离线收尾：当前状态与历史记录分离
 
 本轮基线为 `53fadff`，后续收尾验证结果以 [P2 验证记录](../p2-verification.md) 顶部摘要为准。以下 2026-09-28 记录保留当时验收范围，不自动认证此后代码。macOS 与 live 本轮明确延期，不读取 `.test_env`，不将跳过计作通过。

@@ -15,6 +15,18 @@ import (
 
 const approvalUnavailableMessage = "execution approval is not available"
 
+// ErrResumableInterruption is reserved for trusted internal tools whose owner
+// has durably retained enough identity to retry safely. It deliberately causes
+// no terminal tool observation.
+var ErrResumableInterruption = errors.New("resumable internal tool interruption")
+
+// InterruptedToolOwner is the durable tool owner, not the tool callback. It
+// may retain a cancelled claimed call only after committing a safe recovery
+// point. A callback error alone never authorizes omission of an observation.
+type InterruptedToolOwner interface {
+	CanRetainInterruptedTool(context.Context, agent.ExecutionScope, string) (bool, error)
+}
+
 type Outcome struct {
 	Status         string
 	Content        string
@@ -27,6 +39,7 @@ type Outcome struct {
 	Truncated      bool
 	LogError       string
 	Artifact       agent.ArtifactRef
+	resumable      bool
 }
 
 func (o Outcome) ModelContent() string {
@@ -86,7 +99,19 @@ func NewExecutor(gen string, defs []Definition, sink agent.ExecutionSink, auth a
 }
 
 func (e *Executor) Run(ctx context.Context, scope agent.ExecutionScope, callID, name, arguments string) (Outcome, error) {
-	return e.run(ctx, scope, callID, name, arguments, "model", "")
+	return e.run(ctx, scope, callID, name, arguments, "model", "", "")
+}
+
+// RunWorkflowNode executes a workflow tool node through the same freeze,
+// authorization, budget claim, ticket, backend and observation pipeline. The
+// call must already be registered by the session (WorkflowToolSource); its
+// binding comes from the compiled definition, so the model selection check
+// does not apply. callID is the stable product toolCallId of this attempt.
+func (e *Executor) RunWorkflowNode(ctx context.Context, scope agent.ExecutionScope, nodeExecutionID, callID, name, arguments string) (Outcome, error) {
+	if nodeExecutionID == "" || callID == "" {
+		return Outcome{}, product.NewError(product.CodeInvalidArgument, "workflow node identity is required")
+	}
+	return e.run(ctx, scope, callID, name, arguments, "workflow_node", "", nodeExecutionID)
 }
 
 // RunDirect executes a trusted direct entry point through the same preparation,
@@ -95,14 +120,21 @@ func (e *Executor) RunDirect(ctx context.Context, scope agent.ExecutionScope, op
 	if operationID == "" {
 		return Outcome{}, product.NewError(product.CodeInvalidArgument, "direct operation identity is required")
 	}
-	return e.run(ctx, scope, operationID, name, arguments, "direct", operationID)
+	return e.run(ctx, scope, operationID, name, arguments, "direct", operationID, "")
 }
 
-func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, name, arguments, origin, operationID string) (Outcome, error) {
+func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, name, arguments, origin, operationID, nodeExecutionID string) (Outcome, error) {
 	if err := ctx.Err(); err != nil {
 		return Outcome{}, err
 	}
-	accepted, record, err := e.lookup(ctx, scope, callID)
+	var accepted bool
+	var record agent.ToolRecord
+	var err error
+	if origin == "workflow_node" {
+		accepted, record, err = e.lookupWorkflow(ctx, scope, callID)
+	} else {
+		accepted, record, err = e.lookup(ctx, scope, callID)
+	}
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -122,7 +154,12 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	call := e.freeze(callID, name, arguments, "")
 	if accepted {
 		call = record.Call
-		if call.Name != name || call.ProviderCallID != callID || call.Arguments != arguments {
+		// A workflow call has no provider identity; it is bound by product CallID.
+		identity := call.ProviderCallID
+		if origin == "workflow_node" {
+			identity = call.CallID
+		}
+		if call.Name != name || identity != callID || call.Arguments != arguments {
 			return e.saveObservation(ctx, envelope, scope, call, Outcome{Status: "failed", Content: "tool call does not match the accepted call", SideEffect: "none"}, false, true)
 		}
 	}
@@ -181,7 +218,7 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	frozen := agent.FrozenExecution{
 		ID: "execution:" + call.CallID, CallID: call.CallID, Scope: scope, Origin: origin, Tool: name,
 		ToolVersion: def.Version, SchemaHash: argumentHash(def.Schema), Generation: call.Generation, SelectionRevision: call.SelectionRevision,
-		ProviderCallID: call.ProviderCallID, OperationID: operationID, EntryPoint: origin, OriginalArgumentsHash: argumentHash([]byte(call.Arguments)),
+		ProviderCallID: call.ProviderCallID, NodeExecutionID: nodeExecutionID, OperationID: operationID, EntryPoint: origin, OriginalArgumentsHash: argumentHash([]byte(call.Arguments)),
 		FinalArgumentsHash: argumentHash(final), ArgumentsRef: "arguments:" + call.CallID,
 		FinalArguments: append(json.RawMessage(nil), final...), Resources: description.Resources,
 		Effect: description.Effect, Concurrency: description.Concurrency, BackendID: description.BackendID,
@@ -338,6 +375,19 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	output := &callOutput{runCtx: runCtx, sink: e.sink, scope: envelope, callID: call.CallID, streamID: agent.MustID()}
 	out = e.invokeAuthorized(runCtx, def, frozen, ticket, output)
 	output.close() // Drain accepted publications before saving the final observation.
+	if out.resumable {
+		if owner, ok := e.sink.(InterruptedToolOwner); ok && ctx.Err() != nil {
+			approved, ownerErr := owner.CanRetainInterruptedTool(context.WithoutCancel(ctx), envelope, call.CallID)
+			if ownerErr != nil {
+				retain = true
+				return Outcome{}, ownerErr
+			}
+			if approved {
+				return Outcome{}, ctx.Err()
+			}
+		}
+		out = Outcome{Status: "failed", Content: "trusted tool execution failed", SideEffect: "unknown", Executed: true}
+	}
 	var fullLog string
 	if out.Process {
 		out, fullLog = e.prepareProcessLog(runCtx, out)
@@ -454,6 +504,23 @@ func (e *Executor) lookup(ctx context.Context, scope agent.ExecutionScope, provi
 	return true, rec, nil
 }
 
+// lookupWorkflow requires the session-registered workflow call. An absent
+// registration is never frozen here: the executor cannot invent the binding.
+func (e *Executor) lookupWorkflow(ctx context.Context, scope agent.ExecutionScope, callID string) (bool, agent.ToolRecord, error) {
+	src, ok := e.sink.(agent.WorkflowToolSource)
+	if !ok {
+		return false, agent.ToolRecord{}, product.NewError(product.CodeResourceUnavailable, "workflow tool execution requires a session")
+	}
+	rec, err := src.LookupWorkflowTool(ctx, scope, callID)
+	if err != nil {
+		return false, agent.ToolRecord{}, err
+	}
+	if rec.Call.CallID != callID || rec.Call.ProviderCallID != "" {
+		return false, agent.ToolRecord{}, product.NewError(product.CodePermissionDenied, "workflow node call was not accepted")
+	}
+	return true, rec, nil
+}
+
 func (e *Executor) RejectUnavailable(ctx context.Context, scope agent.ExecutionScope, callID, name, arguments string) (Outcome, error) {
 	accepted, rec, err := e.lookup(ctx, scope, callID)
 	if err != nil {
@@ -538,6 +605,9 @@ func (e *Executor) invokeAuthorized(ctx context.Context, def Definition, frozen 
 			content, err = def.Run(ctx, append(json.RawMessage(nil), frozen.FinalArguments...))
 		}
 		out.Content, out.Executed = content, true
+		if errors.Is(err, ErrResumableInterruption) {
+			return Outcome{resumable: true}
+		}
 		if err != nil {
 			out.Status, out.Content, out.SideEffect = "failed", "trusted tool execution failed", "unknown"
 		}

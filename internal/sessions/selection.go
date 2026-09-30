@@ -437,6 +437,11 @@ func (rt *runtime) modelForTrace(trace *state.TraceState) (einomodel.AgenticMode
 		return nil, notFoundSelection("trace not found")
 	}
 	if trace.ModelSelectionID == "" {
+		if own, ok, err := rt.targetModel(trace); err != nil {
+			return nil, err
+		} else if ok {
+			return own, nil
+		}
 		if rt.opts.Model == nil {
 			return nil, product.NewError(product.CodeResourceUnavailable, "model instance is unavailable")
 		}
@@ -520,6 +525,10 @@ func (rt *runtime) beginSelectedTurn(ctx context.Context, frame *execution, usag
 				names[info.Name] = struct{}{}
 			}
 		}
+	}
+	// A caller without delegation targets never sees or selects the task tool.
+	if _, listed := names[delegateToolName]; listed && !rt.delegateToolAllowed(trace.ID) {
+		delete(names, delegateToolName)
 	}
 	if bound.ModelSelectionID != "" {
 		if err := validateSelectionModelOptions(selected, len(names) != 0); err != nil {

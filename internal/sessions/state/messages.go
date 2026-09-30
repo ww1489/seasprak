@@ -123,12 +123,27 @@ func (m *Manager) FinishTools(ctx context.Context, turn agent.TurnRecord) error 
 	if old.Ended {
 		return nil
 	}
+	entries, events, err := m.toolResultRecords(turn, nil)
+	if err != nil {
+		return err
+	}
+	turn.Ended = true
+	_, err = m.commit(ctx, []store.Record{record("turn", turn.ID, turn)}, entries, events)
+	return err
+}
+
+// toolResultRecords is shared by normal finalization and atomic child recovery.
+// replacement supplies the original delegate observation before it is committed.
+func (m *Manager) toolResultRecords(turn agent.TurnRecord, replacement *agent.ToolRecord) ([]store.Record, []agent.Event, error) {
 	var entries []store.Record
 	parent := m.view.LeafID
 	for _, id := range turn.CallIDs {
 		call, ok := m.view.Calls[id]
+		if replacement != nil && replacement.Call.CallID == id {
+			call = *replacement
+		}
 		if !ok || call.Observation == nil || m.view.ReconciliationUnresolved(id) {
-			return product.NewError(product.CodeReconciliationRequired, "tool result is unresolved")
+			return nil, nil, product.NewError(product.CodeReconciliationRequired, "tool result is unresolved")
 		}
 		content := call.Observation.ModelContent()
 		if p, ok := m.view.ToolProjections[id]; ok && p.Observation == *call.Observation {
@@ -150,6 +165,5 @@ func (m *Manager) FinishTools(ctx context.Context, turn agent.TurnRecord) error 
 		events = append(events, m.event("message.finalized", turn.TraceID, turn.ID, entry.Payload))
 	}
 	events = append(events, m.event("turn_end", turn.TraceID, turn.ID, turn))
-	_, err := m.commit(ctx, []store.Record{record("turn", turn.ID, turn)}, entries, events)
-	return err
+	return entries, events, nil
 }

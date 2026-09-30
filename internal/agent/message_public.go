@@ -18,11 +18,18 @@ func PublicMessage(msg AgentMessage) AgentMessage {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		panic(err)
 	}
-	publicStandard(out.Standard)
-	if out.Custom != nil {
-		publicStandard(out.Custom.Content)
+	return PublicMessageOwned(out)
+}
+
+// PublicMessageOwned projects a message whose complete object graph is owned by
+// the caller. It mutates that graph in place and returns it without copying.
+// The caller must not reuse the message for private replay after this call.
+func PublicMessageOwned(msg AgentMessage) AgentMessage {
+	publicStandard(msg.Standard)
+	if msg.Custom != nil {
+		publicStandard(msg.Custom.Content)
 	}
-	return out
+	return msg
 }
 
 func publicStandard(msg *schema.AgenticMessage) {

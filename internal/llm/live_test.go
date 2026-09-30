@@ -75,10 +75,27 @@ func TestLocalCompatibleModel(t *testing.T) {
 			var physical atomic.Int32
 			client := &http.Client{Timeout: 40 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }, Transport: p2RoundTripper(func(r *http.Request) (*http.Response, error) {
 				physical.Add(1)
+				if tc.prefix == "OPENAI" {
+					configuredURL, _ := url.Parse(connection.endpoint)
+					proxy, proxyErr := http.ProxyFromEnvironment(r)
+					versions := 0
+					for _, segment := range strings.Split(r.URL.Path, "/") {
+						if segment == "v1" {
+							versions++
+						}
+					}
+					t.Logf("request_shape: configured_origin=%t chat_path=%t v1_segments=%d credential_matches=%t auth_headers=%d environment_proxy=%t proxy_lookup_failed=%t user_agent_explicit=%t", r.URL.Scheme == configuredURL.Scheme && r.URL.Host == configuredURL.Host, strings.HasSuffix(r.URL.Path, "/v1/chat/completions"), versions, r.Header.Get("Authorization") == "Bearer "+connection.key, len(r.Header.Values("Authorization")), proxy != nil, proxyErr != nil, r.UserAgent() != "")
+				}
 				response, err := http.DefaultTransport.RoundTrip(r)
 				if err != nil && tc.prefix == "GEMINI" {
 					var networkError net.Error
 					t.Logf("gemini_transport_failure: eof=%t unexpected_eof=%t timeout=%t canceled=%t", errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), errors.As(err, &networkError) && networkError.Timeout(), errors.Is(err, context.Canceled))
+				}
+				if err == nil {
+					t.Logf("protocol=%s http_status=%d", tc.prefix, response.StatusCode)
+					if response.StatusCode >= 400 {
+						response.Body = &liveHTTPDiagnosticBody{ReadCloser: response.Body, t: t, protocol: tc.prefix, status: response.StatusCode, headers: response.Header.Clone()}
+					}
 				}
 				if err == nil && tc.prefix == "GEMINI" {
 					response.Body = &liveGeminiDiagnosticBody{ReadCloser: response.Body, t: t, status: response.StatusCode}

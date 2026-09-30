@@ -32,6 +32,9 @@ func (rt *runtime) cancelInterrupted(ctx context.Context, tr *state.TraceState) 
 			}
 		}
 	}
+	if err := rt.closeWorkflowCalls(ctx, tr.ID); err != nil {
+		return err
+	}
 	if err := rt.manager.SetTraceState(ctx, tr.ID, "cancelled", true); err != nil {
 		return err
 	}

@@ -21,6 +21,9 @@ func (rt *runtime) searchToolDefinitions() []tools.Definition {
 		if defs[i].Name == "search_tools" && defs[i].Version == "search-tools-v1" && defs[i].Execution.BackendID == "trusted-run" {
 			defs[i].Run = rt.runToolSearch
 		}
+		if isDelegateBuiltin(defs[i]) {
+			defs[i].Run = rt.runDelegateTask
+		}
 	}
 	return defs
 }

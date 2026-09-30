@@ -35,10 +35,14 @@ func Start(opts Options, manager *state.Manager, generation string) (*AgentSessi
 	if opts.Store == nil || manager == nil {
 		return nil, product.NewError(product.CodeInvalidArgument, "session store and manager are required")
 	}
+	registry, err := agent.NewAgentRegistry(opts.Instruction, opts.Agents)
+	if err != nil {
+		return nil, err
+	}
 	if err := initializeExecutionPolicy(opts, manager); err != nil {
 		return nil, err
 	}
-	rt := &runtime{opts: opts, manager: manager, mailbox: make(chan command, 64), done: make(chan struct{}), subs: map[int]*subscription{}, generation: generation}
+	rt := &runtime{opts: opts, manager: manager, mailbox: make(chan command, 64), done: make(chan struct{}), subs: map[int]*subscription{}, generation: generation, registry: registry}
 	// An injected TODO backend remains the sole owner of its persistence.
 	if rt.opts.Operations.Todos == nil {
 		rt.opts.Operations.Todos = &sessionTodos{rt: rt}
@@ -63,6 +67,24 @@ func Start(opts Options, manager *state.Manager, generation string) (*AgentSessi
 			}
 		}
 	}
+	// The builtin delegation evidence query is read-only; a host query with
+	// the same ID keeps precedence.
+	if _, ok := rt.opts.ReconcileQueries[DelegateEvidenceQuery]; !ok {
+		queries := make(map[string]ReconcileQuery, len(rt.opts.ReconcileQueries)+1)
+		for id, query := range rt.opts.ReconcileQueries {
+			queries[id] = query
+		}
+		queries[DelegateEvidenceQuery] = ReconcileQueryFunc(rt.delegateEvidence)
+		rt.opts.ReconcileQueries = queries
+	}
+	if !opts.ReadOnly && !view.RepairRequired {
+		// Child resume is not delivered: a running child becomes interrupted,
+		// and its claimed parent call keeps the existing unknown-effect handling.
+		if err := failInterruptedInvocations(manager); err != nil {
+			return nil, err
+		}
+		rt.settleAllTraceOperations()
+	}
 	rt.cursor = manager.View().Cursor
 	go rt.loop()
 	return &AgentSession{rt: rt}, nil
@@ -79,12 +101,33 @@ func (s *AgentSession) SubmitInput(ctx context.Context, cmd agent.InputCommand) 
 		if err := rt.flushHostCommands(ctx); err != nil {
 			return nil, err
 		}
-		target := agent.TargetAgent{Name: "main", Version: "main-v1", Generation: rt.generation}
-		if cmd.TargetAgent != "" && (cmd.Kind == "prompt" || cmd.Kind == "chat") {
-			target.Name = cmd.TargetAgent
+		target, err := rt.targetFor(cmd)
+		_, replay := rt.manager.FindInput(cmd)
+		if err != nil {
+			// Idempotent replays keep their original receipt even if the name
+			// is unknown now; only new requests are rejected here.
+			if !replay {
+				return nil, err
+			}
+		}
+		// Workflow input is validated before acceptance, so a missing field
+		// writes nothing and never reaches a model.
+		if !replay {
+			if err := rt.admitWorkflowInput(cmd, target); err != nil {
+				return nil, err
+			}
+			if err := rt.admitAttachments(cmd, target); err != nil {
+				return nil, err
+			}
 		}
 		before := rt.manager.View().LastSeq
-		receipt, err := rt.manager.AcceptWithLimitsAndSelection(ctx, cmd, target, rt.opts.Limits, rt.defaultModelID)
+		// A target with its own trusted model is not redirected by the
+		// session default-model selection.
+		selection := rt.defaultModelID
+		if def, derr := rt.definitionFor(target); derr == nil && def.Model != nil {
+			selection = ""
+		}
+		receipt, err := rt.manager.AcceptWithLimitsAndSelection(ctx, cmd, target, rt.opts.Limits, selection)
 		if err != nil {
 			return nil, err
 		}
@@ -114,8 +157,12 @@ func (s *AgentSession) Snapshot(ctx context.Context) (Snapshot, error) {
 		for id := range v.Traces {
 			err := rt.writable()
 			if err == nil {
-				if v.Traces[id].Kind == "command" {
+				if interruptedRootChild(v, id) {
+					_, err = rt.validateChildResume(v, id)
+				} else if v.Traces[id].Kind == "command" {
 					err = incompatibleResume("legacy direct commands cannot be resumed")
+				} else if _, workflow := rt.workflowTarget(v.Traces[id].Target); workflow {
+					err = rt.validateWorkflowResume(id, v)
 				} else {
 					_, err = rt.validateResume(ctx, id, v)
 				}
@@ -133,7 +180,9 @@ func (s *AgentSession) Snapshot(ctx context.Context) (Snapshot, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		return rt.snapshot(v, resume), nil
+		snap := rt.snapshot(v, resume)
+		snap.Transient = rt.transient.copy()
+		return snap, nil
 	})
 	if err != nil {
 		return Snapshot{}, err
@@ -141,7 +190,9 @@ func (s *AgentSession) Snapshot(ctx context.Context) (Snapshot, error) {
 	return value.(Snapshot), nil
 }
 
-func (rt *runtime) snapshot(v state.View, resume map[string]ResumeEligibility) Snapshot {
+// snapshot consumes the exclusive object graph returned by Manager.View.
+// All private-history validation must finish before entering this projection.
+func (rt *runtime) snapshot(v state.View, resume map[string]ResumeEligibility) (out Snapshot) {
 	interactions, approvals := rt.snapshotApprovals(v)
 	for id, op := range v.Operations {
 		if op.Kind == "respond_interaction" {
@@ -152,5 +203,8 @@ func (rt *runtime) snapshot(v state.View, resume map[string]ResumeEligibility) S
 		v.Operations[id] = op
 	}
 	messages := snapshotMessages(v)
-	return Snapshot{ModelAttempts: snapshotAttemptViews(v), Observations: snapshotObservationViews(v), Revision: v.LastSeq, SessionID: rt.opts.SessionID, Cursor: v.Cursor, ActiveTrace: v.ActiveTrace, Traces: v.Traces, Inputs: v.Inputs, Messages: messages, Turns: v.Turns, Calls: v.Calls, Operations: v.Operations, Selections: v.Selections, Reconciliations: v.Reconciliations, RepairRequired: v.RepairRequired, Resume: resume, Interactions: interactions, Approvals: approvals, FrozenExecutions: v.FrozenExecutions}
+	out = Snapshot{ModelAttempts: snapshotAttemptViews(v), Observations: snapshotObservationViews(v), Revision: v.LastSeq, SessionID: rt.opts.SessionID, Cursor: v.Cursor, ActiveTrace: v.ActiveTrace, Traces: v.Traces, Inputs: v.Inputs, Messages: messages, Turns: v.Turns, Calls: v.Calls, Operations: v.Operations, Selections: v.Selections, Reconciliations: v.Reconciliations, RepairRequired: v.RepairRequired, Resume: resume, Interactions: interactions, Approvals: approvals, FrozenExecutions: v.FrozenExecutions, Invocations: v.Invocations}
+	out.WorkflowNodes = v.WorkflowNodes
+	out.PendingReconciliations = pendingReconciliations(v)
+	return out
 }

@@ -64,6 +64,11 @@ type CustomMessage struct {
 
 type SummaryMessage struct {
 	Text string `json:"text"`
+	// FirstKeptID is the first entry kept verbatim after this compaction
+	// summary; entries before it on the path are covered by Text.
+	FirstKeptID     string       `json:"firstKeptId,omitempty"`
+	Files           *FileDetails `json:"files,omitempty"`
+	TemplateVersion string       `json:"templateVersion,omitempty"`
 }
 
 type CommandMessage struct {
@@ -90,6 +95,9 @@ type AgentMessage struct {
 	Summary  *SummaryMessage        `json:"summary,omitempty"`
 	Command  *CommandMessage        `json:"command,omitempty"`
 	Opaque   *OpaqueMessage         `json:"opaque,omitempty"`
+	// Attachments reference session attachments by ID only. Their content is
+	// resolved when a model request is built and never copied into history.
+	Attachments []string `json:"attachments,omitempty"`
 }
 
 func (m AgentMessage) Validate() error {
@@ -174,6 +182,9 @@ type TargetAgent struct {
 	Name       string `json:"name"`
 	Version    string `json:"version"`
 	Generation string `json:"generation"`
+	// Hash is the registered definition hash for non-main targets. The main
+	// agent keeps it empty so earlier journals and checkpoints stay comparable.
+	Hash string `json:"hash,omitempty"`
 }
 
 type InputCommand struct {

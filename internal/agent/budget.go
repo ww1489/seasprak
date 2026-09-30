@@ -159,6 +159,31 @@ func (b *BudgetLedger) OccupyTool() error {
 	return b.commit(next, b.turnUsed)
 }
 
+// ChargeDelegated adds a delegated child's logical calls and physical requests
+// to this shared trace total. The parent's active logical call, its per-call
+// request count and transport identity are unchanged, so the child never
+// starts or advances a parent Turn.
+func (b *BudgetLedger) ChargeDelegated(logical, transport int) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if logical < 0 || transport < 0 {
+		return product.NewError(product.CodeInvalidArgument, "delegated usage cannot be refunded")
+	}
+	if logical == 0 && transport == 0 {
+		return nil
+	}
+	if b.used.LogicalModelCalls+logical > b.limits.TraceLogicalModelCalls || b.used.TransportRequests+transport > b.limits.TraceTransportRequests {
+		return product.NewError(product.CodeBudgetExhausted, "model budget exhausted")
+	}
+	next := b.used
+	next.LogicalModelCalls += logical
+	next.TransportRequests += transport
+	if transport > 0 {
+		next.LastTransport = llm.TransportRequest{}
+	}
+	return b.commit(next, b.turnUsed)
+}
+
 // ClaimTool commits the only tool-start fact and its budget candidate together.
 // The sink must not call back into this ledger; it owns durable claim arbitration.
 func (b *BudgetLedger) ClaimTool(ctx context.Context, sink ExecutionSink, scope ExecutionScope, call FrozenCall, frozen FrozenExecution) (ClaimReceipt, error) {

@@ -22,3 +22,20 @@ func (m *Manager) EventsAfter(after uint64) ([]agent.Event, uint64) {
 	first := sort.Search(len(events), func(i int) bool { return *events[i].DurableSeq > after })
 	return clone(events[first:]), cursor
 }
+
+// EventsRange returns at most max isolated durable events with sequence in
+// (after, upto]. Paging a fixed upper bound never observes later commits.
+func (m *Manager) EventsRange(after, upto uint64, max int) []agent.Event {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if after >= upto || max <= 0 {
+		return nil
+	}
+	events := m.view.Events
+	first := sort.Search(len(events), func(i int) bool { return *events[i].DurableSeq > after })
+	last := first
+	for last < len(events) && last-first < max && *events[last].DurableSeq <= upto {
+		last++
+	}
+	return clone(events[first:last])
+}

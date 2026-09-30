@@ -36,6 +36,16 @@ func (rt *runtime) RequestToolApproval(ctx context.Context, scope agent.Executio
 		if frozen.Origin == "direct" {
 			return nil, product.NewError(product.CodePermissionDenied, "direct command approvals are no longer supported")
 		}
+		// A standalone workflow node waits at a node boundary: its segment stops
+		// and only an explicit Resume runs the same call. Delegated child
+		// workflows have no stop point, so their nodes still fail closed.
+		if frozen.Origin == "workflow_node" {
+			if decision != agent.DecisionAsk || rt.opts.Principal == "" || !rt.standaloneWorkflowScope(scope) {
+				return nil, product.NewError(product.CodePermissionDenied, "workflow tool approvals are not supported here")
+			}
+			pending := rt.newApproval(frozen)
+			return &agent.ApprovalWait{InteractionID: pending.interaction.ID}, nil
+		}
 		if decision != agent.DecisionAsk || rt.opts.Principal == "" || resumeBuildFingerprint(rt.opts) == "" {
 			return nil, product.NewError(product.CodePermissionDenied, "execution is not awaiting a supported approval")
 		}
@@ -174,10 +184,23 @@ func (rt *runtime) toolApprovalDecision(v state.View, frozen agent.FrozenExecuti
 			return agent.DecisionDeny, nil
 		}
 		consumed := pending.claimedExecution != ""
+		if pending.workflowStop != "" {
+			// Only the segment resumed directly from the stopped one may use
+			// the answer, and a consumed answer belongs to its claiming segment.
+			if rt.active == nil || rt.active.workflowFrom != pending.workflowStop || claimed != consumed || (consumed && pending.claimedExecution != rt.active.scope.ExecutionID) {
+				return agent.DecisionDeny, product.NewError(product.CodePermissionDenied, "approval is not for the current resumed execution")
+			}
+			return agent.DecisionAllow, nil
+		}
 		if rt.active == nil || rt.active.resume == nil || pending.checkpointID != rt.active.resume.ID || claimed != consumed || (consumed && pending.claimedExecution != rt.active.scope.ExecutionID) {
 			return agent.DecisionDeny, product.NewError(product.CodePermissionDenied, "approval is not for the current resumed execution")
 		}
 		return agent.DecisionAllow, nil
+	}
+	// A standalone workflow node stops at a node boundary and needs no runner
+	// checkpoint; RequestToolApproval rejects every other workflow scope.
+	if frozen.Origin == "workflow_node" && rt.opts.Principal != "" {
+		return agent.DecisionAsk, nil
 	}
 	if _, hasBlobs := rt.opts.Store.(store.CheckpointBlobs); hasBlobs && rt.opts.Principal != "" && resumeBuildFingerprint(rt.opts) != "" {
 		return agent.DecisionAsk, nil
@@ -213,6 +236,8 @@ func (rt *runtime) snapshotApprovals(v state.View) (map[string]state.Interaction
 		tr := v.Traces[in.Scope.TraceID]
 		if pending.checkpointID != "" {
 			in.State, in.CheckpointRef = "ready", pending.checkpointID
+		} else if pending.workflowStop != "" {
+			in.State = "ready" // answerable: its workflow node waits in a stopped segment
 		}
 		if pending.decision != "" {
 			in.State, approval.State = pending.decision, pending.decision

@@ -4,12 +4,24 @@ import (
 	"bytes"
 	"context"
 	"encoding/gob"
+	"encoding/json"
 	"sync"
 
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/schema"
 	"github.com/ww1489/seasprak/internal/agent"
 	product "github.com/ww1489/seasprak/internal/errors"
 )
+
+// Register only the supported interface-valued metadata types, once before
+// concurrent execution. This leaves the pinned framework checkpoint format intact.
+// RawMessage's name survives gob but not Eino's preceding state-copy step.
+func init() {
+	schema.Register[map[string]any]()
+	schema.Register[[]any]()
+	schema.Register[json.Number]()
+	schema.Register[json.RawMessage]()
+}
 
 // CheckpointStore binds Eino's ephemeral key to an immutable product blob.
 // It never removes blobs on Delete; committed session references may still need them.

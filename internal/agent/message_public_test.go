@@ -30,7 +30,26 @@ func TestPublicMessageProjection(t *testing.T) {
 				msg.Custom = &CustomMessage{CustomType: "fixture", Content: standard, Display: true}
 			}
 			before, _ := json.Marshal(msg)
+			var owned AgentMessage
+			if err := json.Unmarshal(before, &owned); err != nil {
+				t.Fatal(err)
+			}
+			standardOwned := owned.Standard
+			if custom {
+				standardOwned = owned.Custom.Content
+			}
+			projected := PublicMessageOwned(owned)
+			projectedStandard := projected.Standard
+			if custom {
+				projectedStandard = projected.Custom.Content
+			}
+			if projectedStandard != standardOwned {
+				t.Fatal("owned projection copied message")
+			}
 			out := PublicMessage(msg)
+			if !reflect.DeepEqual(projected, out) {
+				t.Fatal("owned projection differs from copying projection")
+			}
 			after, _ := json.Marshal(msg)
 			if string(before) != string(after) {
 				t.Fatal("projection mutated original")

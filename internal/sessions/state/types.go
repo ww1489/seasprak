@@ -58,9 +58,12 @@ type View struct {
 	ExecutionPolicy         agent.ResolvedPolicy
 	Events                  []agent.Event
 	ActiveTrace             string
-	Messages                []agent.AgentMessage
-	HostCommandConsumptions map[string]uint64            // Consumption commit by immutable command ID.
-	HostCommands            map[string]HostCommandResult // Durable facts, independent of model history.
+	Messages                []agent.AgentMessage // Root-to-leaf path of the selected branch.
+	Nodes                   map[string]HistoryNode
+	Branches                map[string]BranchHead
+	Offpath                 map[string]agent.AgentMessage // Entries not on the selected path.
+	HostCommandConsumptions map[string]uint64             // Consumption commit by immutable command ID.
+	HostCommands            map[string]HostCommandResult  // Durable facts, independent of model history.
 	Turns                   map[string]agent.TurnRecord
 	Calls                   map[string]agent.ToolRecord
 	Operations              map[string]Operation
@@ -84,7 +87,11 @@ type View struct {
 	Checkpoints        map[string]CheckpointRef
 	ResumedExecutions  map[string]ResumedExecution
 	DirectResumes      map[string]DirectResumeBinding
-	RepairRequired     bool
+	// Delegated child invocations by invocation ID; never part of history.
+	Invocations map[string]Invocation
+	// Workflow node executions by nodeExecutionId; never part of history.
+	WorkflowNodes  map[string]WorkflowNodeRun
+	RepairRequired bool
 
 	// Scheduling releases are independent of the original claim and budget.
 	ResourceHoldReleases map[string]ResourceHoldRelease

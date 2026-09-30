@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"github.com/ww1489/seasprak/internal/config"
+	"github.com/ww1489/seasprak/internal/llm"
+	"sync"
 	"time"
 
 	"github.com/cloudwego/eino/adk"
@@ -28,6 +30,14 @@ type Deps struct {
 	RemainingActivity   func() time.Duration
 	UnknownToolsHandler func(context.Context, string, string) (string, error)
 	EmptyInventoryCall  func(context.Context, string, string, string) error
+	// ContextBudget is checked on the complete request before every model call.
+	ContextBudget agent.ContextBudget
+	// Compactor, when set, is the single product compaction service used for
+	// the soft threshold and certified overflow recovery. Delegated children
+	// leave it nil so they never write the parent history.
+	Compactor agent.CompactionRequester
+	// Name is the registered target name; empty keeps the historical "main".
+	Name string
 }
 
 func NewAgent(ctx context.Context, deps Deps) (adk.TypedResumableAgent[*schema.AgenticMessage], error) {
@@ -36,8 +46,21 @@ func NewAgent(ctx context.Context, deps Deps) (adk.TypedResumableAgent[*schema.A
 	if deps.Budget != nil {
 		maxIter = deps.Budget.Limits().TraceLogicalModelCalls
 	}
+	name := deps.Name
+	if name == "" {
+		name = agent.MainAgentName
+	}
+	contextBudget := deps.ContextBudget
+	if deps.Compactor != nil && contextBudget.SoftRatio == 0 {
+		contextBudget.SoftRatio = agent.DefaultSoftRatio
+	}
+	recoveries := config.DefaultLimits().OverflowRecoveries
+	if deps.Budget != nil {
+		recoveries = deps.Budget.Limits().OverflowRecoveries
+	}
+	overflow := &overflowRecovery{compactor: deps.Compactor, scope: deps.Scope, limit: recoveries, context: contextBudget}
 	return deep.NewTyped(ctx, &deep.TypedConfig[*schema.AgenticMessage]{
-		Name:                   "main",
+		Name:                   name,
 		ChatModel:              validated,
 		Instruction:            deps.Instruction,
 		WithoutWriteTodos:      true,
@@ -48,11 +71,14 @@ func NewAgent(ctx context.Context, deps Deps) (adk.TypedResumableAgent[*schema.A
 			UnknownToolsHandler: deps.UnknownToolsHandler,
 		}},
 		Handlers: []adk.TypedChatModelAgentMiddleware[*schema.AgenticMessage]{
-			&boundaryHandler{boundary: deps.Boundary, budget: deps.Budget, scope: deps.Scope, emptyInventory: len(deps.Tools) == 0, emptyCall: deps.EmptyInventoryCall},
+			&boundaryHandler{boundary: deps.Boundary, budget: deps.Budget, scope: deps.Scope, emptyInventory: len(deps.Tools) == 0, emptyCall: deps.EmptyInventoryCall, context: contextBudget, instruction: deps.Instruction, compactor: deps.Compactor},
 		},
 		ModelRetryConfig: &adk.TypedModelRetryConfig[*schema.AgenticMessage]{
 			MaxRetries: 2,
 			ShouldRetry: func(ctx context.Context, rc *adk.TypedRetryContext[*schema.AgenticMessage]) *adk.TypedRetryDecision[*schema.AgenticMessage] {
+				if decision := overflow.decide(ctx, rc, deps.Budget); decision != nil {
+					return decision
+				}
 				return retryDecisionWithTiming(ctx, rc, deps.Budget, retryTiming{remaining: deps.RemainingActivity})
 			},
 		},
@@ -66,6 +92,9 @@ type boundaryHandler struct {
 	scope          agent.ExecutionScope
 	emptyInventory bool
 	emptyCall      func(context.Context, string, string, string) error
+	context        agent.ContextBudget
+	instruction    string
+	compactor      agent.CompactionRequester
 }
 
 func (h *boundaryHandler) BeforeModelRewriteState(ctx context.Context, state *adk.TypedChatModelAgentState[*schema.AgenticMessage], mc *adk.TypedModelContext[*schema.AgenticMessage]) (context.Context, *adk.TypedChatModelAgentState[*schema.AgenticMessage], error) {
@@ -95,18 +124,135 @@ func (h *boundaryHandler) BeforeModelRewriteState(ctx context.Context, state *ad
 	}
 	ctx = markTurn(noteScope(ctx, scope))
 	if h.boundary == nil {
-		return ctx, state, nil
+		return ctx, state, h.checkContext(ctx, scope, state)
 	}
 	msg, err := h.boundary.TakeSteering(ctx, scope)
-	if err != nil || msg == nil {
+	if err != nil {
 		return ctx, state, err
+	}
+	if msg == nil {
+		return ctx, state, h.checkContext(ctx, scope, state)
 	}
 	projected, err := agent.ConvertToLLM([]agent.AgentMessage{*msg})
 	if err != nil {
 		return ctx, state, err
 	}
 	state.Messages = append(state.Messages, projected...)
-	return ctx, state, nil
+	return ctx, state, h.checkContext(ctx, scope, state)
+}
+
+// checkContext requests one committed compaction when the complete request
+// crosses the soft threshold, then rejects a request that still cannot fit
+// the resolved window before any physical request is made.
+func (h *boundaryHandler) checkContext(ctx context.Context, scope agent.ExecutionScope, state *adk.TypedChatModelAgentState[*schema.AgenticMessage]) error {
+	if h.context.Window <= 0 && h.compactor == nil {
+		return nil
+	}
+	var estimate agent.ContextEstimate
+	if h.context.Window > 0 {
+		var err error
+		if estimate, err = agent.EstimateRequest(h.instruction, state.Messages, state.ToolInfos); err != nil {
+			return err
+		}
+	}
+	if h.compactor != nil {
+		// Below the soft threshold the session only runs an intent that was
+		// deferred during an approval wait; otherwise it returns immediately.
+		reason := "boundary"
+		if h.context.OverSoft(estimate) {
+			reason = "soft_threshold"
+		}
+		messages, compacted, err := compactMessages(ctx, h.compactor, scope, state.Messages, reason)
+		// A failed soft compaction keeps the old projection (08 §6); only
+		// cancellation stops the request. The hard check below still applies.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return errors.Join(ctxErr, err)
+		}
+		if err == nil && compacted {
+			state.Messages = messages
+			if h.context.Window > 0 {
+				if estimate, err = agent.EstimateRequest(h.instruction, state.Messages, state.ToolInfos); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if h.context.Window <= 0 {
+		return nil
+	}
+	return h.context.Check(estimate)
+}
+
+// compactMessages asks the session for one committed compaction and rebuilds
+// the model input as the leading instruction messages plus the new committed
+// projection. The session refuses when the visible input is not exactly the
+// committed projection, so no in-flight message is dropped.
+func compactMessages(ctx context.Context, c agent.CompactionRequester, scope agent.ExecutionScope, current []*schema.AgenticMessage, reason string) ([]*schema.AgenticMessage, bool, error) {
+	lead := 0
+	for lead < len(current) && current[lead] != nil && current[lead].Role == schema.AgenticRoleTypeSystem {
+		lead++
+	}
+	projected, compacted, err := c.CompactForRequest(ctx, scope, agent.CompactionRequest{Reason: reason, VisibleMessages: len(current) - lead})
+	if err != nil || !compacted {
+		return nil, false, err
+	}
+	converted, err := agent.ConvertToLLM(projected)
+	if err != nil {
+		return nil, false, err
+	}
+	out := make([]*schema.AgenticMessage, 0, lead+len(converted))
+	out = append(out, current[:lead]...)
+	return append(out, converted...), true, nil
+}
+
+// overflowRecovery allows OverflowRecoveries retries per Turn after a
+// certified context overflow, and only when the compaction service committed
+// a replacement projection. Without one the original failure is kept.
+type overflowRecovery struct {
+	compactor agent.CompactionRequester
+	scope     agent.ExecutionScope
+	limit     int
+	context   agent.ContextBudget
+	mu        sync.Mutex
+	turn      string
+	used      int
+}
+
+func (r *overflowRecovery) decide(ctx context.Context, rc *adk.TypedRetryContext[*schema.AgenticMessage], budg *agent.BudgetLedger) *adk.TypedRetryDecision[*schema.AgenticMessage] {
+	if r == nil || r.compactor == nil || ctx == nil || ctx.Err() != nil || rc == nil || rc.Err == nil || rc.OutputMessage != nil {
+		return nil
+	}
+	if info, ok := llm.ModelFailure(rc.Err); !ok || info.Kind != "context_overflow" {
+		return nil
+	}
+	no := &adk.TypedRetryDecision[*schema.AgenticMessage]{Retry: false}
+	scope := ScopeFromContext(ctx, r.scope)
+	r.mu.Lock()
+	if r.turn != scope.TurnID {
+		r.turn, r.used = scope.TurnID, 0
+	}
+	exhausted := r.used >= r.limit
+	if !exhausted {
+		r.used++
+	}
+	r.mu.Unlock()
+	if exhausted || (budg != nil && !budg.ModelRetryAllowed()) {
+		return no
+	}
+	messages, compacted, err := compactMessages(ctx, r.compactor, scope, rc.InputMessages, "overflow")
+	if err != nil {
+		return &adk.TypedRetryDecision[*schema.AgenticMessage]{Retry: false, RewriteError: errors.Join(rc.Err, err)}
+	}
+	if !compacted {
+		return no
+	}
+	// The replacement must still be able to fit; the lower bound excludes tools.
+	if r.context.Window > 0 {
+		if estimate, err := agent.EstimateRequest("", messages, nil); err != nil || !r.context.Fits(estimate) {
+			return no
+		}
+	}
+	return &adk.TypedRetryDecision[*schema.AgenticMessage]{Retry: true, ModifiedInputMessages: messages, PersistModifiedInputMessages: true, Backoff: time.Millisecond}
 }
 
 func (h *boundaryHandler) AfterModelRewriteState(ctx context.Context, state *adk.TypedChatModelAgentState[*schema.AgenticMessage], mc *adk.TypedModelContext[*schema.AgenticMessage]) (context.Context, *adk.TypedChatModelAgentState[*schema.AgenticMessage], error) {

@@ -20,6 +20,10 @@ type runtimeApproval struct {
 	target           string
 	decision         string
 	claimedExecution string
+	// workflowStop binds a workflow node question to the stopped segment
+	// (its execution ID) instead of a runner checkpoint. Only the Resume
+	// that directly continues that segment may consume the answer.
+	workflowStop string
 }
 
 // commandBlockedByApproval runs in the mailbox before registering a host shell.
@@ -163,7 +167,14 @@ func (rt *runtime) answerApproval(response InteractionResponse) (state.Operation
 	tr := v.Traces[a.Scope.TraceID]
 	call := v.Calls[a.CallID]
 	frozen := v.FrozenExecutions[a.FrozenExecutionID]
-	if pending.decision != "" || pending.checkpointID == "" || pending.target == "" || tr == nil || tr.State != "paused" || !tr.ExecutionStopped || tr.Settled || tr.CheckpointID != pending.checkpointID || call.Claimed || call.Observation != nil {
+	if pending.workflowStop != "" {
+		// A workflow node question is answerable only while its node waits in
+		// the stopped segment it is bound to.
+		node, bound := v.WorkflowNodeForCall(a.CallID)
+		if pending.decision != "" || !bound || node.State != "waiting" || !node.ApprovalWait || node.ToolCallID != a.CallID || tr == nil || tr.State != "paused" || !tr.ExecutionStopped || tr.Settled || tr.ExecutionID != pending.workflowStop || call.Claimed || call.Observation != nil {
+			return state.OperationReceipt{}, product.NewError(product.CodeStateConflict, "interaction has no waiting stopped workflow node")
+		}
+	} else if pending.decision != "" || pending.checkpointID == "" || pending.target == "" || tr == nil || tr.State != "paused" || !tr.ExecutionStopped || tr.Settled || tr.CheckpointID != pending.checkpointID || call.Claimed || call.Observation != nil {
 		return state.OperationReceipt{}, product.NewError(product.CodeStateConflict, "interaction has no pending stopped checkpoint")
 	}
 	now := rt.approvalNow()
@@ -186,6 +197,16 @@ func (rt *runtime) claimRuntimeApproval(ctx context.Context, frozen agent.Frozen
 	for _, pending := range rt.approvals {
 		if pending.approval.FrozenExecutionID != frozen.ID || pending.approval.FrozenHash != frozen.Hash || pending.approval.Scope != frozen.Scope {
 			continue
+		}
+		if pending.workflowStop != "" {
+			if pending.decision != "allowed-once" || pending.claimedExecution != "" || rt.active == nil || rt.active.workflowFrom != pending.workflowStop {
+				return product.NewError(product.CodePermissionDenied, "no unconsumed runtime approval")
+			}
+			if err := rt.manager.ClaimWorkflowApprovedTool(ctx, call, usage, rt.active.scope.ExecutionID); err != nil {
+				return err
+			}
+			pending.claimedExecution = rt.active.scope.ExecutionID
+			return nil
 		}
 		if pending.decision != "allowed-once" || pending.claimedExecution != "" || rt.active == nil || rt.active.resume == nil || pending.checkpointID != rt.active.resume.ID {
 			return product.NewError(product.CodePermissionDenied, "no unconsumed runtime approval")

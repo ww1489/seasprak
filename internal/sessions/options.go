@@ -36,4 +36,7 @@ type Options struct {
 	ReadOnly              bool
 	GenerationFingerprint string // Trusted application/SDK build and model/tool/hook/backend implementation version; required for Resume.
 	ReconcileQueries      map[string]ReconcileQuery
+	// Agents are additional execution targets registered at startup. The
+	// built-in main agent always exists; there is no runtime reload.
+	Agents []agent.AgentDefinition
 }

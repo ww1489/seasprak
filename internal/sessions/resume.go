@@ -36,14 +36,21 @@ func resumeBuildFingerprint(opts Options) string {
 	for _, def := range opts.Tools {
 		functions = append(functions, functionShape{def.Name, def.Run != nil, def.RunWithOutput != nil, def.ResolveExecution != nil, len(def.PrepareArguments), len(def.BeforeCall)})
 	}
+	// Registered targets change the build only when present, so sessions
+	// without them keep their earlier fingerprints.
+	agents := ""
+	if registry, err := agent.NewAgentRegistry(opts.Instruction, opts.Agents); err == nil {
+		agents = registry.Hash()
+	}
 	raw, err := json.Marshal(struct {
 		Runtime, OS, Arch, Eino, Codec, Implementation, Instruction string
 		Model                                                       llm.ModelConfig
 		Functions                                                   []functionShape
 		Files, Process, Artifacts                                   bool
 		Todos                                                       string
+		Agents                                                      string `json:",omitempty"`
 	}{runtimeFingerprint(), goruntime.GOOS, goruntime.GOARCH, "0.9.21", "1", opts.GenerationFingerprint, opts.Instruction, configured.Configuration(), functions,
-		opts.Operations.Files != nil, opts.Operations.Process != nil, opts.Operations.Artifacts != nil, todoBackendIdentity(opts.Operations.Todos)})
+		opts.Operations.Files != nil, opts.Operations.Process != nil, opts.Operations.Artifacts != nil, todoBackendIdentity(opts.Operations.Todos), agents})
 	if err != nil {
 		return ""
 	}
@@ -99,8 +106,18 @@ func (rt *runtime) matchesCallScope(scope agent.ExecutionScope, call agent.ToolR
 	if rt.active == nil {
 		return false
 	}
-	if call.Scope == scope && rt.matchesExecution(scope) {
+	if call.Scope == scope && rt.matchesToolExecution(scope) {
 		return true
+	}
+	// A resumed standalone workflow segment re-runs the original call of a
+	// node that waited for approval, keeping the call's registered scope.
+	if rt.active.workflowFrom != "" {
+		node, bound := rt.manager.View().WorkflowNodeForCall(call.Call.CallID)
+		original := call.Scope
+		original.ExecutionID = rt.active.scope.ExecutionID
+		if bound && node.State == "accepted" && node.ApprovalWait && node.ToolCallID == call.Call.CallID && original == rt.active.scope && (scope == call.Scope || scope == original) {
+			return true
+		}
 	}
 	resume := rt.active.resume
 	if resume == nil || !sameLogicalScope(call.Scope, resume.Scope) {
@@ -147,6 +164,21 @@ func (s *AgentSession) Resume(ctx context.Context, cmd ResumeCommand) (state.Ope
 		}
 		if cmd.ExpectedRevision != view.LastSeq {
 			return nil, product.NewError(product.CodeStateConflict, "session revision changed")
+		}
+		// Workflows resume from their durable node records, not a runner checkpoint.
+		if tr := view.Traces[cmd.TraceID]; tr != nil {
+			if _, workflow := rt.workflowTarget(tr.Target); workflow {
+				return rt.resumeWorkflow(ctx, operation, view)
+			}
+		}
+		// A safely interrupted delegated child has no Eino runner checkpoint.
+		// Its durable invocation and original parent call are the recovery point.
+		if interruptedRootChild(view, cmd.TraceID) {
+			inv, err := rt.validateChildResume(view, cmd.TraceID)
+			if err != nil {
+				return nil, err
+			}
+			return rt.resumeChild(ctx, operation, view, inv)
 		}
 		cp, err := rt.validateResume(ctx, cmd.TraceID, view)
 		if err != nil {

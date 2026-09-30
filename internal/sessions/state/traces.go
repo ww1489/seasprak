@@ -15,15 +15,27 @@ func terminal(state string) bool {
 func (m *Manager) SetTraceState(ctx context.Context, id, state string, settled bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	controls, events, err := m.traceTransition(id, state)
+	if err != nil || controls == nil {
+		return err
+	}
+	_, err = m.commit(ctx, controls, nil, events)
+	return err
+}
+
+// traceTransition builds the records of one trace state change without
+// committing, so an accepted operation can share the same commit. A nil
+// result with nil error means the trace is already in that state.
+func (m *Manager) traceTransition(id, state string) ([]store.Record, []agent.Event, error) {
 	old := m.view.Traces[id]
 	if old == nil {
-		return product.NewError(product.CodeNotFound, "trace not found")
+		return nil, nil, product.NewError(product.CodeNotFound, "trace not found")
 	}
 	if old.State == state {
-		return nil
+		return nil, nil, nil
 	}
 	if terminal(old.State) {
-		return product.NewError(product.CodeStateConflict, "terminal trace cannot change")
+		return nil, nil, product.NewError(product.CodeStateConflict, "terminal trace cannot change")
 	}
 	allowed := false
 	switch old.State {
@@ -37,11 +49,11 @@ func (m *Manager) SetTraceState(ctx context.Context, id, state string, settled b
 		allowed = state == "cancelling" || state == "failed"
 	}
 	if !allowed {
-		return product.NewError(product.CodeStateConflict, "invalid trace transition")
+		return nil, nil, product.NewError(product.CodeStateConflict, "invalid trace transition")
 	}
 	if state == "running" {
 		if old.State != "queued" || m.view.ActiveTrace != "" {
-			return product.NewError(product.CodeStateConflict, "top-level execution is occupied")
+			return nil, nil, product.NewError(product.CodeStateConflict, "top-level execution is occupied")
 		}
 	}
 	tr := *old
@@ -81,11 +93,11 @@ func (m *Manager) SetTraceState(ctx context.Context, id, state string, settled b
 						OperationID string `json:"operationId"`
 					}
 					if json.Unmarshal(in.Content, &envelope) != nil {
-						return product.NewError(product.CodeStateConflict, "command input is invalid")
+						return nil, nil, product.NewError(product.CodeStateConflict, "command input is invalid")
 					}
 					op, exists := m.view.Operations[envelope.OperationID]
 					if !exists || op.Kind != "direct_command" {
-						return product.NewError(product.CodeStateConflict, "command operation is missing")
+						return nil, nil, product.NewError(product.CodeStateConflict, "command operation is missing")
 					}
 					if !terminal(op.State) {
 						op.State = state
@@ -112,8 +124,7 @@ func (m *Manager) SetTraceState(ctx context.Context, id, state string, settled b
 		}
 		events = append(events, m.event("queue.changed", id, "", map[string]string{"reason": state}))
 	}
-	_, err := m.commit(ctx, controls, nil, events)
-	return err
+	return controls, events, nil
 }
 func (m *Manager) HoldIndependent(ctx context.Context, id string) error {
 	return m.setHold(ctx, id, true)

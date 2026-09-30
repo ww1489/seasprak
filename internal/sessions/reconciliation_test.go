@@ -106,6 +106,34 @@ func TestReconcileTrustedNoStartDoesNotRerunAndReleasesOnlyItsHold(t *testing.T)
 	}
 }
 
+// The snapshot lists exactly the identities Reconcile accepts, and the entry
+// disappears once the reconciliation resolves the call.
+func TestSnapshotPendingReconciliationsMatchReconcileIdentity(t *testing.T) {
+	s, manager, _, input, callID := makeReconcileSession(t, ReconcileQueryFunc(func(context.Context, ReconcileQueryRequest) (ReconcileEvidence, error) {
+		return ReconcileEvidence{EvidenceRefs: []string{"query-evidence"}, EvidenceSource: "test-query", TrustedNoStart: true}, nil
+	}))
+	before := manager.View()
+	snap, err := s.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := PendingReconciliation{TraceID: input.TraceID, InvocationID: before.Traces[input.TraceID].InvocationID, CallID: callID, ObservationID: before.Observations["legacy:"+callID].ID, ObservationVersion: before.Observations["legacy:"+callID].Version}
+	if len(snap.PendingReconciliations) != 1 || snap.PendingReconciliations[0] != want {
+		t.Fatalf("pending=%+v want %+v", snap.PendingReconciliations, want)
+	}
+	p := snap.PendingReconciliations[0]
+	if _, err := s.Reconcile(t.Context(), ReconcileCommand{TraceID: p.TraceID, InvocationID: p.InvocationID, CallID: p.CallID, ObservationID: p.ObservationID, ObservationVersion: p.ObservationVersion, ExpectedRevision: snap.Revision, QueryID: "no-start"}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.Snapshot(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after.PendingReconciliations) != 0 {
+		t.Fatalf("resolved call still pending: %+v", after.PendingReconciliations)
+	}
+}
+
 func TestReconcileTrustedNoStartDoesNotRestoreReleasedHold(t *testing.T) {
 	s, manager, _, input, callID := makeReconcileSession(t, ReconcileQueryFunc(func(context.Context, ReconcileQueryRequest) (ReconcileEvidence, error) {
 		return ReconcileEvidence{EvidenceRefs: []string{"query-evidence"}, EvidenceSource: "test-query", TrustedNoStart: true}, nil

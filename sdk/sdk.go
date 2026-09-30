@@ -82,6 +82,7 @@ type (
 	Interaction                = state.Interaction
 	Approval                   = state.Approval
 	Reconciliation             = state.Reconciliation
+	Invocation                 = state.Invocation
 	ReconcileCommand           = sessions.ReconcileCommand
 	ReconcileEvidence          = sessions.ReconcileEvidence
 	ReconcileQuery             = sessions.ReconcileQuery
@@ -91,6 +92,7 @@ type (
 	CommandResult              = sessions.CommandResult
 	FrozenExecution            = agent.FrozenExecution
 	ResumeEligibility          = sessions.ResumeEligibility
+	PendingReconciliation      = sessions.PendingReconciliation
 	OperationReceipt           = state.OperationReceipt
 	OperationStatus            = state.OperationStatus
 	Selection                  = state.Selection
@@ -99,6 +101,19 @@ type (
 	SelectNextTurnModelRequest = sessions.SelectNextTurnModelRequest
 	SetActiveToolsRequest      = sessions.SetActiveToolsRequest
 	SearchToolsRequest         = sessions.SearchToolsRequest
+	CancelTraceRequest         = sessions.CancelTraceRequest
+	ContinueQueueRequest       = sessions.ContinueQueueRequest
+	Capabilities               = sessions.Capabilities
+	AgentDefinition            = agent.AgentDefinition
+	AgentInfo                  = agent.AgentInfo
+	WorkflowDefinition         = agent.WorkflowDefinition
+	WorkflowNode               = agent.WorkflowNode
+	WorkflowValue              = agent.WorkflowValue
+	WorkflowRef                = agent.WorkflowRef
+	WorkflowCondition          = agent.WorkflowCondition
+	WorkflowEdge               = agent.WorkflowEdge
+	CompiledWorkflow           = agent.CompiledWorkflow
+	WorkflowNodeRun            = state.WorkflowNodeRun
 	ToolCandidate              = sessions.ToolCandidate
 	Subscription               = sessions.Subscription
 	TraceState                 = state.TraceState
@@ -211,6 +226,20 @@ func CreateAgentSession(ctx context.Context, opts SessionOptions) (*AgentSession
 
 func OpenAgentSession(ctx context.Context, opts SessionOptions) (*AgentSession, error) {
 	return sessions.OpenAgentSession(ctx, opts)
+}
+
+// WorkflowFormatV1 is the accepted unified workflow format; WorkflowModelBinding
+// is the only model binding name a workflow target may use.
+const (
+	WorkflowFormatV1     = agent.WorkflowFormatV1
+	WorkflowModelBinding = sessions.WorkflowModelBinding
+)
+
+// CompileWorkflowTarget validates def against the session's registered tools,
+// model binding and already listed workflow targets, and returns a workflow
+// AgentDefinition to append to SessionOptions.Agents.
+func CompileWorkflowTarget(def WorkflowDefinition, opts SessionOptions) (AgentDefinition, error) {
+	return sessions.CompileWorkflowTarget(def, opts)
 }
 
 func NewError(code, message string) *Error { return product.NewError(code, message) }

@@ -32,7 +32,11 @@ func (rt *runtime) runSegment(frame *execution, inputID string) {
 	frame.input = agent.InputRef{InputID: inputID, TraceID: frame.scope.TraceID, Kind: "prompt"}
 	err := rt.beginActivity(frame)
 	if err == nil {
-		err = rt.executeSegment(frame, inputID)
+		if frame.childResume != nil {
+			err = rt.executeChildResume(frame)
+		} else {
+			err = rt.executeSegment(frame, inputID)
+		}
 	}
 	err = errors.Join(err, rt.endActivity(frame))
 	_ = rt.do(context.Background(), func(rt *runtime) error { rt.segmentFinished(frame, err); return nil })
@@ -40,14 +44,26 @@ func (rt *runtime) runSegment(frame *execution, inputID string) {
 func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 	ctx := frame.ctx
 	scope := frame.scope
+	def, err := rt.frameDefinition(frame)
+	if err != nil {
+		return err
+	}
 	environment, workspace := rt.resourceDomain()
+	if def.Kind == agent.AgentKindWorkflow {
+		return rt.executeWorkflow(frame, inputID, def)
+	}
 	exec, err := tools.NewExecutor(scope.Generation, rt.searchToolDefinitions(), rt, sessionAuthorizer{rt: rt, scope: scope}, frame.budget,
 		tools.WithCompiledSchemas(rt.opts.compiledTools), tools.WithOperations(rt.opts.Operations), tools.WithResourceScheduler(rt.resourceScheduler()), tools.WithResourceDomain(environment, workspace))
 	if err != nil {
 		return err
 	}
+	// The task tool is visible only to a caller with delegation targets.
+	delegates := rt.canDelegate(def.Name)
 	baseTools := make([]tool.BaseTool, 0, len(rt.opts.ToolInfos))
 	for _, info := range rt.opts.ToolInfos {
+		if info.Name == delegateToolName && !delegates {
+			continue
+		}
 		kind := ""
 		for _, def := range rt.opts.Tools {
 			if def.Name == info.Name {
@@ -61,7 +77,7 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 		}
 		baseTools = append(baseTools, wrapped)
 	}
-	ag, err := einorun.NewAgent(ctx, einorun.Deps{Model: &turnModel{frame: frame}, Tools: baseTools, Sink: rt, Budget: frame.budget, Boundary: rt, Instruction: rt.opts.Instruction, Scope: scope, RemainingActivity: frame.activity.remaining,
+	ag, err := einorun.NewAgent(ctx, einorun.Deps{Model: &turnModel{frame: frame}, Tools: baseTools, Sink: rt, Budget: frame.budget, Boundary: rt, Instruction: def.Instruction, Name: def.Name, Scope: scope, RemainingActivity: frame.activity.remaining, ContextBudget: contextBudget(frame.currentModel), Compactor: rt,
 		EmptyInventoryCall: func(ctx context.Context, callID, name, arguments string) error {
 			_, err := exec.RejectUnavailable(ctx, einorun.ScopeFromContext(ctx, scope), callID, name, arguments)
 			return err
@@ -109,7 +125,11 @@ func (rt *runtime) executeSegment(frame *execution, inputID string) error {
 						return nil, err
 					}
 				}
-				return agent.ConvertToLLM(rt.manager.View().Messages)
+				projected, err := expandAttachments(rt.opts.StateRoot, rt.opts.SessionID, agent.ProjectHistory(rt.manager.View().Messages))
+				if err != nil {
+					return nil, err
+				}
+				return agent.ConvertToLLM(projected)
 			})
 			if err != nil {
 				return nil, err
@@ -271,18 +291,47 @@ func (rt *runtime) matchesExecution(scope agent.ExecutionScope) bool {
 	return current == scope
 }
 
+// matchesToolExecution also accepts a delegated workflow child running inside
+// the active execution. It is used only by the controlled tool pipeline
+// ports; model, Turn and boundary ports keep matchesExecution.
+func (rt *runtime) matchesToolExecution(scope agent.ExecutionScope) bool {
+	return rt.matchesExecution(scope) || rt.matchesChildTool(scope)
+}
+
+// matchesChildTool accepts a delegated workflow or agent child scope. It is
+// admitted only into the controlled tool pipeline ports.
+func (rt *runtime) matchesChildTool(scope agent.ExecutionScope) bool {
+	return rt.matchesWorkflowChild(scope) || rt.matchesDelegatedChild(scope)
+}
+
+// toolFact lists the controlled-pipeline facts a workflow child may commit.
+func toolFact(kind string) bool {
+	switch kind {
+	case "tool_frozen", "tool_intent", "tool_observation", "tool_output", "tool_output_projection":
+		return true
+	}
+	return false
+}
+
+// ownTurn fills the active Turn only for the active invocation's own scope.
+// Workflow node scopes (standalone or delegated) never borrow a Turn.
+func (rt *runtime) ownTurn(scope agent.ExecutionScope) agent.ExecutionScope {
+	if scope.TurnID == "" && scope.InvocationID == rt.active.scope.InvocationID {
+		scope.TurnID = rt.active.turnID
+	}
+	return scope
+}
+
 func (rt *runtime) CommitFact(ctx context.Context, scope agent.ExecutionScope, fact agent.Fact) error {
 	// Execution results must be recorded even when the request was cancelled.
 	return rt.do(context.WithoutCancel(ctx), func(rt *runtime) error {
-		if !rt.matchesExecution(scope) {
+		if !rt.matchesExecution(scope) && !(toolFact(fact.Kind) && rt.matchesChildTool(scope)) {
 			if fact.Kind == "tool_observation" {
 				return rt.recordLateObservation(context.WithoutCancel(ctx), scope, fact)
 			}
 			return product.NewError(product.CodeStateConflict, "execution scope is not active")
 		}
-		if scope.TurnID == "" {
-			scope.TurnID = rt.active.turnID
-		}
+		scope = rt.ownTurn(scope)
 		switch fact.Kind {
 		case "tool_output":
 			return rt.publishToolOutput(ctx, scope, fact.Payload)
@@ -410,7 +459,7 @@ func (rt *runtime) CommitFact(ctx context.Context, scope agent.ExecutionScope, f
 			if !ok || call.Scope.TraceID != scope.TraceID || call.Scope.InvocationID != scope.InvocationID || call.Scope.TurnID != scope.TurnID || call.Call != frozen {
 				return product.NewError(product.CodeStateConflict, "tool intent does not match accepted call")
 			}
-			if !acceptedAttemptForCall(rt.manager.View(), call) {
+			if !rt.acceptedCall(rt.manager.View(), call) {
 				return product.NewError(product.CodeStateConflict, "tool attempt was not accepted")
 			}
 			committed, ok := rt.manager.View().FrozenExecutions["execution:"+frozen.CallID]
@@ -503,6 +552,9 @@ func (rt *runtime) LookupTool(ctx context.Context, scope agent.ExecutionScope, p
 		}
 		view := rt.manager.View()
 		for _, call := range view.Calls {
+			if _, workflow := view.WorkflowNodeForCall(call.Call.CallID); workflow {
+				continue // bound by a workflow node, never by a model response
+			}
 			if call.Scope.TraceID == scope.TraceID && call.Scope.InvocationID == scope.InvocationID && call.Scope.TurnID == scope.TurnID && call.Call.ProviderCallID == providerID {
 				if !acceptedAttemptForCall(view, call) {
 					return nil, product.NewError(product.CodeStateConflict, "tool attempt was not accepted")
@@ -528,6 +580,11 @@ func (rt *runtime) LookupTool(ctx context.Context, scope agent.ExecutionScope, p
 // Legacy P1 journals have no attempt records. Once a Turn has registered an
 // attempt, only its accepted candidate can authorize the matching model call.
 func acceptedAttemptForCall(view state.View, call agent.ToolRecord) bool {
+	// A delegated child has no Turn or model attempt records; its calls are
+	// accepted only when registered from its own complete model response.
+	if _, child := view.Invocations[call.Scope.InvocationID]; child {
+		return childCallAccepted(view, call)
+	}
 	registered := false
 	for id, initial := range view.ModelAttempts {
 		if initial.Scope.TraceID != call.Scope.TraceID || initial.Scope.InvocationID != call.Scope.InvocationID || initial.Scope.TurnID != call.Scope.TurnID {
@@ -622,6 +679,16 @@ func sortedToolNames(names map[string]struct{}) []string {
 	return out
 }
 
+// contextBudget reads the resolved window of a catalog-bound model. Models
+// without resolved options (test doubles) are not window-budgeted.
+func contextBudget(candidate model.AgenticModel) agent.ContextBudget {
+	if resolved, ok := candidate.(interface{ EffectiveOptions() llm.EffectiveOptions }); ok {
+		o := resolved.EffectiveOptions()
+		return agent.ContextBudget{Window: o.ContextWindowTokens, OutputReserve: o.MaxOutputTokens}
+	}
+	return agent.ContextBudget{}
+}
+
 func modelVersion(candidate model.AgenticModel) string {
 	if configured, ok := candidate.(interface{ Configuration() llm.ModelConfig }); ok {
 		return configured.Configuration().Version
@@ -712,10 +779,32 @@ func (rt *runtime) finishInterruptedTurn(frame *execution) error {
 	if !ok || turn.Ended {
 		return nil
 	}
+	retained := false
 	for _, id := range turn.CallIDs {
 		call := view.Calls[id]
 		if call.Observation != nil {
 			continue
+		}
+		if tr := view.Traces[turn.TraceID]; tr != nil && tr.State == "cancelling" && call.Call.Name == delegateToolName {
+			cancelled := false
+			for _, inv := range view.Invocations {
+				if inv.ParentCallID == call.Call.CallID && inv.ParentInvocationID == tr.InvocationID && inv.TraceID == tr.ID && inv.State == "interrupted" {
+					if err := rt.manager.CancelInterruptedChild(context.Background(), inv.ID); err != nil {
+						return err
+					}
+					cancelled = true
+					break
+				}
+			}
+			if cancelled {
+				continue
+			}
+		}
+		if _, resumable := resumableInterruptedParent(view, call); resumable {
+			if rt.closing {
+				retained = true
+				continue
+			}
 		}
 		status, content, effect := "skipped", "execution stopped before tool started", "none"
 		if call.Claimed {
@@ -725,6 +814,9 @@ func (rt *runtime) finishInterruptedTurn(frame *execution) error {
 		if err := rt.manager.SaveCall(context.Background(), call); err != nil {
 			return err
 		}
+	}
+	if retained {
+		return nil // The retained delegate result must finish this original group.
 	}
 	if len(turn.CallIDs) > 0 {
 		return rt.manager.FinishTools(context.Background(), turn)

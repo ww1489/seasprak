@@ -11,6 +11,11 @@ import (
 )
 
 func alignTools(opts *Options) ([]toolDecl, error) {
+	// The delegation builtin is part of the generation manifest whenever a
+	// delegable target is registered; without one the inventory is unchanged.
+	if err := withDelegateTool(opts); err != nil {
+		return nil, err
+	}
 	if len(opts.Tools) == 0 {
 		if len(opts.ToolInfos) != 0 {
 			return nil, product.NewError(product.CodeInvalidArgument, "tool info does not match tool definitions")

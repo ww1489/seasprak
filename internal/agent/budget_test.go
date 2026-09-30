@@ -67,6 +67,29 @@ func TestPersistFailureDoesNotSwapUsage(t *testing.T) {
 	}
 }
 
+func TestChargeDelegatedSharesTotalWithoutAdvancingParentCall(t *testing.T) {
+	b := NewBudget(config.Limits{LogicalModelRequests: 1, TraceLogicalModelCalls: 3, TraceTransportRequests: 3})
+	if err := b.BeginTurnID("parent"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.OccupyModel(); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.ChargeDelegated(2, 1); err != nil {
+		t.Fatal(err)
+	}
+	got := b.Snapshot()
+	if got.LogicalModelCalls != 3 || got.TransportRequests != 2 || got.ModelCallID != "parent" || got.ModelRequests != 1 {
+		t.Fatalf("usage %+v", got)
+	}
+	if err := b.ChargeDelegated(1, 0); err == nil || b.Snapshot() != got {
+		t.Fatalf("exhausted charge accepted: %v %+v", err, b.Snapshot())
+	}
+	if err := b.ChargeDelegated(-1, 0); err == nil {
+		t.Fatal("refund accepted")
+	}
+}
+
 func TestRestoreReplacesUsage(t *testing.T) {
 	b := NewBudget(config.DefaultLimits())
 	want := Usage{LogicalModelCalls: 4, TransportRequests: 9, ToolExecutions: 3}

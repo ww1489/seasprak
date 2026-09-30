@@ -73,11 +73,6 @@ func (m *snapshotBenchmarkModel) Generate(ctx context.Context, _ []*schema.Agent
 		return &schema.AgenticMessage{Role: schema.AgenticRoleTypeAssistant, Extra: map[string]any{"seasprak.finish": "tool_calls"}, ContentBlocks: []*schema.ContentBlock{schema.NewContentBlock(&schema.FunctionToolCall{CallID: "snapshot-work", Name: "work", Arguments: `{}`})}}, nil
 	}
 	msg := privateReplayFixture()
-	// Keep private Extra values scalar: the framework's checkpoint gob codec
-	// does not register nested map[string]any held inside interface values.
-	msg.ContentBlocks[1].Extra["other-provider"] = "synthetic-private-block"
-	msg.ResponseMeta.Extension = nil
-	msg.ContentBlocks[2].AssistantGenText.Extension = nil
 	msg.ContentBlocks[2].AssistantGenText.Text = m.text
 	return msg, nil
 }
@@ -295,6 +290,23 @@ func TestSnapshotBenchmarkReadOnlyIsolation(t *testing.T) {
 			internal, err := agent.ConvertToLLM(before.Messages)
 			if err != nil {
 				t.Fatal(err)
+			}
+			assistants := 0
+			want := privateReplayFixture()
+			for _, msg := range internal {
+				if msg.Role != schema.AgenticRoleTypeAssistant || len(msg.ContentBlocks) != len(want.ContentBlocks) {
+					continue
+				}
+				assistants++
+				if msg.ResponseMeta == nil || msg.ContentBlocks[2].AssistantGenText == nil ||
+					!reflect.DeepEqual(msg.ContentBlocks[1].Extra, want.ContentBlocks[1].Extra) ||
+					!reflect.DeepEqual(msg.ResponseMeta.Extension, want.ResponseMeta.Extension) ||
+					!reflect.DeepEqual(msg.ContentBlocks[2].AssistantGenText.Extension, want.ContentBlocks[2].AssistantGenText.Extension) {
+					t.Fatal("fixture lost nested block Extra or private extensions")
+				}
+			}
+			if assistants != 4 {
+				t.Fatalf("nested private history messages=%d want=4", assistants)
 			}
 			raw, err := json.Marshal(internal)
 			if err != nil || !strings.Contains(string(raw), "synthetic-private-") {

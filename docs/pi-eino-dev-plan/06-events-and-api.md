@@ -1,5 +1,9 @@
 # 06 事件、控制 hooks 与外部接口
 
+## 2026-09-29 P3 已批准范围（实施中）
+
+P3 新增独立 `cmd/web --web` 本机入口，保留 `cmd/agentd` 限制；采用 Eino 官方示例 A2UI v0.8 子集，替换本章原“A2UI 仅预留”的阶段限制，但不将 UI 协议放入 L2。网络契约细化、审批实例回执例外、固定来源及阶段边界见 [13 P3 Web 接入契约](13-p3-web-contract.md)。仅启动注册的多 Agent/静态工作流和真实分支/压缩前移；动态导入、业务补参、热重载及完整扩展生命周期仍属后续。网页不开放宿主 shell。以下完整目标面不等于当前已交付列表。
+
 对应 PRD M07/M11 接入部分。本章是 SDK、HTTP、订阅与 hook 组合规则的主定义；状态和提交分别引用 03/09。
 
 <a id="pipelines"></a>
@@ -129,7 +133,7 @@ P2 保留现有 `Cancel(ctx, string) error`、`ContinueQueue(ctx, string) error`
 | GET /v1/sessions/{sid}/workflows | 无 | 已装配定义、输入输出、导入诊断及恢复能力 |
 | POST /v1/sessions/{sid}/commands/{name} | schema 参数 | 202；权限/空闲条件按登记 |
 | POST /v1/sessions/{sid}/executions/commands | command、cwd、shell 配置引用 | P3 适配待设计；不得把宿主用户 shell 入口直接开放给未受信远程调用方，不能用客户端来源字段绕过模型工具权限 |
-| GET /v1/sessions/{sid}/artifacts/{aid} | range | 授权读取；未知/变更明确报错 |
+| GET /v1/sessions/{sid}/attachments/{aid} | range | 授权读取；未知/变更明确报错（P3 实现路径，见 13 §4；原 `artifacts/{aid}` 名称不再使用） |
 | GET /v1/sessions/{sid}/snapshot | 无 | 一致快照、durableSeq、临时流位置 |
 | GET /v1/sessions/{sid}/events | cursor / traceId | text/event-stream |
 
@@ -213,7 +217,7 @@ D14-SSE 图：在协调者处固定 B 并注册后续缓冲，重放期间接住
 
 校验 Host 和存在时的 Origin，只允许配置的本地同源；CORS 默认关闭。SDK Principal 由嵌入程序提供，不自动当作 HTTP 用户。快照、附件、事件、审批与写操作使用同一 Session 授权。
 
-测试页展示可选择 Agent、current Trace/Turn、临时/最终消息、工具结果、pending/held queue、interaction、操作与恢复资格；操作调用公开 API。验证选择独立 Agent 后提交、结果归属和忙时不误投；同一工作流忙时的新任务明确提交 prompt。覆盖定向输入目标省略/匹配/错配，以及 queued 项在 reload、重启、ContinueQueue 后保持原版本。内容按文本/结构化数据渲染，不执行工具返回的 HTML。A2UI 仅预留外层映射位置，不进入 L2。
+测试页展示可选择 Agent、current Trace/Turn、临时/最终消息、工具结果、pending/held queue、interaction、操作与恢复资格；操作调用公开 API。验证选择独立 Agent 后提交、结果归属和忙时不误投；同一工作流忙时的新任务明确提交 prompt。覆盖定向输入目标省略/匹配/错配，以及 queued 项在 reload、重启、ContinueQueue 后保持原版本。内容按文本/结构化数据渲染，不执行工具返回的 HTML。P3 按 13 的固定 Eino 示例子集实现 A2UI 外层映射，不进入 L2；本句替换此前仅预留的阶段限制。
 
 <a id="evidence"></a>
 ## 8. 证据与验收

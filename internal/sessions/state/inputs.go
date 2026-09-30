@@ -62,6 +62,20 @@ func (m *Manager) AcceptWithLimitsAndSelection(ctx context.Context, cmd agent.In
 	_, err = m.commit(ctx, controls, nil, []agent.Event{m.event("input.accepted", traceID, "", receipt)})
 	return receipt, err
 }
+
+// FindInput returns the original receipt of an idempotent input replay.
+// Deduplication precedes classification and target selection.
+func (m *Manager) FindInput(cmd agent.InputCommand) (agent.InputReceipt, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if cmd.IdempotencyKey == "" {
+		return agent.InputReceipt{}, false
+	}
+	keyBytes, _ := json.Marshal([]string{cmd.Principal, "input", cmd.IdempotencyKey})
+	old, ok := m.view.Idem[string(keyBytes)]
+	return old.Receipt, ok
+}
+
 func (m *Manager) classify(cmd agent.InputCommand, target agent.TargetAgent) (string, string, error) {
 	if len(cmd.Content) == 0 || !json.Valid(cmd.Content) {
 		return "", "", product.NewError(product.CodeInvalidArgument, "valid JSON content is required")
@@ -71,7 +85,7 @@ func (m *Manager) classify(cmd agent.InputCommand, target agent.TargetAgent) (st
 		if cmd.TargetTraceID != "" {
 			return "", "", product.NewError(product.CodeInvalidArgument, "independent input cannot target a trace")
 		}
-		if target.Name != "main" {
+		if target.Name == "" {
 			return "", "", product.NewError(product.CodeUnsupportedCapability, "agent is not registered")
 		}
 		if m.view.HasUnresolvedEffects() {
@@ -84,6 +98,11 @@ func (m *Manager) classify(cmd agent.InputCommand, target agent.TargetAgent) (st
 			tr := m.view.Traces[m.view.ActiveTrace]
 			if tr.State != "running" {
 				return "", "", product.NewError(product.CodeStateConflict, "active trace cannot accept chat")
+			}
+			// An explicit different target is not silently merged into the
+			// active trace of another agent.
+			if cmd.TargetAgent != "" && cmd.TargetAgent != tr.Target.Name {
+				return "", "", product.NewError(product.CodeStateConflict, "target mismatch")
 			}
 			return "follow_up", tr.ID, nil
 		}
@@ -134,12 +153,17 @@ func (m *Manager) Consume(ctx context.Context, id string) error {
 	next.State = "consumed"
 	text := string(in.Content)
 	var body struct {
-		Text string `json:"text"`
+		Text        string   `json:"text"`
+		Attachments []string `json:"attachments"`
 	}
-	if json.Unmarshal(in.Content, &body) == nil && body.Text != "" {
+	parsed := json.Unmarshal(in.Content, &body) == nil
+	if parsed && (body.Text != "" || len(body.Attachments) > 0) {
 		text = body.Text
 	}
 	msg := agent.AgentMessage{ID: agent.MustID(), Kind: agent.KindUser, Status: agent.StatusComplete, Scope: agent.MessageScope{SessionID: m.sessionID, TraceID: in.TraceID, InputID: id}, Source: agent.SourceRef{Kind: agent.SourceHuman}, Standard: schema.UserAgenticMessage(text)}
+	if parsed && len(body.Attachments) > 0 {
+		msg.Attachments = append([]string(nil), body.Attachments...)
+	}
 	entry := record("message", msg.ID, msg)
 	entry.ParentID = m.view.LeafID
 	_, err := m.commit(ctx, []store.Record{record("input", id, next)}, []store.Record{entry}, []agent.Event{m.event("input.consumed", in.TraceID, "", next), m.event("message.finalized", in.TraceID, "", msg)})

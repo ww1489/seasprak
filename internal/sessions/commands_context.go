@@ -21,18 +21,20 @@ func (rt *runtime) flushHostCommands(ctx context.Context) error {
 
 // snapshotMessages orders display by original durable finalization, not the
 // later model-context consumption. The immutable command appears exactly once.
+// v must be a disposable, exclusively owned Manager.View copy, with private
+// resume validation already complete; projecting consumes its message objects.
 func snapshotMessages(v state.View) []agent.AgentMessage {
 	var out []agent.AgentMessage
 	seen := make(map[string]bool)
 	for _, msg := range v.Messages {
 		if _, host := v.HostCommands[msg.ID]; !host {
-			out = append(out, agent.PublicMessage(msg))
+			out = append(out, agent.PublicMessageOwned(msg))
 			seen[msg.ID] = true
 		}
 	}
 	for id, result := range v.HostCommands {
 		if !seen[id] {
-			out = append(out, agent.PublicMessage(result.Message))
+			out = append(out, agent.PublicMessageOwned(result.Message))
 			seen[id] = true
 		}
 	}

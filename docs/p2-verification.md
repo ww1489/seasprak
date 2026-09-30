@@ -1,5 +1,28 @@
 # P2 实施记录与验证证据
 
+## 2026-09-29 嵌套 Extra 与 Snapshot 优化（进行中）
+
+基线 `a8fa57fef3d544482e2e4998d5671b17058e645e`，执行前工作区干净。本轮不读取 `.test_env`、不运行 live、不处理 macOS、不提交推送。
+
+已确认 Eino v0.9.21 `compose/graph_run.go` 在写 checkpoint 前调用 `deepCopyState`；其内部序列化切片分支保存元素类型并以 `reflect.SliceOf` 重建，导致接口中的 `json.RawMessage` 恢复为 `[]byte`。直接 gob 类型矩阵通过，但真实恢复链四个扩展位置的严格命名类型断言失败。维护者已明确选择有限支持：普通嵌套 JSON 树及 `json.Number` 为恢复合同，RawMessage 的恢复类型限制单列，不改框架编码器、不声称其端到端命名类型保真。原始字节内容仍须验证。
+
+旧标量夹具已用 Go build overlay 将生产 `checkpoint.go` 替换为修复前源码后重新独占捕获；主线程核对 overlay 文件与 HEAD 对应 blob 哈希均为 `6abe582b065913b3bbbeaccc029e00c83665bdd0`，当前 `TestCheckpointLegacyScalarResume` 普通及 race 均通过。夹具不由默认测试重写，来源和兼容范围见 `internal/agent/eino/testdata/README.md`。本证据仅认证旧模型后、工具前标量 checkpoint，不推广到全部历史格式。为不改变旧回归的流式覆盖，测试模型在没有新增 decorate/inspect 回调时仍调用原 Stream 实现；完整 Checkpoint 专项 race3 通过。
+
+Snapshot 结构性红测 `TestSnapshotOwnedProjectionDoesNotSerializeAgain` 在普通历史和宿主消息两分支均复现每条重复序列化一次。新增 `PublicMessageOwned` 与新旧投影等价性测试，原 `PublicMessage` 仍复制后调用共享脱敏逻辑。完整嵌套夹具先采集双平台 before，再仅将 `snapshotMessages` 两处切换到 owned 入口。`runtime.snapshot` 明确消费独占 View；所有恢复校验及 ctx.Err 检查仍先于展示投影。通用 View/commit 深复制、Store.Load/blob Get 和公开字段规则均未改动。
+
+新增 `TestCheckpointExtraIndependentProcessReopen`：独立 writer 真实 Pause 保存磁盘并退出，再由全新 reader Open/Snapshot 零执行、显式 Resume。模型后和工具后两暂停点均断言跨进程工具合计一次、原模型不重跑、四处嵌套树与 json.Number 精确恢复；没有测试注册或编码预热。主线程 Windows 普通及 race 精确专项分别 exit 0。恢复完整 `privateReplayFixture`，不再将嵌套扩展转为标量或清除 Extension；默认隔离测试覆盖具体私有值与公开投影。
+
+新增 `TestSnapshotMessagesConcurrentIsolation` 验证并发修改旧快照消息不影响新快照或 Manager，并验证已取消请求与关闭后查询；结构性红测接线后转绿。Windows `go test -mod=readonly [-race] ./internal/sessions ./internal/agent -run 'Snapshot|PublicMessage|CheckpointExtra' -count=1 -timeout=180s` 均 exit 0。后续整仓与性能结果见本节补充。
+
+### 同夹具性能对照与验收状态
+
+先恢复完整嵌套 Extra 并通过默认测试，再在相同机器、Go 1.27.0、GOWORK=off、GOMAXPROCS=4 下，执行 `go test -mod=readonly ./internal/sessions -run '^$' -bench '^BenchmarkAgentSessionSnapshot$' -benchmem -benchtime=1s -count=5 -timeout=15m`。Windows before/after 与 Linux before/after 四次均 exit 0，每次 20 组各五轮；不使用旧标量夹具作收益对照。
+
+独立复核四份结果：各组 ns/op、B/op、allocs/op 中位数均下降。32/128 页 completed/running：Windows 耗时下降 39.45%–41.61%，Linux 40.93%–43.91%，分配字节下降 52.73%–58.78%；paused 耗时 Windows 下降 26.32%–27.37%，Linux 22.20%–25.99%，分配下降 10.13%–11.49%。Windows 20 组及 Linux 19 组的 after 最慢轮次仍快于 before 最快轮次；Linux 一页 paused 存在单次波动，中位数下降 11.88%，没有稳定退化证据。各组 Load/blob Get/Append 次数保持一致。renewal 是同步续租组合，不称纯查询延迟；B/op 是累计分配量，不是常驻内存。
+
+Linux 恢复专项 race3、vet/build、完整普通及 race（均含 `./sdk/testdata/consumer`、`-mod=readonly -count=1`）全部 exit 0。Windows vet/build及完整普通通过；首次全仓 race exit 1，`TestSDKConsumerReadSnapshotThroughSession/bytes/conflict-false` 和 `conflict-true` 报 `budget_exhausted: activity reservation expired`。随后同用例独立 race10 exit 0（18.411s），未改代码、租约或断言；专项不代替全仓，首次失败原因仍未确定。Windows 随后原范围全仓 race 复验 exit 0（consumer 12.874s），`go mod verify` 和固定版 `govulncheck@v1.8.0` exit 0，扫描仍提示一项包级和一项模块级未触达漏洞。格式无输出、diffcheck及新增测试常见凭据/冲突扫描通过。首次偶发租约失败仍保留，未定位根因，不把重跑通过称为修复；整体稳定性收口待维护者决定是否继续调查。macOS/live按授权未执行，未提交推送。
+
+
 ## 2026-09-29 P2 离线收尾（双平台门禁通过）
 
 基线 `53fadff1c9874380396cc2ec25c1900b3653840e`。执行前 17 项工作区修改标记均为索引 LF/工作区 CRLF，`git diff HEAD --exit-code` 与暂存区差异均为 0；不把这些标记计为未提交生产修复。本轮仅离线收尾，不处理 macOS、不运行 live、不读取 `.test_env`、不提交推送。最终稳定代码已按 Linux→Windows 串行完成下列门禁，不沿用上一轮结果冒充本轮通过。

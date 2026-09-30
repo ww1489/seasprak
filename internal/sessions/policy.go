@@ -79,7 +79,7 @@ func (rt *runtime) setExecutionPolicy(ctx context.Context, expected uint64, p ag
 }
 func (rt *runtime) ExecutionPolicyRef(ctx context.Context, scope agent.ExecutionScope) (string, error) {
 	value, err := rt.call(ctx, func(rt *runtime) (any, error) {
-		if !rt.matchesExecution(scope) {
+		if !rt.matchesToolExecution(scope) {
 			return nil, product.NewError(product.CodeStateConflict, "execution is no longer active")
 		}
 		if err := ctx.Err(); err != nil {
@@ -105,7 +105,7 @@ func (rt *runtime) ExecutionPolicyRef(ctx context.Context, scope agent.Execution
 
 func (rt *runtime) ExecutionSandboxMode(ctx context.Context, scope agent.ExecutionScope) (string, error) {
 	value, err := rt.call(ctx, func(rt *runtime) (any, error) {
-		if !rt.matchesExecution(scope) {
+		if !rt.matchesToolExecution(scope) {
 			return nil, product.NewError(product.CodeStateConflict, "execution is no longer active")
 		}
 		return rt.manager.View().ExecutionPolicy.SandboxMode, nil
@@ -123,16 +123,13 @@ type sessionAuthorizer struct {
 
 func (a sessionAuthorizer) Authorize(ctx context.Context, authorization agent.FrozenCall) (agent.Decision, error) {
 	value, err := a.rt.call(ctx, func(rt *runtime) (any, error) {
-		if !rt.matchesExecution(a.scope) {
+		if !rt.matchesToolExecution(a.scope) {
 			return nil, product.NewError(product.CodeStateConflict, "execution is no longer active")
 		}
 		// The boundary annotates the actual turn; the fixed execution binding
 		// above still rejects a replaced worker. Keep explicit fallback scopes
 		// intact so a mismatched standalone scope cannot acquire permission.
-		scope := einorun.ScopeFromContext(ctx, a.scope)
-		if scope.TurnID == "" {
-			scope.TurnID = rt.active.turnID
-		}
+		scope := rt.ownTurn(einorun.ScopeFromContext(ctx, a.scope))
 		v := rt.manager.View()
 		frozen, ok := v.FrozenExecutions["execution:"+authorization.CallID]
 		call, exists := v.Calls[authorization.CallID]
@@ -168,9 +165,15 @@ func (rt *runtime) checkToolPolicyState(ctx context.Context, scope agent.Executi
 	}
 	v := rt.manager.View()
 	call, ok := v.Calls[frozen.CallID]
-	if !ok || !rt.matchesCallScope(scope, call) || frozen.Scope != call.Scope || call.Observation != nil || call.Claimed != claimed || !acceptedAttemptForCall(v, call) {
+	if !ok || !rt.matchesCallScope(scope, call) || frozen.Scope != call.Scope || call.Observation != nil || call.Claimed != claimed || !rt.acceptedCall(v, call) {
 		return agent.DecisionDeny, product.NewError(product.CodeStateConflict, "execution is not a pending accepted call")
 	}
+	return rt.frozenToolPolicy(ctx, v, call, frozen, claimed)
+}
+
+// frozenToolPolicy decides a committed descriptor under the current policy.
+// Callers first bind the descriptor to a pending accepted call of their origin.
+func (rt *runtime) frozenToolPolicy(ctx context.Context, v state.View, call agent.ToolRecord, frozen agent.FrozenExecution, claimed bool) (agent.Decision, error) {
 	committed, ok := v.FrozenExecutions[frozen.ID]
 	digest, err := frozen.Digest()
 	if !ok || frozen.ID != "execution:"+call.Call.CallID || frozen.Hash == "" || digest != frozen.Hash || err != nil || committed.Hash != frozen.Hash || frozen.Tool != call.Call.Name || frozen.Generation != call.Call.Generation || frozen.ProviderCallID != call.Call.ProviderCallID {

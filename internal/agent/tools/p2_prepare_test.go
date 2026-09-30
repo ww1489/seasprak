@@ -51,14 +51,14 @@ func TestP2PrepareFinalValidationAndNumberPrecision(t *testing.T) {
 }
 
 func TestP2PrepareHookDeadlineWaitsForRealExit(t *testing.T) {
-	entered, release := make(chan struct{}), make(chan struct{})
+	entered, release := make(chan context.Context, 1), make(chan struct{})
 	limits := config.DefaultLimits()
 	limits.HookTimeout = 20 * time.Millisecond
 	sink := &recordSink{found: true, rec: accepted(`{"n":1}`)}
 	var runs atomic.Int32
 	def := addDef(func(context.Context, json.RawMessage) (string, error) { runs.Add(1); return "bad", nil })
-	def.BeforeCall = []func(context.Context, agent.FrozenExecution) error{func(context.Context, agent.FrozenExecution) error {
-		close(entered)
+	def.BeforeCall = []func(context.Context, agent.FrozenExecution) error{func(ctx context.Context, _ agent.FrozenExecution) error {
+		entered <- ctx
 		<-release // An uncooperative trusted hook must actually exit first.
 		return nil
 	}}
@@ -73,11 +73,18 @@ func TestP2PrepareHookDeadlineWaitsForRealExit(t *testing.T) {
 		out, runErr = exec.Run(t.Context(), agent.ExecutionScope{SessionID: "hook-timeout"}, "prov-1", "add", `{"n":1}`)
 		close(done)
 	}()
-	<-entered
+	hookCtx := <-entered
+	// Elapsed wall time alone does not prove the deadline timer has cancelled
+	// the hook context when the scheduler is busy.
+	select {
+	case <-hookCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("hook deadline did not cancel its context")
+	}
 	select {
 	case <-done:
 		t.Fatal("uncooperative hook was declared exited")
-	case <-time.After(35 * time.Millisecond):
+	default:
 	}
 	close(release)
 	select {

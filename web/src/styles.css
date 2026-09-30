@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+/* Design tokens adapted from Beautiful UI (https://www.beautifului.dev/,
+ * MIT, Copyright (c) 2026 Shane Levine) site stylesheet, light theme only.
+ * Web fonts are replaced by system fonts; nothing is loaded from a CDN. */
+@theme {
+  --font-sans: ui-sans-serif, system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Consolas, monospace;
+  --color-page: oklch(98.5% 0.001 286.376);
+  --color-canvas: oklch(96.1% 0.002 247.84);
+  --color-surface: oklch(100% 0 0);
+  --color-inset: oklch(97.9% 0.002 247.839);
+  --color-hover: oklch(97% 0.002 247.839);
+  --color-hover-2: oklch(93.3% 0.003 247.86);
+  --color-field: oklch(96.1% 0.001 286.375);
+  --color-ink: oklch(24.7% 0.006 258.361);
+  --color-ink-2: oklch(50.6% 0.01 264.477);
+  --color-ink-3: oklch(69.5% 0.009 264.505);
+  --color-line: oklch(94.6% 0.003 264.542);
+  --color-line-strong: oklch(91.2% 0.005 258.326);
+  --color-accent: oklch(62.6% 0.205 254.947);
+  --color-green: oklch(60.3% 0.155 150.883);
+  --color-green-tint: oklch(95.8% 0.017 159.118);
+  --color-orange: oklch(68.9% 0.179 49.902);
+  --color-orange-tint: oklch(96.4% 0.021 67.581);
+  --color-red: oklch(62.1% 0.192 23.042);
+  --color-red-tint: oklch(95.6% 0.017 17.462);
+  --radius-chip: 6px;
+  --radius-control: 8px;
+  --radius-card: 10px;
+  --shadow-hairline: 0 0 0 1px var(--color-line);
+  --shadow-btn: 0 0 0 1px var(--color-line-strong), 0 0 4px 0 #0000000a;
+  --shadow-card: 0 0 0 1px var(--color-line), 0 18px 47px 0 #00000008, 0 4px 10.5px 0 #00000005, 0 1.2px 3.1px 0 #00000003;
+}
+
+:root {
+  --ink: var(--color-ink);
+  --ink-2: var(--color-ink-2);
+  --ink-3: var(--color-ink-3);
+  --line: var(--color-line);
+  --line-strong: var(--color-line-strong);
+  --surface: var(--color-surface);
+}
+
+html,
+body {
+  background: var(--color-page);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+@keyframes shimmer-text { 0% { background-position: 150%; } to { background-position: -50%; } }
+@keyframes fade-up { 0% { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes fade-in { 0% { opacity: 0; } to { opacity: 1; } }
+@keyframes pop-in { 0% { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+@keyframes spin { to { transform: rotate(1turn); } }
+@keyframes pixel-on { 0%, to { opacity: 0.15; } 18%, 42% { opacity: 1; } 62% { opacity: 0.15; } }
+
+/* Dark palette: local addition (not from Beautiful UI), same token names so
+ * every component follows the system color scheme. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --color-page: oklch(17% 0.004 264);
+    --color-canvas: oklch(20% 0.004 264);
+    --color-surface: oklch(23% 0.005 264);
+    --color-inset: oklch(21% 0.004 264);
+    --color-hover: oklch(27% 0.005 264);
+    --color-hover-2: oklch(30% 0.006 264);
+    --color-field: oklch(27% 0.005 264);
+    --color-ink: oklch(94% 0.004 264);
+    --color-ink-2: oklch(76% 0.008 264);
+    --color-ink-3: oklch(62% 0.009 264);
+    --color-line: oklch(31% 0.006 264);
+    --color-line-strong: oklch(38% 0.008 264);
+    --color-green: oklch(72% 0.15 150);
+    --color-green-tint: oklch(30% 0.05 155);
+    --color-orange: oklch(76% 0.15 55);
+    --color-red: oklch(71% 0.17 23);
+    --color-red-tint: oklch(30% 0.06 20);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

@@ -55,7 +55,11 @@ func (s *AgentSession) Pause(ctx context.Context, traceID string) (state.Operati
 		if rt.active == nil || rt.active.scope.TraceID != traceID || tr.State != "running" || rt.active.pauseID != "" || rt.active.ctx.Err() != nil || rt.manager.View().HasUnresolvedEffects() {
 			return nil, product.NewError(product.CodeStateConflict, "trace is not actively pausable")
 		}
-		if _, ok := rt.opts.Store.(store.CheckpointBlobs); !ok {
+		// A workflow segment stops gracefully at the next node boundary: the
+		// running node finishes, no further node starts, and its node records
+		// are the resume point, so no runner checkpoint blob is needed.
+		_, workflow := rt.workflowTarget(tr.Target)
+		if _, ok := rt.opts.Store.(store.CheckpointBlobs); !ok && !workflow {
 			return nil, product.NewError(product.CodeStorageUnavailable, "checkpoint blob storage is unavailable")
 		}
 		receipt, err := rt.manager.AcceptOperation(ctx, state.OperationCommand{Principal: rt.opts.Principal, Kind: "pause", Target: traceID, ExpectedRevision: rt.manager.View().LastSeq})
