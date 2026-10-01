@@ -169,7 +169,10 @@ func (s *AgentSession) changeBranch(ctx context.Context, branchID, from string, 
 		return err
 	}
 	change := value.(branchChange)
-	candidate, err := einorun.GenerateBranchSummary(ctx, s.rt.opts.Model, change.suffix, compactToolBytes)
+	// Like idle compaction, branch maintenance has no active trace. Meter it
+	// with its own bounded ledger without modifying an earlier trace's usage.
+	m := &chargedModel{inner: s.rt.opts.Model, budget: agent.NewBudget(s.rt.opts.Limits), id: agent.MustID()}
+	candidate, err := einorun.GenerateBranchSummary(ctx, m, change.suffix, compactToolBytes)
 	if err != nil {
 		return err
 	}

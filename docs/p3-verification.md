@@ -223,3 +223,132 @@ macOS 无实际运行环境，运行命令未执行；交叉编译不能算运�
 - 后续 Windows 全仓普通测试通过，但 race 又暴露既有 `TestP2PrepareHookDeadlineWaitsForRealExit` 的时序失败（该轮 exit 1，工具意外执行一次）。原测试等待另一个 35ms 计时器，未确认 20ms hook context 的取消已经生效；独立计时器到期不保证取消回调已经运行。核对生产 `runBeforeHooks` 在 hook 返回后检查 `ctx.Err()`，本轮没有修改它。仅在该默认测试中传回真实 hook context，显式等待其 `Done`，然后断言不合作 hook 尚未退出，再释放 hook 并保留 DeadlineExceeded、工具 0 次、无 intent、有 cancelled observation 的全部断言。Windows/Linux 各普通与 race 重复 100 次均 exit 0。最终稳定测试文件的全仓复验结果如下。
 - 最终 Windows：`gofmt -l .` 无输出；`go vet ./...`、`go build ./...`、`go test ./... ./sdk/testdata/consumer -count=1`、`go test -race ./... ./sdk/testdata/consumer -count=1` 均 exit 0（sessions 普通 51.788s、race 256.606s）。最终 Linux/WSL Ubuntu-24.04 实际执行相同 vet/build/普通/race 命令均 exit 0（sessions 普通 55.851s、race 249.591s）；WSL 诊断编码混合问题仍保留，逐命令退出码及终态均为 0。两项时序修正后的稳定文件集通过，不用先前成功掩盖中间失败。
 - 最终固定 `govulncheck@v1.8.0` exit 0，可达漏洞 0，包级/模块级各一项未触达提示保留；`git diff HEAD --check` exit 0，新诊断、排队测试及验收文档逐文件空白检查完成。文档末尾额外空行曾被新文件检查检出，删除后复查；新增测试的常见密钥模式与冲突标记无命中。`.test_env` 仍忽略且未跟踪，未修改任何值、未提交/推送。macOS 依批准延期；Windows live/浏览器成功不外推至 Linux/macOS。
+
+## 2026-10-01 全自动可见页面点击验收
+
+### 方法、授权变更与失败轮保留
+
+- 验收源码为 `28f9678`，开始时实际 Git 工作区干净。用户要求无需人工登录或文件选择；已更新外部执行计划。所有临时辅助程序、可执行文件、状态、观察文件及截图均置于系统临时目录，不加入仓库；生产逻辑与 `.test_env` 未修改，不提交、不推送。
+- 先复用 `loadOpenAI` / `LiveOpenAIProxy` 及真实 `cmd/web` 启动配置创建独立 workspace/state，安装会话自有 `write_todos` 和一次审批、reviewer、tool-less Delegable helper、echo-flow、approved-todo-flow、default 模型绑定的 model-flow。配置只保存环境凭据引用，模型密钥仅进入子进程环境。真实代理不生成回答，仅重分块或暂停真实输出；模型端点按现有 helper 归一化，不重复添加 `/v1`。
+- Cursor 侧边栏实际点击合成错误令牌后显示“令牌无效或已过期，请重新输入。”；会话与模型请求均为 0。全自动私密登录尝试被工具明确拒绝：`DOM.setFileInputFiles` 不允许。刷新工具目录也没有从本地秘密文件填充的能力。临时文件读取控件已移除，未绕过鉴权、未新增认证路由、未将真实令牌输出。
+- 用户明确批准改用独立真实 Chromium 全自动点击，且随后要求观看。早期无头轮被停止，未作为最终结果；第一次可见轮复用旧状态使“未授权工作区后目录仍为空”的基线断言失败，停止并保留失败，不归为产品拒绝失效。随后重新创建全新临时状态，以 `headless:false`、`slowMo:120` 在可见窗口从零执行。停止旧服务不作为优雅停机或恢复认证。
+- 业务操作均由真实页面控件触发，包括原生 `setInputFiles` 上传；没有后台业务 POST 代替点击。只读 GET、journal 和代理请求体仅在本地程序内提取状态/次数/布尔值。浏览器令牌仅在本地测试进程与页面内存流转；截图均在登录表单移除后采集，无原始 provider 响应、请求或凭据输出。
+
+### 命令与实际结果
+
+- 临时启动程序由 `node --experimental-transform-types --disable-warning=ExperimentalWarning <临时启动脚本>` 运行；真实 `go build -o <临时 web.exe> ./cmd/web` exit 0，启动成功。最初仅使用 Node strip-only 模式时不支持既有 TS parameter property，发生启动失败；添加 Node 自带的类型转换选项后运行，无产品源码改动。
+- 可见完整点击轮：`node --experimental-transform-types --disable-warning=ExperimentalWarning <临时 clicks 脚本>`，exit 1，19 项中 13 通过、6 失败。保留每项脱敏记录；没有把这轮描述为全部通过。
+- 五项失败来自本次临时脚本的定位/同步假设：委派结果选择器把“工具结果”和“助手”均算为助手；批准/拒绝后错误地要求审批卡片在显式 Resume 前立刻消失；取消脚本寻找了不存在的“进行中/执行中”任务标签，实际为“运行中”；第二次主题检查只 blur 而未重新定位 Tab 起点。只修正临时脚本，实际再点击完整受影响场景，保留子调用、TODO、取消终态、hold 和请求数断言。
+- 定向可见复验：通过环境 `CURSOR_CASES` 选择上述委派、批准、拒绝、取消/队列、四种布局整组，运行同一临时点击脚本，exit 0，5 项全部通过。委派实证所有消息角色有标记 2 处，真正助手回答仅 1 处，child invocation completed 1 次，模型请求恰 3 次；不是通过删除调用计数断言掩盖重复执行。
+- 按每个场景最后有效结果汇总：**19 项全部执行，18 项通过，1 项产品行为失败（分支摘要）**。这是一次完整可见轮加有原因的定向复验汇总，不是一次全绿套件。全新状态中的真实模型请求累计 **26 次，响应 26 次，全部 HTTP 200**。其中包含第一次错误队列测试释放后正常运行的排队请求；分支诊断不产生模型请求。本轮未出现 403/503，不能据此宣布历史 403 根因已解决。
+
+### 已通过的页面行为
+
+- 空工作区创建禁用、未授权工作区拒绝且零模型调用、正确路径创建、列表刷新/选择、能力与注册目标展示；令牌不进入 URL、localStorage 或 sessionStorage。
+- 中文/emoji 对话、真实生成中窗口、最终回答与任务终态、Enter 发送、Shift+Enter 换行而不提交；快速双击仅 1 input/1 trace/1 真实模型请求。
+- 真实流中刷新、自动重新认证并重选会话，没有重复模型请求；切换到另一个空会话不受旧流污染，再选原会话可见结果。
+- reviewer 真实请求；通过页面要求 `delegate_task` 到 helper，真实 child completed、父工具结果与最终回答可见，主调用/子调用/父后续共 3 次真实模型请求。
+- echo 必填字段拒绝且零 trace/零请求、结构化输出与返回对话；model-flow 的真实模型节点 completed 及结果可见，恰 1 次模型请求。
+- 审批批准前 TODO 提交 0；批准本身不会自动运行，明确 Resume 后 TODO 恰 1；拒绝并 Resume 后 failed、TODO 0；等待审批时点击取消后 cancelled、TODO 0。三种工具工作流均零模型调用。
+- 真实第一流固定窗口、第二独立任务 queued；点击取消第一条后真实 cancelled，第二条 hold；点击继续队列后原任务只执行 1 次，两任务合计 2 次真实模型请求。
+- 页面拒绝不支持的二进制 MIME；文本附件上传本身零模型调用、移除、重新上传、发送后待发送列表清空。请求提示不包含附件独有标记，本地只读检查真实模型请求确含该标记，回答也包含它，恰 1 次请求。
+- 不带摘要的消息起点分叉与切回 main：第二轮历史在分叉后消失，切回恢复，分支操作本身零模型请求。手动压缩在三轮真实对话后另调用真实模型 1 次，已激活摘要可见。
+- 真实模型返回合成 HTML/script 原文，以普通文本显示；无新增 img/script DOM、未执行合成脚本、无浏览器外部请求。每项记录的浏览器外部请求及 pageerror 均为 0。
+
+### 分支摘要失败与安全结果
+
+- 两轮正常真实对话后，选择历史消息起点、勾选“为离开的分支生成摘要”并点击创建分支。原可见轮失败；随后用同一历史与新分支名再次通过页面复现：HTTP **400 / invalid_argument**，额外真实模型请求 **0**，页面显示“请求参数无效。”。
+- 只读比较证明 revision、完整 messages 投影及 branches 投影全部未改变，仍选中 main；没有成功创建分支或激活伪摘要。失败截图已查看，旧两轮历史完整保留。
+- 源码核对：`internal/sessions/branches.go` 的 `changeBranch` 直接将 `rt.opts.Model` 传入 `GenerateBranchSummary`，而真实观察型传输要求请求身份及计量观察器；`internal/sessions/compaction.go` 的手动压缩通过 `chargedModel` 装配 `WithRequestObservation`，分支路径没有同样装配。该缺口与发请求前的 invalid_argument/零物理请求吻合。本轮按测试范围保留缺陷，未修改生产实现，也未弱化模型认证或计量要求。
+
+### 视觉、证据位置与未覆盖范围
+
+- 已逐张查看本轮 `click-screenshots/cursor-click-{1280,390}-{light,dark}.png`：1280×800 双列与 390×844 单列，明暗主题有效，完成任务、中文/emoji echo 消息、输入框、能力与分支区域无重叠，无横向溢出；四组均实际 Tab 到达输入框与发送按钮。窄屏长会话列表在对话前，需要纵向滚动，不能称为对话首屏可见。布局图使用天然零模型 echo 的真实页面输出，不将其描述为新增视觉模型请求。最终视口恢复桌面明色。
+- 本机证据根为 `C:\Users\admin\AppData\Local\Temp\seasprak-cursor-p3-EzW3BK\state`：`click-results.json` 保留完整轮失败，`click-followup-results.json` 保留定向复验，`branch-summary-diagnostics.json` 仅含状态码与历史未变布尔值，`cursor-observations.json` 仅含脱敏状态/次数，截图在 `click-screenshots/`。文件均未进入 Git。
+- 服务保留在 `http://127.0.0.1:52616/`；可见 Chromium 保留在已成功压缩的会话供观看，侧边栏同步为新地址但仍为未登录页面。**Cursor 侧边栏的登录后点击未认证**，不能把独立 Chromium 成果冒充侧边栏完成。
+- 元数据编辑、模型/工具选择、主动暂停无本轮页面入口；精确同幂等键 API 重放、未知效果核对的合法故障前置状态、自动压缩/overflow、进程 Kill/重启及 child 故障窗未认证；无人工介入需求的前提下不虚造前置记录。多 interrupted 根 child 联合恢复、委派审批等原有未交付限制保留。图片模型能力不在本轮声明中，未认证图片端到端。上传错误后的“重试上传”需要真实可恢复上传故障，未注入该故障，也未认证此按钮。
+- 本轮仅 Windows 页面测试；Linux/macOS 不外推，完整 P3 仍未完成。没有实现改动或提交，本轮未重新运行全仓 gofmt/vet/build 普通与 race/govulncheck/live 五协议及前端 typecheck/build/unit/E2E 既有套件；此前结果保持历史属性，不称为本轮新验证。本轮实际新构建、可见点击、只读事实及文档 diff 检查独立记录。
+
+## 2026-10-01 分支摘要修复及重新验证
+
+### 修改范围与默认回归
+
+- 维护者明确要求修复上一轮唯一产品失败。`internal/sessions/branches.go` 在既有 `changeBranch` 固定后缀之后，复用手动压缩已有的 `chargedModel` 与独立 `agent.NewBudget`、新请求身份，再调用原 Eino `GenerateBranchSummary`。生产差异仅此装配；没有修改 SDK/API、前端、认证、重试、摘要验证、空闲条件或原子提交路径，没有添加执行循环。
+- 新增默认 `internal/sessions/branch_summary_transport_test.go`，通过真实 OpenAIChat 工厂和本地 RoundTripper 复现，完全离线。未修复时定向命令 exit 1：Fork 报 invalid_argument、物理摘要请求 0；取消/摘要校验场景没有进入实际传输，预算拒绝也未返回预期预算错误。最小修复后，首轮仅预算测试的错误提取断言失败；Eino 包装错误使直接类型断言无法取得 code，改为标准 `errors.As`，未改变预期错误码或产品逻辑。
+- 最终定向 `go test ./internal/sessions -run 'TestBranchSummary|TestIdleCompactUsesMeteredObservedTransport' -count=1` exit 0（0.997s）。回归实证 Fork 与 Navigate 各 1 次摘要请求、仅独有后缀、无工具、非流式；摘要与选定分支共同生效，既有 Trace/Turn/ModelAttempt 不变，同分支零额外请求，Close/Open 不重新请求。无效摘要和调用中取消各实际请求 1 次、预算拒绝 0 次，错误类别及完整历史未变均断言。
+
+### 本轮离线和前端命令
+
+- Windows/amd64、Go 1.27.0：`gofmt -l .` 无输出；`go vet ./...`、`go build ./...`、`go test ./... ./sdk/testdata/consumer -count=1` 均 exit 0（sessions 60.950s）。先运行 `go test -race ./internal/sessions -count=1` exit 0（281.476s），再运行 `go test -race ./... ./sdk/testdata/consumer -count=1` exit 0（sessions 249.612s）。
+- 实际 WSL Ubuntu-24.04、Go 1.27.0 linux/amd64：用 `&&` 串联 `go vet ./...`、`go build ./...`、`go test ./... ./sdk/testdata/consumer -count=1`、`go test -race ./... ./sdk/testdata/consumer -count=1`，完整命令 exit 0。WSL 宿主提示与 Go 输出编码混合导致显示乱码，保留该限制；随后通过 Node 接收原始 stdout，实际补跑 `go test -race ./internal/sessions -run TestBranchSummary -count=10` exit 0（39.872s），版本与摘要包结果清晰可读。macOS 依维护者此前批准延期，未运行、不记通过。
+- `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` exit 0，可达漏洞 0，仍有包级、模块级各 1 项未触达提示。`npm run typecheck`、`npm run test -- --run`、`npm run build` 均 exit 0，前端单元 4 文件/16 测试，构建产物内容未改变。
+- 既有 `.test_env` 已忽略且未跟踪，未读取任何值到输出或修改。`git diff HEAD --check` 无空白诊断；新增测试逐文件 `git diff --no-index --check -- NUL ...` 无空白诊断（no-index exit 1 表示新增文件与 NUL 存在差异，不误记为空白缺陷）。新测试的秘密模式与冲突标记扫描无命中。未提交、未推送。
+
+### 真实浏览器和保留的中间失败
+
+- `web/tests/e2e.spec.ts` 新增永久真实模型分支摘要回归：完整共享第一轮后才分叉，独有第二轮进入真实非流式摘要、共同历史标记不进入摘要请求；摘要激活和分支切换后主历史恢复、无额外模型请求、无外部浏览器请求或 pageerror 均断言。
+- 首次完整 `npm run test:e2e` exit 1：17 passed、1 failed；新增分支摘要测试通过，失败为既有流中刷新场景的最终文本断言，两个 worker 合计 20 次请求/20 次响应、全 HTTP 200。维护者明确批准保留失败并完整复跑一次，未修改该刷新测试、产品源码、凭据或断言；末次 `npm run test:e2e` exit 0，18 passed、0 failed/skip，20 次请求/20 次响应、全 HTTP 200。原刷新失败原因未确证，不能仅据复跑成功宣布根因已修复。
+- 从当前源码另构建真实 cmd/web，在全新临时 state 的可见 Chromium 中实际登录、创建会话、完成两轮真实对话、选第一轮助手消息、勾摘要并创建分支。临时诊断脚本最初将标准 Fetch 的 `response.status` 属性当成函数，失败两轮均模型请求 0；采集固定 TypeError/脚本行号后仅修正临时脚本，不修改产品。
+- 最终可见定向场景通过：Fork HTTP 200、实际摘要请求恰 1 次/HTTP 200、revision 前进、分支选中且摘要可见，既有 traces 不变；切回 main 的完整 messages 与此前逐字相同，再切回摘要分支零额外请求。两轮对话与摘要合计 3 次真实模型请求，外部浏览器请求及 pageerror 均 0。已查看成功截图，摘要及两条完成任务、分支当前状态可见。
+- 保留当前修复版服务 `http://127.0.0.1:53379/` 和成功摘要页面的可见 Chromium。脱敏结果为 `C:\Users\admin\AppData\Local\Temp\seasprak-cursor-p3-bajVh0\state\branch-summary-fixed-final-results.json`，截图为同目录 `click-screenshots/branch-summary-fixed.png`；旧失败和临时脚本诊断均分别保留，不加入 Git。此处认证的是独立 Chromium，Cursor 侧边栏私密自动输入限制未改变。
+
+### 完整 live 仍未通过及后续授权
+
+- 首次 `go test -tags live ./internal/llm -count=1` exit 1（44.902s），Gemini 非流式中途及流式首请求 HTTP 503。按维护者批准仅完整复跑一次，`go test -tags live ./internal/llm -count=1 -v` 仍 exit 1（62.110s）：OpenAI Chat/Responses、DeepSeek、Anthropic 各非流式/流式三步对话通过；Gemini 非流式三步 HTTP 200，但流式首请求 HTTP 503、resource_unavailable。复跑实际共 28 次请求，27 次 200、1 次 503，未弱化断言、未追加 SDK 重试。
+- 分支摘要缺陷已通过默认与实际模型/页面验证，完整 live 门禁仍失败，完整 P3 的既有未交付/未认证项保持不变。维护者随后明确要求将 Gemini 503 作为独立问题继续诊断，并禁止盲重跑；诊断与该分支修复区分，不以定向诊断成功代替完整 live 通过。
+
+### Gemini 503 独立诊断结果
+
+- 核对现有 `internal/llm/gemini.go`：生产工厂显式设置 Google SDK `Attempts=1`，Eino 适配调用 SDK `GenerateContentStream`；未增加第二条流式协议实现。通过系统 TEMP 的 Go overlay 加入一次性诊断测试，复用现有配置读取及真实 Catalog，仅重复原验收首个无工具文本输入，不修改仓库 Gemini 源码、测试超时、模型或凭据。
+- 第一次定向诊断使用原 40 秒等待上限，真实物理请求/观察计数各 1。固定布尔核对：configured_origin、official_host、POST、标准 `/v1beta/models/<配置模型>:streamGenerateContent` 路径、`alt=sse`、credential_matches 均 true，认证头 1，环境代理 false；40 秒内未获得 HTTP 响应，无法分类 503 原因。诊断测试 exit 0 只表示采集完成，实际模型调用没有通过，不能记为 live 成功。
+- 随后零模型、零凭据公开 HEAD 探测实际完成 DNS/TCP/TLS，TLS 验证成功，约 1.190 秒收到官方根入口 HTTP 404。它只证明该时刻公开入口可达，不证明生成服务健康或账号授权。
+- 维护者明确批准最后一次连接阶段诊断，仅临时程序等待上限增至 120 秒，并使用标准 `httptrace`；生产与验收仍保持原上限。实际 DNS 9ms、TCP 10ms、TLS 验证及连接完成 860ms、请求写出 861ms、首响应字节 10.230s，收到 HTTP 200/SSE，模型错误 none，真实物理请求/观察计数各 1。诊断命令 exit 0（10.406s）。当前单次流式调用可成功；没有因为设置 120 秒才等待超过 40 秒，不将其描述为超时修改修复了故障。
+- 官方 [Gemini 排错文档](https://ai.google.dev/gemini-api/docs/troubleshooting) 将 503 UNAVAILABLE 列为可重试的服务错误，但本轮没有捕获到历史 503 的具体固定原因分类，不能推定为负载、地域、账号或网络的某一根因。完整验收中 503、后续无响应超时、最后单次 200 都保留，表现有时变；没有修改 SDK 重试、降低断言、换模型或盲重跑。
+- **最终状态：**原分支摘要失败已修复并实测通过；Gemini 503 的具体根因仍未确认，最后单次成功不能替代五协议三步工具对话完整 live 验收。最后完整 live 命令仍 exit 1，之后未再次整套重跑。macOS 延期、Cursor 侧边栏私密自动输入限制以及完整 P3 未交付项保持不变；没有提交或推送。
+
+### 2026-10-01 维护者再次授权确认 Gemini 失败原因
+
+- 维护者要求“确定下gemini503的问题”。先核对完整 live 的 `acceptanceConversation` 与此前 TEMP 诊断：原验收先执行非流式文本/工具调用/工具结果三步，再执行流式三步；此前定向只覆盖流式首条无工具文本。没有将此前单次成功外推为完整工具对话通过。
+- 在系统 TEMP 新建 `seasprak-gemini-503-investigation-20261001_test.go` 和对应 Go overlay，虚拟加入 `internal/llm/live_gemini_503_investigation_test.go`，仓库没有创建这个测试文件。复用原配置解析、Catalog、生产 Gemini 工厂和原验收函数，保持 40 秒上限、每次观察预算 1、原内容/工具参数/用量/真实调用次数断言，无自动重试或并发。请求只输出结构和内存哈希相等布尔值，不输出请求内容、哈希、配置模型/地址或凭据；错误体最多 16KiB 读透采集，Close 时输出固定分类并清除。
+- 离线 `go test -overlay <TEMP overlay> -tags live ./internal/llm -run '^TestGemini503DiagnosticControls$' -count=1 -v` 首次 exit 0（0.137s）；加入 Google 配额细分后再次 exit 0（0.143s）。合成 503/429/403/400、转义消息及未知详情均验证固定分类，私密标记不进入输出结构；16KiB 边界/溢出、原字节保持和 Close 清除均验证。这两条命令真实模型请求 0，不记为 live 模型通过。
+- 一次原顺序定向 `go test -overlay <TEMP overlay> -tags live ./internal/llm -run '^TestGemini503Investigation$' -count=1 -v` exit 1（19.688s）。实际 4 次物理请求，响应依次为 **429、200、200、429**：非流式首条文本失败；流式首条文本及工具调用各通过完整断言，工具结果续答收到 429。每个成功请求观察/物理计数各 1；首个流式与非流式请求体在内存规范化比较完全相同。所有请求标准路径、同配置 origin、认证一致、认证头 1、token 上限一致，环境代理 false；TLS 验证和官方 SNI 均 true，HTTP/2，无网络超时。两个 429 固定 JSON status 为 `RESOURCE_EXHAUSTED`，不是 503/UNAVAILABLE，也没有捕获权限、非法密钥、地域或参数错误分类。
+- 为区分本轮实际 429 的分钟/每日/请求/token 配额，在仍不超过本轮总 6 请求边界内仅追加一笔原非流式首请求；没有再跑整组。`go test -overlay <TEMP overlay> -tags live ./internal/llm -run '^TestGeminiQuotaDiagnostic$' -count=1 -v` exit 1（1.231s），物理请求 1、HTTP 429。DNS 8ms、TCP 10ms、TLS 验证和请求写出 705ms、首字节 1.075s；Google `google.rpc.QuotaFailure` 固定分类为 **PerDay=true、RequestQuota=true、FreeTier=true、Violations=1**，PerMinute/TokenQuota=false。同时有 RetryInfo，提示延迟在一分钟内，但不能据此否定明确的每日配额违规或保证短等后恢复。未输出 quotaId/metric/dimensions、错误原文或配置值。
+- 本轮合计 **5 次真实模型请求，2 次 HTTP 200、3 次 HTTP 429、0 次 503**，到此停止网络请求。可以确定当前上游拒绝原因是免费层每日请求配额超限；错误在官方 TLS HTTP 边界已存在，不是本项目摘要逻辑生成。实际流式文本/工具调用成功，也未支持固定认证、路由或工具请求格式错误的假设。没有账号控制台的实际用量/额度证据，不能计算还剩多少配额、推断全部消耗来源或保证所有请求都持续拒绝。
+- 对照官方 [配额说明](https://ai.google.dev/gemini-api/docs/rate-limits)：限额按项目而非 API key 计算，每日请求配额在太平洋时间午夜重置；项目实际限额需在 AI Studio 查看。换同项目 key 不能增加项目配额；可等待重置或由维护者确认计费/额度，不擅自创建 key、切换模型或启用计费。对照 [排错说明](https://ai.google.dev/gemini-api/docs/troubleshooting)：503 UNAVAILABLE 是服务暂不可用类错误，429 RESOURCE_EXHAUSTED 是另一类错误。**当前 429 已确诊，历史 503 的具体根因仍未捕获，不能用每日配额结果倒推历史 503 是同一原因。**需配额恢复后才适合再次有界采集 503；本轮不盲重跑。
+- 本轮只修改该验收文档，所有诊断程序与 overlay 留在 TEMP；Gemini 生产代码、默认验收、凭据、模型配置、40 秒上限、SDK Attempts=1、先前分支摘要修复均未改变。完整五协议 live 没有重跑，最后完整结果仍 exit 1；Windows/Linux 全仓离线、前端/browser 与 macOS 延期仍保持前一轮历史属性，不冒充本轮新验证。服务和可见窗口保留，无提交或推送。
+
+### 2026-10-01 已确认当前 Gemini 每日额度为 20 次
+
+- 维护者进一步要求“确定下每天具体多少次”，明确授权再次定向取证。公开文档的项目动态额度不能代替实际额度；旧响应已按安全策略清除，不从累计请求次数推算。只新增一次原非流式首请求，不重跑整套或循环重试。
+- TEMP 新增每日整数解析测试，通过 overlay 与既有诊断共同加载。Google 官方 `google/rpc/error_details.proto` 定义 `QuotaFailure.Violation.quota_value` 为发生违规时实际执行的额度，不是已用请求数。解析只接受 429/RESOURCE_EXHAUSTED、当前配置模型、免费层每日项目/模型请求违规；优先读结构化 quotaValue，并与唯一匹配该 metric/模型的消息 limit 整数核对。分钟/token/其他模型、重复或冲突数字、溢出、无数字均返回 unknown，输出只有整数与固定布尔值。
+- 先以空实现运行 `go test -overlay <TEMP daily-limit overlay> -tags live ./internal/llm -run '^TestGeminiDailyLimitParser$' -count=1 -v`，exit 1（0.150s），正常数字和结构化额度用例失败，证明测试能检出未解析。实现后运行 `go test -overlay <TEMP daily-limit overlay> -tags live ./internal/llm -run '^(TestGeminiDailyLimitParser|TestGemini503DiagnosticControls)$' -count=1 -v`，exit 0（0.138s）；22 个整数/范围/歧义子场景及既有脱敏读透控制全部通过，真实模型请求 0。
+- 按新授权单次 `go test -overlay <TEMP daily-limit overlay> -tags live ./internal/llm -run '^TestGeminiQuotaDiagnostic$' -count=1 -v`，exit 1（1.440s），实际物理请求恰 1、HTTP 429，官方 TLS 验证与 SNI 均 true；错误仍为免费层每日请求配额违规。安全提取结果 **Known=true、RequestsPerDay=20、MatchedDailyQuota=true、FromStructured=true、FromMessage=true**，即 Google 结构化额度与消息中的上限数字共同确认 **当前配置模型在该项目免费层每日上限为 20 次请求**。未输出模型名、地址、凭据、quota dimensions 或错误原文；完成后停止请求。
+- 20 次是当前项目/当前模型的实际免费层上限，不是所有 Gemini 模型的通用上限，也不是 20 次完整工具对话。原三步文本/工具调用/工具结果续答每步各发请求，非流式和流式合计一轮验收需 6 次。官方配额按项目而非 API key 计算，太平洋时间午夜重置；2026-10-01 对应北京时间 15:00。配额恢复不保证历史 503 一定消失；此次 429 及每日上限不能解释历史 503 的具体根因。
+- 本轮只追加文档，TEMP 诊断未加入 Git，未修改生产代码、默认验收、凭据、模型、计费、等待上限或重试次数；未操作既有服务/可见窗口，未提交推送。完整 live 未重跑，最后完整验收仍失败；单次采集取得额度数字不记为模型请求或完整门禁通过。
+
+### 2026-10-01 新模型在 15 次上限内复验通过
+
+- 维护者自行更新 `.test_env` 中的 Gemini 模型配置，说明新模型额度为每日 15 次，要求再次尝试且不得超过 15 次。原模型的 20 次额度是旧配置的历史证据，不外推给新模型。本轮通过既有 `loadEnv` 在测试运行时读取维护者更新后的配置，不读取任何配置值到输出或回滚修改。
+- 严格只运行一次 TEMP `TestGemini503Investigation`：复用原 `acceptanceConversation` 和生产 Catalog/Gemini 工厂，先非流式三步再流式三步；HTTP 边界最多发送 6 次，超过 6 在发送前拒绝，每逻辑调用观察预算 1、SDK Attempts=1、40 秒上限保持。没有自动重试、再次配额探测、其他模型调用或浏览器请求；实际总量 **6 次，小于维护者 15 次上限**，结束即停止，没有为了用完剩余授权额度继续请求。
+- 先运行零模型请求的脱敏/解析控制：`go test -overlay <TEMP daily-limit overlay> -tags live ./internal/llm -run '^(TestGeminiDailyLimitParser|TestGemini503DiagnosticControls)$' -count=1` exit 0（0.142s）。随后真实组 `go test -overlay <TEMP daily-limit overlay> -tags live ./internal/llm -run '^TestGemini503Investigation$' -count=1 -v` exit 0（5.212s）：非流式与流式均完成文本、工具调用、工具结果续答三步，原回答/工具名与参数/历史回放/用量合法性/实际调用次数断言均通过。
+- 真实物理请求 **6、HTTP 200 为 6、HTTP 429/503 为 0、无响应为 0**；每个调用 observed=1/physical=1，认证头 1、认证一致、标准路径及 origin 均匹配，环境代理 false，TLS 证书验证与官方 SNI 均 true。首个非流式/流式请求体规范化比较相等。输入用量均已知，输出用量均未知；原未知用量不能伪造及按声明能力校验的断言原样通过，不将未知输出用量描述为已测量或已认证该能力。
+- 此结果证明维护者更新后的当前配置通过 Gemini 非流式/流式三步工具对话；新模型的每日 15 次来自维护者说明，本轮没有触发配额错误，所以没有再次核验其官方额度，也不能算出账号当日剩余次数。**切换模型后本轮成功不证明旧模型 503 的具体根因已修复**，历史失败及旧模型的每日 20 次违规记录全部保留。
+- 五协议完整 `go test -tags live ./internal/llm` 通常需 30 次实际请求，本轮遵守用户次数限制不运行、不记通过；最后完整 live 结果仍保持此前 exit 1 的历史状态。本轮只追加文档，生产/原验收/本地配置/重试不修改，未操作既有服务或可见窗口、未提交推送；Windows/Linux 离线、前端/browser 及 macOS 延期没有本轮新验证，不将该 Gemini 定向通过冒充全套或 P3 完成。
+
+### 2026-10-01 新配置完整五协议 live 实测通过
+
+- 维护者继续要求使用剩余 9 次机会尽量完成，并在额度范围澄清中明确选择：**仅 Gemini 最多 9 次，其他已配置模型正常测试，运行完整五协议套件**。额度不足“默认算过”仅接受为维护者批准的豁免、未验证，不能伪造实测结果；本次全部原测试实际通过，无须使用此豁免。
+- 从仓库根仅执行一次原完整命令 `go test -tags live ./internal/llm -count=1 -v`，**exit 0（32.175s），无失败或跳过**。没有使用 TEMP overlay、定向 -run、修改配置/断言、增加重试或延长原 40 秒上限；特别排除诊断 overlay 的额外真实请求入口，避免超过本轮 Gemini 限额。此命令包含该包默认离线测试及全部 live 测试，不代表本轮重跑全仓测试。
+- OpenAI Chat、OpenAI Responses、DeepSeek Chat、Anthropic Messages、Gemini GenerateContent 五个协议工厂，非流式/流式共 10 个真实对话子测试全部通过；各模式均实际完成无工具文本、`lookup(q=ping)` 工具调用、工具结果续答三步。原精确回答、工具名/参数、结果回放、终止状态、用量合法性与实际调用次数断言保持原样通过，不能只凭 HTTP 200 判定。
+- 逐笔核验原真实传输日志：**共 30 次物理请求、30 次 HTTP 200**；五协议各 6 次，其中 **Gemini 仅 6 次≤本轮授权 9 次**，其余协议合计 24 次。每笔观察/物理计数均为 1，没有 429、503、无响应或额外自动重试。本轮未使用的 3 次授权不继续消耗；与前一轮新配置定向组相加，本会话两轮新配置 Gemini 共 12 次，这只是本会话调用计数，不能据此断言项目实际余额或再次核验维护者所述每日 15 次上限。
+- 四个其他协议的输入/输出用量均已知；Gemini 6 笔输入用量已知、输出用量未知。原能力声明及未知用量不得伪造的断言均通过，未知输出用量仍未认证。Responses、DeepSeek、Anthropic 继续使用此前授权的同源网关派生配置，认证的是实际经过的协议工厂路径，不冒充三个独立供应商账号/模型或所有上游能力均已认证。
+- **当前新配置的完整五协议 live 门禁已实测通过**；此前完整失败、旧配置每日 20 次超限及历史 503 具体根因未定的证据全部保留。新配置成功不能证明旧模型 503 根因已修复，也不能认证所有模型或宣布完整 P3 已交付。
+- 本次仅追加该验收文档，生产代码、原验收、本地配置、预算、超时与重试均未新增修改；`.test_env` 仍被 Git 忽略且未跟踪，未输出其值。文档更新后 `git diff HEAD --check` exit 0，无空白诊断；工作区仍仅既有四个文件。Windows/Linux 全仓离线及前端/browser 维持此前实测的历史属性，macOS 延期、Cursor 侧边栏未认证及 P3 既有未交付范围不变。完整命令结束后已停止追加模型请求，既有服务/可见窗口保留，无提交或推送。
+
+### 2026-10-01 维护者授权提交与推送前复核
+
+- 维护者于 12:59 明确要求执行当前差异的 commit-and-push。复核待提交范围仅为 `internal/sessions/branches.go`、新增 `internal/sessions/branch_summary_transport_test.go`、`web/tests/e2e.spec.ts` 和本文件，现有分支 `feat/p0-p1-runtime` 跟踪 `origin/feat/p0-p1-runtime`。不纳入本地配置、临时诊断、截图、状态或可执行产物，不改生产行为，也不创建 PR 或强推。
+- Windows/amd64、Go 1.27.0 提交前重新运行：`gofmt -l .` exit 0、未格式化文件 0；`go vet ./...`、`go build ./...` 均 exit 0；`go test ./... ./sdk/testdata/consumer -count=1` exit 0（sessions 49.775s）；`go test -race ./... ./sdk/testdata/consumer -count=1` exit 0（sessions 233.171s）。本次没有新的并发修改，受影响 sessions 的先行 race 已在前述修复轮完成。
+- `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` exit 0，可达漏洞 0，包级和模块级各 1 项未触达提示继续保留。`npm --prefix web run typecheck`、`npm --prefix web run test -- --run`、`npm --prefix web run build` 均 exit 0，前端单元 4 文件/16 项通过，重新构建没有新增产物差异。
+- 保留刚完成的原完整 `go test -tags live ./internal/llm -count=1 -v` exit 0（32.175s）作为当前源码的真实模型证据，随后产品代码与验收测试没有变动；本次提交动作不再运行 live 或真实 E2E，实际新增模型请求 0，不消耗剩余授权。此前真实浏览器与实际 WSL Linux 验证保持历史属性，macOS 继续按维护者已有批准延期，不记通过；旧模型 503 根因未定、Gemini 输出用量未知及完整 P3 未交付范围不变。
+- 提交前只更新本验收记录并继续核对 diff、秘密/冲突/禁止产物、`.test_env` 忽略且未跟踪，以及暂存精确四文件范围。历史段落中的未提交/未推送描述是各当时轮次的事实，不表示维护者本次授权的提交动作被取消；实际 Git 提交和远端 SHA 结果以完成该动作后的报告为准。

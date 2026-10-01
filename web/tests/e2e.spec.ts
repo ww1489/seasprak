@@ -449,6 +449,46 @@ test("branch fork and navigation re-render history created with the real model",
   await expect(conversation(page).getByText(exactPrompt(second), { exact: true })).toBeVisible();
 });
 
+test("branch fork with summary makes one metered real request and preserves the main history", async ({ page }) => {
+  const g = await guard(page);
+  await login(page);
+  const sid = await newSession(page);
+  const first = marker("SUMMARY_SHARED");
+  const second = marker("SUMMARY_ABANDONED");
+  await prompt(page, exactPrompt(first));
+  await idle(page.request, sid);
+  await expect(assistantText(page).filter({ hasText: first })).toBeVisible();
+  await prompt(page, exactPrompt(second));
+  await idle(page.request, sid);
+  await expect(assistantText(page).filter({ hasText: second })).toBeVisible();
+  const before = proxy.count();
+  await page.getByText("分支与压缩").click();
+  await page.getByLabel("新分支名").fill("summary-live");
+  const from = page.getByLabel("分叉起点消息");
+  // Keep both messages of the shared first round; only round two is abandoned.
+  const firstAssistantID = await from.locator("option").nth(2).getAttribute("value");
+  await from.selectOption(firstAssistantID!);
+  await page.getByLabel("为离开的分支生成摘要").check();
+  await page.getByRole("button", { name: "创建分支" }).click();
+  const branches = page.getByRole("list", { name: "分支列表" });
+  await expect(branches).toContainText("summary-live", { timeout: 180_000 });
+  await expect(conversation(page).getByText("摘要", { exact: true })).toBeVisible();
+  await expect(conversation(page).getByText(exactPrompt(second), { exact: true })).toHaveCount(0);
+  expect(proxy.count() - before).toBe(1);
+  expect(proxy.statuses.slice(before)).toEqual([200]);
+  const summaryRequest = proxy.requests[before];
+  expect(summaryRequest.stream).toBe(false);
+  expect(summaryRequest.text.includes(second)).toBe(true);
+  expect(summaryRequest.text.includes(first)).toBe(false);
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await branches.getByRole("listitem").filter({ hasText: "main" }).getByRole("button", { name: "切换" }).click();
+  await expect(conversation(page).getByText(exactPrompt(second), { exact: true })).toBeVisible();
+  await expect(conversation(page).getByText("摘要", { exact: true })).toHaveCount(0);
+  expect(proxy.count() - before).toBe(1);
+  expect(g.external).toEqual([]);
+  expect(g.errors).toEqual([]);
+});
+
 test("manual compaction calls the real model and activates its validated summary", async ({ page }) => {
   await guard(page);
   await login(page);
