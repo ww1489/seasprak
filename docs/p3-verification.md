@@ -1,5 +1,410 @@
 # P3 验证记录
 
+## 最终验收收齐（2026-10-02，保留开放限制）
+
+**本轮已批准、可执行范围的最终运行验收和文档收口已完成；整体 P3 仍未完成。** 以下是最终修正后的实际结果。限定文档终态同步已独立复核通过，未修改源码或追加真实模型请求。下方所有较早检查点、失败、跳过和授权历史保留当时含义，不以旧“未执行”覆盖本节终态。
+
+### 最终修正与证据边界
+
+- Workflow 关闭公开返回可由 `sdk.AsError` 直接识别的 `storage_unavailable`、固定消息 `workflow close failed`，或原直接 context 取消／超时错误；停止提交、实际后端关闭和 broken 三个原因只私有保存。关闭仍等待本次执行真实退出，后端仅关闭一次，重复调用保持同一公开结果。默认及公开 SDK 消费者取得真实 RED→GREEN，修后独立规格／质量复审有界通过。
+- `OpenResourceRoots` 仅在可写创建路径：受检 namespace 打开后同步同一实际 stateRoot，受检 resource 打开后同步同一实际 namespace；已有目录的创建重试也同步，只读零同步。同步失败关闭本次取得的所有者。两平台真实父目录权限故障经过实际 `SyncRoot`，没有以合成上层故障替代；这是父名字提交顺序加固，没有实际断电试验，不宣称掉电绝对无损。
+- 新测试失败清理登记已独立规格／质量复审关闭。每轮 22 个受控 Fatal 子进程在退出前观察句柄关闭、权限恢复及身份／模式保持；预期子 exit 1 不是产品 RED，也不是依靠进程退出释放资源。覆盖证明共同清理效果与静态登记顺序，不是逐一触发原测试每个 Fatal 或隔离突变实验。
+- 修后首次全仓 Windows 链 exit 1，唯一失败为 Web 旧断言仍期待原始 Workflow 后端错误；显式消费者及竞态当时未执行。维护者明确批准仅校准这项配套测试，生产契约未回退。新断言保留 Code／registry 原错误、包含同一个 Workflow 安全错误、拒绝原始 Workflow 错误对象和文字，检查真实后端关闭一次，并实际重新取得 registry 与 Workflow 可写锁。修后两平台整 Web 普通／竞态／静态／构建及独立复审通过；原失败保留。
+- 清单发布、Blob 身份清理、默认 JSONL／锁、两类工厂、运行时读取及附件发布仍只按各自已复核范围接受。清单通用失败阶段旧目标身份／模式测试补强建议保留；报告范围更正不是新增断言通过。最终广泛源码复审没有逐行穷尽三万余行历史迁移差异，此阅读限制不因全仓绿色消失。
+
+### 最终 Windows 与实际 Linux 全仓结果
+
+Go 为 `1.27.0`；Windows amd64 与实际 WSL Ubuntu 24.04 Linux amd64、非 root 用户运行，不是交叉编译。Windows 完整链 exit 0、383.232s；结束后才串行执行 Linux 完整链，exit 0、476.116s。两平台以下命令均实际 exit 0：
+
+- `gofmt -l .`：无输出。
+- `go vet ./...`。
+- `go build ./...`。
+- `go test ./... -count=1`。
+- `go test -race ./... -count=1`。
+- `go test ./sdk/testdata/consumer -count=1`。
+- `go test -race ./sdk/testdata/consumer -count=1`。
+
+Windows Code 普通／竞态为 61.670s／276.478s，显式消费者为 4.089s／14.342s；Linux Code 为 69.966s／296.671s，消费者为 5.006s／15.663s。无竞态报告。两平台昂贵全仓竞态未并行，WSL localhost／NAT 环境提示保留。
+
+原 Step14 目标命令仍为 `go test -json ./internal/storage/... ./internal/codeagent ./internal/web ./sdk -run 'Test.*(Header|Symlink|Junction|Attachment|Manifest|Writer|Lock|ReadOnly|PathsOverlap|FileBoundary|DefaultStateRoot)' -count=1`。逐 run 配对唯一终态：Windows **649／649**、实际 Linux **429／429** 具名父／子用例 action PASS，两平台 skip／fail／未收尾均为零。Windows 文件 symlink、动态链接、junction、Header 等目标实际执行。memory 在该过滤下无用例，不记目标通过；其默认完整套件另由全仓结果覆盖。历史 632／412、639／419 和旧权限跳过保留，不外推其它平台／文件系统。
+
+### 安全、前端及差异卫生
+
+两平台 `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -show verbose ./...` 均 exit 0：21 根包、95 模块，源码可达漏洞 0、受影响导入包 0；required 模块仍有 OpenPGP `GO-2026-5932`、修复 N/A，不能称所有依赖零告警。gRPC 原告警已消失；Eino `v0.9.21`、gRPC `v1.85.0-dev.0.20260825072537-93e31b48545e`、x/crypto `v0.57.0` 不变。
+
+`web/` 的 `npm run typecheck`、`npm run test -- --run`、`npm run build` 均 exit 0；十一文件 **239／239** 默认用例通过。嵌入资源仍为 `index-BhXUGGiz.js` 与 `index-DWwsvm-M.css`。
+
+最终离线与前端构建后，`git diff HEAD --check` exit 0；222 个限定新交付候选各自 no-index 空白检查仅有差异 exit 1、空白诊断为零，Git 换行警告保留。跟踪／未跟踪禁止 `.exe`、`.test`、`bin/` 产物为零；显式源码／文档扩展的冲突、典型长密钥有限扫描无匹配，不是全部秘密不存在的证明。阶段3现行正文写入后的父守卫再次 exit 0：格式无输出、全仓差异／新文件空白诊断均零，源码指纹和纯重命名索引保持；最后记录仅补独立文档复核接收状态，不改变源码。
+
+850 个显式源码、Go 模块、前端／嵌入、包配置及 CI 文件的 Git 归一内容 SHA256 为 `affff476f48dbd9ea0cbd7daf6da48f87926b69dde876e580dd81f06be1ddc9c`；全仓、前端重建和完整 E2E 前后核对一致。范围不含文档、原始换行字节或全部 ignored 文件，不与旧 837 文件指纹直接比较；没有写 Git 对象或索引。
+
+### 唯一四协议 live 与唯一完整浏览器验收
+
+唯一授权命令 `go test -tags live ./internal/llm -run '^TestLocalCompatibleModel$/(OpenAIChat|OpenAIResponses|DeepSeekChat|AnthropicMessages)$' -count=1 -v` 实际 exit 0、25.619s、零失败／跳过，四协议各 6 次、共 **24 次请求／24 次 HTTP 200**。每协议原非流／流式三步断言保持，每笔 observed／physical 各 1，用量已知。Responses／DeepSeek／Anthropic 使用已授权同源网关派生，不冒三个独立供应商账户。该唯一 live 在关闭／父同步修正前执行；实际 `-deps -test -tags live` 闭包核对与随后 storage／Workflow／Code／SDK 修改交集为零，LLM 与依赖未变，按此不变下层证据保留，没有重跑或外推修后上层认证。
+
+最终修正、两平台全仓、独立复核、安全及前端门槛收齐后，仅用已授权工作区外 Node 原生 `--env-file` 一次必要三个 OpenAI 字段桥接，整行过滤、不持久化配置，原样完整执行 **`npm run test:e2e`：exit 0，18／18 PASS，1.9m**。没有定向替代、重试或跳过；原流式重载用例 3.3s 通过，保留本次 trace completed／settled、默认 marker 5 秒和 request delta=1。鉴权、MIME／路径穿越、流式、幂等、切换、注册 Agent、HTML 惰性、附件、独立 Workflow 零 Code 模型、审批后显式恢复、分支／摘要／压缩及四布局用例均实际通过。
+
+E2E 代理实际 20 请求、20 上游响应、20 成功响应，全部 HTTP 200；外部运行器正常退出、未强制终止、未转发额外模型配置。过滤 4 行非白名单诊断，其内容未解析，不是失败用例数，也不隐藏验收退出码。没有通过文件工具读取、搜索或存在性探测秘密配置，没有写仓库或持久宿主环境。
+
+**本轮真实模型合计 44 次＝live 24＋完整 E2E 20，44／44 HTTP 200，Gemini 0。** 这是本轮后续限制处理的计数，与下方原迁移阶段历史 44 次分开；没有额外诊断、自动重跑或追加模型请求。
+
+### 继续保留的限制
+
+macOS runtime 依明确批准延期，仍未验证。权限故障证据限定当前非 root 且权限模式生效的 Linux、可精确恢复 DACL 的 Windows；root／绕过权限／不支持相应 ACL 的环境明确 NEEDS_CONTEXT／FAIL，不隐藏跳过或宣称所有 CI 环境通过。
+
+初始 stateRoot 及祖先仍属可信部署边界；有限目录句柄、类型／重解析点／SameFile 检查和观察式清理，不是所有 ABA、挂载、硬链接、设备或强操作系统沙箱证明。Repair 的 raw-path／旧 flock 与完整旧 WRITE_THROUGH 等价迁移继续 **BLOCKED**，实际 source share3 反例旧成功／候选错误 32 保留；不能把任意 Repair 父路径认证为可信根，也未以 File.Sync→相对 Rename→目录 Sync 替代旧合同。完整持久子树、未来 Workflow 原生整图 checkpoint 和真实断电保证不因测试绿色交付。
+
+原 Step1—11 已接受结论保持；Step12／13／14／15 及整体 P3 的开放限制不机械勾完成。最后限定十文件文档阶段3实际修改九文件、+39/-27，独立规格／质量复核均通过、必修为零；旧文档模型调用限制已明确只禁止新增 Gemini 调用，其它仅原批准四协议与完整 E2E 范围。09 集中维护安全关闭／实际父同步方法，12 集中维护最终命令／顺序／结果，覆盖表追加新检查点，阶段1／2与全部历史记录保持。没有提交、推送、PR、索引写或工作树回退。
+
+## 最新最终复审修正（2026-10-02，完整 E2E 暂缓）
+
+最终跨任务只读复审新增两项中等问题，父已核对实际源码：Workflow 正常实例关闭使用 `errors.Join`，使公开 `sdk.AsError` 不能直接识别产品错误，并可能把注入后端的原始关闭信息返回；新运行目录的实际 stateRoot／namespace 父目录项缺少同步，现有子目录和 journal 同步不能证明上级名字耐久性。后一项是既有持久化缺口，没有实际掉电丢失实验，不宣称所有平台必然丢失。维护者已明确批准一起修正：关闭边界公开固定安全错误、私有保留完整原因且仍等待真实退出；只在 `OpenResourceRoots` 可写创建路径调用已有 `SyncRoot` 同步实际两个父目录，即使目录存在的重试也同步，只读零同步。Repair、创建登记、全局 `AsError` 和旧 WRITE_THROUGH 合同不变。
+
+修正波次已经开始，要求对应默认及公开 SDK 消费者先取得真实行为 RED，再最小接线、两平台限定普通／竞态和独立复审。下方两平台最终全仓普通／竞态、静态／构建、安全、前端和目标 JSON 绿色属于这两个修正之前的冻结文件集，保留为真实历史；修后必须重新收口，不提前将它们算作修后全仓通过。macOS 仍延期未验，整体 P3 未完成。
+
+此前冻结文件集的 Linux 全仓 `go test -race ./... -count=1` 和显式消费者竞态已实际 exit 0，Code 297.789s、消费者 16.034s；两平台原离线门槛当时均已通过。随后按本轮授权唯一执行 `go test -tags live ./internal/llm -run '^TestLocalCompatibleModel$/(OpenAIChat|OpenAIResponses|DeepSeekChat|AnthropicMessages)$' -count=1 -v`，实际 **exit 0，25.619s，0 失败／跳过**。四协议各非流式／流式三步全部原断言通过，实际 **24 次请求、24 次 HTTP 200**，每笔 observed／physical 各 1；输入／输出用量均已知。Responses／DeepSeek／Anthropic 使用已授权同源网关派生，认证实际协议工厂而非三个独立供应商账户。没有 Gemini 请求或额外诊断／重跑；配置只由已授权测试自身加载，没有通过文件工具读取或输出值。
+
+跨任务复审在 live 运行期间交付；M1／M2 只涉及 Workflow 关闭和共享目录创建，不修改所测 LLM 或依赖。该唯一 live 结果按实际不变的下层文件集保留，不外推修后上层行为；原完整 E2E 尚未执行，暂缓到修正与离线复验后。当前本轮真实模型请求仅上述 24 次，E2E 0、Gemini 0。复审没有亲跑测试，也没有逐行穷尽全部三万余行 tracked dirty diff，独立阅读限制保留；没有索引写、提交、推送或工作树回退。以下均为较早检查点，不删除或改写当时结果。
+
+## 最新离线验收结果（2026-10-02，真实模型验收仍待）
+
+清单生产发布已获有界接受：作者两平台真实 RED→GREEN、独立规格／质量复审通过，父修后 Windows 与实际 Linux 完整 `storage/...`、`codeagent/...`、Workflow、Web、SDK 及显式消费者普通／竞态／静态／生产构建均 exit 0。独立复审保留一项非阻断建议：通用发布失败阶段目前只断言旧清单字节／普通类型，未补旧文件身份／权限保持；成功发布分支和 Windows 原生拒绝矩阵另有身份／权限断言。父已核对并在实施报告中准确更正覆盖范围，没有将不存在的断言记为通过。Blob 清理修正及其它已接受局部交付保持，Repair 完整旧 WRITE_THROUGH 替换仍暂停，不因清单接受而解除。
+
+Windows／实际 Linux 最终目标命令均为 `go test -json ./internal/storage/... ./internal/codeagent ./internal/web ./sdk -run 'Test.*(Header|Symlink|Junction|Attachment|Manifest|Writer|Lock|ReadOnly|PathsOverlap|FileBoundary|DefaultStateRoot)' -count=1`。实际逐 run 配对完成 action：Windows 632／632 pass，Linux 412／412 pass，两者 skip／fail／未收尾均为零；这是具名父／子用例 action 数，不是独立场景数。Windows Header 链接 journal、文件 symlink、动态 filelink、junction、清单原生故障、只读、锁和默认根等目标实际执行；memory 在此过滤无用例，如实保留。旧权限 skip 不删除，macOS 仍按批准延期未验证，不外推其它文件系统或平台。
+
+父 Windows 最终 `gofmt -l .` 无输出，`go vet ./...`、`go build ./...`、`go test ./... -count=1`、`go test -race ./... -count=1` 及两条独立 `sdk/testdata/consumer` 普通／竞态命令均 exit 0。Code 普通 67.281s／竞态 306.909s，显式消费者普通 4.006s／竞态 15.501s；没有竞态报告。实际 Linux 最终格式、全仓静态／构建／普通与独立消费者普通均 exit 0，Code 普通 76.657s／消费者 4.728s；Linux 全仓及独立消费者竞态正在串行收尾，当前不推断通过。两平台不并行启动昂贵全仓竞态套件，WSL localhost／NAT 环境提示保留。
+
+两平台固定 `govulncheck@v1.8.0 -show verbose ./...` 最终均 exit 0，源码可达漏洞 0、受影响导入包 0，仍保留 required 模块 OpenPGP `GO-2026-5932`／修复 N/A，不能称所有依赖零告警。首次 Windows 扫描因 `GOPROXY=off` 拒绝加载工具的模块元数据而 exit 1、未完成扫描；随后仅允许固定工具查询官方模块与漏洞数据库，不改生产依赖。Eino 仍 `v0.9.21`，gRPC 为批准精确提交。
+
+最终前端 typecheck、完整十一文件 239／239 unit、build 均 exit 0；嵌入仍 `index-BhXUGGiz.js`／`index-DWwsvm-M.css`。全仓 `git diff HEAD --check` exit 0，新 210 个有限交付文件另作空白检查，无诊断，Git 换行提示保留；禁止产物已跟踪／未跟踪均零，冲突标记与典型长密钥模式有限扫描无匹配。初次新文件检查因 PowerShell 把 Git 换行警告升级为终止错误而整链 exit 1，保留失败；改外部命令错误处理后完整检查通过，不把初次当作新文件已检查。最终文档状态校准后仍须复查。
+
+源码和构建资源保持冻结，最终跨任务及十文件文档独立复核尚待报告；四协议 live 与原完整 E2E 已授权但截至本检查点未执行、真实模型／Gemini 请求仍零，未读取、搜索或存在性探测秘密配置。Step12／13／14／15 与 P3 保持开放，没有索引写、提交、推送或工作树回退。以下准备与过程段落保留当时历史，不用早期尚待状态替代最新结果。
+
+## 最新最终验收准备（2026-10-02，仍未完成 P3）
+
+清单保存已经接入默认 Code 创建入口的实际资源目录句柄；standalone／注入调用使用同一 checked-root 核心。发布保留真实临时文件身份、短写拒绝、File.Sync／Close、已批准的 Windows 传统 class10 临时源 share7／no-WRITE_THROUGH 方法和同目录同步，失败只观察式清理本次创建对象，外来或未知身份名字保留；成功重命名立即取消临时名清理。作者 Windows／实际 Linux 的限定普通、竞态、静态分析及构建均 exit 0，父已核对最终生产 caller 和核心；独立规格／质量复审及最新跨上层组合仍待收，当前不据作者报告称该子项接受。
+
+Blob H1／M1 修正已获独立复审通过，父修后两平台完整 storage 普通、竞态、静态分析、构建均 exit 0；这是有限 Blob 交付接受，不外推全部 Step13。原清单门槛、旧 WRITE_THROUGH 不等价反例和所有历史失败保留；生产 Repair 完整旧 WRITE_THROUGH 迁移仍暂停，任意 Repair 路径父目录不能视为可信根。
+
+最新父组合首轮因 `gofmt -l .` 列出九个 LLM 文件及显式消费者的一文件而在格式门槛 **exit 1**，普通／竞态／静态／构建均未开始。随后实际 `go fmt ./...` 和对 `sdk/testdata/consumer/reconcile_pipeline_test.go` 的 `gofmt -w` 均 exit 0；重新 `gofmt -l .` 无输出。抽查为换行格式差异，不认定产生原因。父现重新运行完整受影响组合，构建只包含生产包，消费者继续参加普通／竞态测试；结果尚待收。
+
+维护者已明确批准本轮唯一四协议 live，以及原样完整 `npm run test:e2e` 的工作区外 Node 原生 env-file 一次必要 OpenAI 字段桥接。授权要求最终源码冻结、离线验收通过后执行，失败不自动重跑，Gemini 请求保持零。外部运行器已经离线语法检查／脱敏自测及 npm 启动检查通过；期间引号和 cmd 路径错误保留为启动器调试，不作真实 E2E 证据。**截至本检查点 live／E2E／真实模型均未执行，请求为零**，未读取、搜索或存在性探测 `.test_env`。
+
+原十文件现行设计／覆盖已作有限同步，后续仅校准 Blob 接受、清单交付待复审和新授权三项时间敏感事实，独立文档复审待收。最终全仓两平台普通／竞态、静态／构建、安全扫描、目标链接逐项运行及新文件卫生仍须针对冻结文件集完成；macOS 依批准延期记未验证。Step12／13／14／15 和整体 P3 保持开放，没有索引写、提交、推送或工作树回退。以下检查点和正文均保留历史原义。
+
+## 最新文件边界检查点（2026-10-02，清单与 Blob 修正进行中）
+
+**本节后续状态：Blob 清理 H1／M1 已关闭。** 修正先在 Windows／实际 Linux 取得真实误删 RED，再按本次创建 File 的身份作同目录观察式清理；外来或未知身份名字保留，成功删除后取消延迟清理。修后独立规格／质量复审通过、没有剩余必修，父两平台完整 `internal/storage/...` 普通、竞态、静态分析和构建均 exit 0；原十四个崩溃窗口与引用断言保留。下面“正在修正／尚待复审”描述是本节较早检查点，当前仅该有界 Blob 交付已接受，清单生产发布和最终跨上层组合仍待验。
+
+默认 Code／Workflow 工厂已经各自接入同一次保持打开的资源目录句柄和同一 journal 预检文件；独立规格／质量复核均通过，Code 无必修项，Workflow 的非阻塞测试清理登记建议已作最小修正并在 Windows／实际 Linux 普通及竞态测试复验。Workflow 父完整包两平台普通、竞态、静态分析及构建均 exit 0。附件子目录及 Web 发布目录同步也已取得真实 RED→GREEN、两平台限定复验和独立复核通过。上述均为有界交付，不代表所有写路径或整个 Step13 完成。
+
+清单 test-only 门槛验证了 Windows 传统 class10 相对重命名、临时源分享 READ／WRITE／DELETE、不请求 WRITE_THROUGH 的有限方法。十一组独立输入的二十二个叶用例与旧清单方法相符；补充真实关闭本次目录 File 后返回错误 6、释放源句柄的 N1 测试后，独立复核通过。维护者随后明确批准仅清单采用该方法，生产保存接线与完整发布故障验证正在实施；长期 journal／writer.lock 仍只分享 READ／WRITE、拒绝 DELETE，不随临时源分享策略改变。生产 Repair／ReplaceFile 完整旧 WRITE_THROUGH 的暂停保持，此授权没有批准其它持久化合同或 NTFS-only 范围。
+
+Blob 已取得目录／journal 绑定及非替换发布的初步实现和两平台限定测试，但独立复核发现失败清理会删除已经观察到另一文件身份的临时名字，原新测试和一条旧目录源测试也用了错误清理预期。维护者已批准按真实创建文件身份清理，保留换入的对象，并只调整那条错误名字预期；修正及复审尚未完成，原绿色结果不能关闭此高优先级问题。原十四个真实进程崩溃窗口、引用次数、零可用引用和无复制／重命名后备发布断言保留。
+
+父 Windows 完整受影响组合 `go test ./internal/storage/... ./internal/codeagent/... ./internal/workflowagent ./internal/web ./sdk ./sdk/testdata/consumer -count=1` 与相同范围 `-race` 均逐包 exit 0，随后同范围 `go vet` 通过。该执行链最终 **exit 1**：`go build` 错误地包含仅有测试文件的 `sdk/testdata/consumer`，报 `no non-test Go files`。消费者普通／竞态测试本身通过，构建后续应只针对生产包，消费者仍单独测试；保留这次失败，不把整链记为成功。此结果属于 Blob 清理修正前、清单发布尚未接线的文件集，不能替代修后或最终全仓验证。
+
+前端本轮再次离线 typecheck、完整十一文件 239／239 unit 和 build 均 exit 0，嵌入资源为 `index-BhXUGGiz.js` 与 `index-DWwsvm-M.css`。最终全仓、漏洞扫描、目标链接逐项运行、原完整 E2E 和四协议 live 仍待最终文件集收口；真实模型与 E2E 执行前仍需本轮明确授权。本轮模型／Gemini 请求均为零，未读取、搜索或探测 `.test_env`；macOS 沿已批准延期记未验证。全部旧记录保留，Step12／13／14／15 和整体 P3 仍有开放项，没有索引写、提交、推送或工作树回退。
+
+## 保留限制处理（2026-10-02 14:10 授权，实施中）
+
+维护者已批准执行续订计划的 Step7—15，原 Step1—6 完成状态和下方历史记录保留。新增回调方案的正式采用、文件锁加固方法仍按计划要求在取得运行证据后再次确认；macOS 和具备文件符号链接权限的 Windows 运行证据尚待维护者回传。本节是实施检查点，不是新增步骤或整体 P3 的完成认证。
+
+- 修改前 `go test ./internal/agent/eino ./internal/storage/... ./sdk -count=1` 实际 exit 0。
+- 精确升级 `google.golang.org/grpc` 到已批准的 `v1.85.0-dev.0.20260825072537-93e31b48545e` 并执行 `go mod tidy`，两命令实际 exit 0。`go.mod` 仅此版本行改变；传递模块选择带动 Envoy `1.37.0 → 1.39.0` 和 `genproto/googleapis/api` 的校验和更新，Eino 保持 `v0.9.21`、x/crypto 保持 `v0.57.0`。`go test ./internal/llm/... ./sdk/testdata/consumer -count=1` Windows exit 0；实际 Linux 同范围 race exit 0。默认 Gemini 适配测试使用离线替身，不是真实 Gemini 请求。
+- 升级后 `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -show verbose ./...` 实际 exit 0：21 根包、95 模块；0 个源码可达漏洞、0 个受影响导入包，gRPC `GO-2026-6443` 告警消失。仅保留 `GO-2026-5932` OpenPGP 模块级告警，官方修复版本为 N/A；实际 `go mod why golang.org/x/crypto/openpgp` 确认当前模块不需要该包，不能宣称所有 required 模块均无告警。
+- 根目录重叠新增真实默认回归首跑 exit 1：Windows 根目录与后代双向漏判；SDK 创建意外返回会话、错误为 nil，并在临时状态目录新增 1 个条目。按原规范化规则改为双向 `filepath.Rel`／`filepath.IsLocal` 后，同回归及合法路径绑定 GREEN；Windows `go test ./internal/storage ./sdk -count=1` 和对应 race 均 exit 0。实际 Linux 根路径／默认目录定向普通和 race 也 exit 0；未向文件系统根写夹具。
+- macOS 默认目录测试夹具已隔离 `HOME` 并按 `os.UserConfigDir` 计算预期，在创建前确认预期配置目录位于临时 home；历史查询工作区期望使用真实解析路径。Windows／实际 Linux 相关默认测试通过，仍不能替代 macOS runtime。首次 Linux 含竖线的正则参数被默认 shell 解释为管道，出现 command-not-found，未取得该条测试证据；改为 `wsl --exec` 直接参数后重新执行成功，保留启动错误。
+- `go build ./...` 当前 Windows exit 0。并行 Step12 新测试尚在编辑时，父 Windows Header 定向测试因新测试文件暂有未使用 import 而构建失败，整条记失败；其中 checkpoint junction 实际执行通过，不以该单项代替失败命令。须在实施者交付后重新验证。
+
+本轮截至此检查点未读取或探测 `.test_env`，真实模型请求 0、Gemini 0；没有索引写、提交、推送或工作树回退。回调测试候选、重载观察修正和文件边界复现仍在进行，最终全仓、安全、前端、原完整 E2E、live 与平台证据须针对最终文件集重新收齐。
+
+### 后续限定验收（2026-10-02 14:59）
+
+Step10 的真实前端回归取得 RED→GREEN，新增 42 项离线测试；实施者最终完整 unit 239／239 和 typecheck exit 0。父独立重新执行 `npm run typecheck`、`npm run test -- --run`（239／239）和 `npm run build`，均 exit 0；嵌入 JavaScript 更新为 `index-BhXUGGiz.js`。独立只读复核确认规格与质量通过、无本轮必改项。原 reload 用例绑定真实 trace、要求 completed／settled，助手角色与消息 ID 来自真实投影；原 180 秒任务等待、5 秒 marker 断言及一次物理请求约束均保留。此项离线门槛完成，真实完整 E2E 尚未运行，历史首次失败根因仍未证明。
+
+回调测试候选已完成固定版本离线验证，但生产实现未改。父独立执行 Windows 候选普通／race（0.589s／13.544s）和实际 Linux 候选普通／race（0.482s／13.616s），均 exit 0；父永久生产回归仍 exit 1（0.312s），明确记录 Needed／OnStart／OnEnd 调用和 OnEnd panic 子进程退出 2。回调预检生产修复仍等待独立复核与正式采用确认，不以候选通过关闭基础恢复阻塞。文件边界复现与方法确认继续进行，整体最终验证未完成。
+
+独立前端复核还记录了继承 SSE 解析器在“不遵守 AbortSignal 的替身于取消后返回未关闭空流”条件下等待流结束的边界；未证明标准浏览器 fetch 或历史重载会触发，未认定为本轮新增必改项，不据此扩大 Client／解析器修改范围。没有隐藏该限定复现，也没有将替身现象宣称为真实浏览器漏洞。
+
+### 回调采用确认与文件边界复现（2026-10-02 15:07 后）
+
+回调候选独立复核的规格与质量均通过，无新增重要阻断；维护者随后明确批准 Step9 正式采用。生产最小接线和真实暂停／审批／Snapshot／Resume／磁盘重开的计数与预算回归已开始，尚未完成验收。候选及复核本身不代替生产验证，Eino `v0.9.21`、私有原生数据边界和宿主自定义解码器不受隔离的限制保持。
+
+Step12 报告已交付，Windows 与实际 Linux 的确定性默认回归均取得 RED；父 Windows `go test ./internal/storage ./internal/storage/jsonl ./internal/codeagent -run '^TestFileBoundary' -count=1` 也实际 exit 1，复现 Header／附件目录替换、journal 身份替换后的外部读取与后续显式 Append、链接资源清单的 writable 接纳及只读工具能力保留，以及非普通锁文件的错误边界。父同范围 `'^TestFileBoundary.*Prototype'` exit 0，确认有限 Root／锁原型可运行；Code 包此原型过滤没有匹配用例，不把它算作该包的新通过证据。
+
+文件加固尚未批准或实施。Windows 相对打开的默认删除共享与旧锁不同，原相对 Rename 原型也不能直接认证与原 `MOVEFILE_WRITE_THROUGH` 的所有卷持久性等价；这两项在正式方法确认前继续核查，未静默放宽锁共享或发布语义。Windows 文件 symlink 权限和 macOS runtime 缺口仍保留。当前全仓普通／race 不能据新增回归的有意 RED 记为通过，最终验证仍待生产修正与平台证据。
+
+### 后续生产复核与文件加固检查点（2026-10-02，实施中）
+
+Step9 的检查点校验已接入唯一生产入口，独立规格／质量复核通过。真实暂停、审批发布、Snapshot／Resume 负向与磁盘重开组合保留原错误码、执行次数、提交顺序和预算。父在 Windows 与实际 WSL Linux 分别完整执行 `go test ./internal/agent/eino ./internal/codeagent/... ./sdk ./sdk/testdata/consumer -count=1`，随后同范围 `-race`，四条命令均 exit 0；这是该生产行为及受影响范围门槛完成，不是新增文件集的最终全仓认证。隔离只涵盖固定 Eino `v0.9.21` 的生命周期回调，原生自定义解码器仍可在预检时执行；私有探针保持每次新建、单次使用，不宣称完整子树认证。
+
+维护者已批准 Step13 有界加固，包含 Store／Repair，并要求 Windows 日志和锁保持旧禁止 DELETE 共享。共享有限目录句柄、Header／资源清单只读核心及附件验证读取已接入；Code／Workflow 工厂跨阶段、长期 Store、blob、附件写入及清单发布仍未整体闭合。独立复核发现的新根入口错误码回归已取得真实 RED→GREEN：缺失／非目录可信状态根恢复既有配置错误，Header／Inspect 保留 `incompatible_version`，公开 Open 保留 `invalid_argument`，合法根下缺失会话仍 `not_found`。修后独立复核通过；父两平台以 `'^Test(ResourceRoots|OpenChildRoot|FileBoundaryStateRoot|FileBoundaryHeader|FileBoundaryManifest|InspectSessionHeaderAndOpenPreserveDistinctLimitCodes)'` 完整前缀复跑 storage／codeagent 普通、race、vet、build，均 exit 0。相对子目录打开的真实窗口、完整重解析点与文件身份检查保持。旧锁 Unlock 失败后不保证独立 Close 的问题仍由后续私有锁处理，当前不宣称已关闭。
+
+Windows 原开权限、日志／锁共享、大小写、目录 chmod 和句柄相对 flush 的 test-only 方法门槛已在实际环境通过；父独立普通／race 复验也 exit 0。后续同一目录句柄下的 JSONL 日志／私有写锁及默认目录同步实现已启动，尚未交付验收。文件 symlink 当前已有实际执行通过、无 skip 的限定结果；先前错误 1314 的历史缺权限记录保留，最终文件集逐项目标与 macOS runtime 仍未验证。Windows 同时持有 namespace／resource 时祖先改名实际被拒绝，测试断言原绑定保持，没有放宽共享来制造目录交换。
+
+完整保留旧 `MOVEFILE_WRITE_THROUGH` 的替换迁移继续暂停。新实验在真正执行 rename 的同一源文件对象上实测 mode `0x22`，其中含写穿透位；但源已有 DELETE 访问句柄且分享 READ／WRITE／DELETE 时，旧 ReplaceFile 成功、候选打开返回 sharing violation（32）、rename 为零，**完整行为等价不成立**。父独立全实验前缀普通／race 均 exit 0（0.794s／2.804s，零 skip），绿色只表示反例和其它取证断言通过，不能算生产等价。目标身份检查后换位及按名字清理的非原子边界也保留；没有采用 File.Sync→相对 Rename→目录 Sync 作为替代，没有修改生产 ReplaceFile、Repair 的替换流程或创建登记。
+
+状态根入口、运行时条件读取已分别独立复核并取得父 Windows／实际 Linux 定向普通／race／静态／构建证据；默认工厂连续绑定仍待后续。JSONL 默认日志／私有写锁／同目录同步的生产实现已交付，作者完整 storage 普通／race／vet／build 两平台 exit 0；父独立完整 Windows storage 普通／race／vet／build 也 exit 0，唯一 skip 为原 Unix mode-bit 用例，文件 symlink／junction 新范围均实际执行。父实际 Linux 完整 storage 普通／race／vet／build 已收尾且均 exit 0，普通及竞态各 263 个具名测试 action 通过、零 skip；独立存储规格／质量复核也通过，无必修发现。结合父真实源码核对和两平台完整复验，可接受默认 JSONL 日志／写锁／目录同步这一有界交付，默认 Store 的 Unlock 失败后独立 File.Close 责任已关闭；Repair 中旧锁和上层工厂清理仍不在该关闭范围。完整 Step13 仍未完成。
+
+本检查点已同步当前结果并保留全部历史。Step12／13／14 仍有开放范围，P3 未完成；最终全仓普通／race、静态／构建、漏洞扫描、前端、原完整 E2E 与四协议 live 尚须在最终文件集重新验证。真实模型及 E2E 仍需本轮明确授权；本轮没有读取或探测 `.test_env`，模型／Gemini 请求均为零。macOS 按既有批准延期明确记未验证，没有索引写、提交、推送或工作树回退。
+
+### 后续运行时条件接线（2026-10-02，默认工厂绑定仍待实施）
+
+已在原 PauseReference、Snapshot／Resume、附件准入及模型投影中选择借用的同一目录句柄，复用已验证的清单和附件读取核心；没有该内部绑定时保留原 standalone 路径。父先用真实磁盘暂停和真实公开输入取得 Windows／Linux 三项默认回归 RED，再最小接线：原清单仍按失效路径查找、关闭借用句柄后仍误回退有效路径，以及模型收到外部自洽附件且 image 按外部 text 被接纳，均实际复现。修后新前缀普通／race 两平台均 exit 0；合法恢复总模型 2／工具 1、预算 2／2／1，关闭句柄拒绝不接纳／写入／执行，文本模型只见原内容且原 image 准入拒绝，外部字节／模式／条目保持。
+
+这些测试通过内部 mailbox 安装已检查的借用句柄，并明确不是默认工厂所有权移交的认证。生产工厂尚未赋该字段，跨 Header／兼容预检／Store 的绑定与 Blob 接线仍待后续；当前修改不能据此称公开默认 SDK 全链完成。父 Windows 原附件／Pause／Resume／回调相关完整前缀普通／race（7.361s／54.578s）及 Code 静态／构建均 exit 0；随后串行完成实际 Linux 同范围普通／race（8.943s／56.915s）及 Code 静态／构建，也均 exit 0。独立规格／质量复核已接受此有限条件接线，没有高／中严重度源码或测试发现；报告把“所有观察均有原 journal 字节比较”的概括改为准确区分：三项阶段检查序号及调用计数，关闭句柄拒绝另有实际 journal 字节比较。默认工厂移交仍未认证，最终全仓未运行。
+
+清单 Rename 的新增默认 Windows 刻画还确认另一独立方法差异：目标 READ 句柄允许删除共享时，旧 `os.Rename` 返回 5、未发布，而 `Root.Rename` 成功发布；两方法下既有读取句柄仍保持旧对象和内容。八个 cold 方法输入普通／race 均 exit 0，绿色只证明这个差异，不证明兼容或持久性。生产清单保存未替换，原 WRITE_THROUGH 替换暂停也不变。旧历史、macOS 未验证、最终模型／E2E 新授权和本轮真实请求为零的边界均保持。
+
+## 当前迁移交付状态（2026-10-02，批准六步已完成）
+
+批准的 Step1—6 三层 SDK 与双 Agent 分层迁移已完成：原需求／设计正文同步、目录与依赖边界、独立 Workflow Agent、Code 内置工作流及应用管理耦合退出、Web 双资源接线和最终清理／验证均已交付。独立源码／文档发现已具体关闭，清理核对没有足够依据批准新的删除项，原安全增量保留。Windows 和实际 Linux 的修后全仓普通／race、显式消费者及静态／构建验证，另行执行的安全扫描、前端默认测试和原完整浏览器验收，实际终态均已收齐；详细命令和限定结果见下方最终记录。
+
+维护者 2026-10-02 11:58 最新说明授权本轮仅将 `.test_env` 模型配置装配到本地浏览器验收子进程；父使用工作区外无配置值运行器和 Node 原生 `--env-file`，没有展示配置值、修改配置源或写入源码／仓库配置／持久宿主环境。最终原完整 `npm run test:e2e` 实际 exit 0，18／18 通过、0 失败／跳过，20 次真实请求均 HTTP 200。本次补验连同首次失败和定向诊断共 44 次请求，44／44 HTTP 200，Gemini 请求保持 0；每日 15 次仅作上限。首次完整运行的流式重载失败与根因未定位事实保留，后续通过不声明修复或穷尽稳定性。
+
+**六步迁移完成，整体 P3 仍未完成。** 原生检查点预检会触发宿主全局 callbacks 的独立基础恢复阻塞仍开放，分层迁移、节点结果复用和浏览器通过均不关闭它。macOS 已批准延期、未验证，Windows 文件 symlink 权限 skip 和实际 Linux 有限路径保护边界保留。以下带“待收／进行中／尚未”及宿主配置不足的早期段落均是当时历史检查点，由后续明确终态取代，不作为当前恢复入口。没有索引写、提交、推送、reset／restore／clean。
+
+## 2026-10-01 双 Agent 分层迁移（实施开始，未验收）
+
+已批准先修订原 PRD/开发设计正文，再迁移 `internal/sessions` 为 `internal/codeagent`、提取共享 `internal/storage`，建立同级独立 `internal/workflowagent`，最后切换 SDK/Web。两类运行独占状态、日志、预算、审批与恢复，Web 用现有受控工具作业务组合；不新增跨 Agent 联动框架。旧同会话工作流接线及 `CompileWorkflowTarget` 将退出，其他无关公开能力和现有用户修复保留。
+
+实施授权与记录纠正：此前计划阶段已经提前写入部分原文档，且标题误写为“实施开始”；这超出了当时只读权限。本节保留实际改动，不撤销用户内容。维护者于 2026-10-01 20:29 明确批准执行当前六步计划，此后进入正式实施。
+
+本次原文档修订是目标定义，不是源码迁移或测试通过证据。旧开发数据不迁移、不自动删除；动态导入/Coze/热重载保持原未来阶段，不启动 P4/P5。原生检查点预检全局回调仍是基础恢复阻塞，历史失败和实际平台缺口不删除；P3 未完成，macOS 延期记未验，Gemini 请求零。
+
+### Step4 实施交付与父流程整合复验（2026-10-02，待独立审查）
+
+Code 内置工作流已按具体函数/状态所有者退出；工作流定义、静态编译与 Eino Graph 单份迁入 `internal/workflowagent`。SDK 只移除已退出的 `CompileWorkflowTarget`、Code 节点别名及对应字段，无关 L1/L2、普通会话和受控委派接口保留。Web 已拥有创建目录、去重、展示 metadata 与附件上传管理；Code 保留输入附件准入/展开，新增有限内部只读 header/history 值端口。此时独立运行 HTTP 路由尚属 Step5，不提前认证。
+
+整合曾出现超限 header 错误码变化：原 SDK `TestOpenRejectsOversizedHeader` 实际收到 `incompatible_version`，旧契约期待 `invalid_argument`。父确认保留原公开 SDK 边界，不改安全断言；内部 Inspect 超限按批准查询规则返回 `incompatible_version`。实施者先用同合法 journal/64 字节限额的真实 Open/Inspect 配对默认测试复现，再以唯一受保护读取核心区分两调用边界，所有路径/SameFile/限额/零写拒绝保留。原 SDK 测试未改，journal 字节、模型零调用和无 writer 文件断言通过。
+
+父对修正后的文件集独立执行 `go test ./internal/codeagent/... ./internal/workflowagent/... ./internal/agent/... ./internal/storage/... ./internal/web ./internal/architecture ./sdk/... ./sdk/testdata/consumer ./cmd/web -count=1`，随后同范围 `-race`，Windows 两条均 exit 0（Code 54.344s/255.538s、Web 15.732s/20.976s、consumer 6.875s/24.383s）；实际 Linux 同范围普通后 race 均 exit 0（Code 54.909s/266.445s、Web 15.708s/19.919s、consumer 7.776s/22.773s）。两平台按顺序运行完整受影响范围，未用局部替代整条失败。
+
+父 Windows `go test ./sdk ./internal/architecture ./cmd/web -count=1`、根 `go vet ./...`、`go build ./...`、`git diff HEAD --check` 均 exit 0，`gofmt -l .` 无输出。Linux 定向 `go test ./internal/codeagent ./sdk -run Test.*Header -count=1 -v` exit 0，文件 symlink 攻击测试在 Linux 真执行通过；Windows 该文件 symlink 子项缺权限 skip 保留，目录 junction 真执行通过。首次 Linux 带嵌套双引号的 regex 命令 exit 2，bash 在测试前报语法错误；改为无嵌套引号参数后成功，不把该工具调用失败抹除或记产品通过。WSL localhost 代理告警保留。
+
+两个实施报告已齐，统一只读审查随后交付“规格不完全符合／质量需改”：多 writer 关闭只保留第一错误会掩盖另一 deadline；已通过权限检查的附件和 metadata 写入未纳入关闭等待，可能在登记锁释放后继续发布。父已核对源码并按两项定向修正，先补真实默认复现；应用关闭改为错误聚合与有限在途文件变更完成协议，超时继续保留登记所有权。另加强旧 required 工作流事实在可写 Open 前的只读兼容预检，要求不创建 writer 文件、不 chmod、不修复，以及四项负向和完成工具→模型中断→磁盘重开组合接替测试。此时修正尚未交付，前述绿色是修正前证据，不将 Step4 记为完成，也未派 Step5。最终稳定源码全仓、govulncheck、npm/E2E、四协议 live 仍归 Step6；macOS 延期未验、Gemini 请求零和 P3 宿主全局回调阻塞不变。
+
+### Step4 修后验收与 Step5 启动
+
+Step4 精准复核的两个 Important 问题已关闭：Catalog.Close 使用 `errors.Join` 保留 session、文件等待和 registry 的全部错误；附件／metadata 在同一关闭意图锁下正式准入，登记在途发布，Close 等待实际 IO 退出，超时保留登记锁。默认通道测试真实发布文件，分别证明排队未准入零发布、已准入发布真实退出、附件 record-last/64 上限、metadata 原回执，以及 Server.Wait 不提前释放 owner。
+
+旧明示工作流事实的强零写检查曾取得 Windows 锁创建、Linux 锁创建与 chmod 的真实失败；新增可写 Open 前的受控只读预检，复用 state 唯一纯兼容检查，完整 writer 后恢复仍保留，修后两平台锁、字节、原 Unix 模式及模型／工具零调用均通过。Workflow 四个负向接替中，“无 frozen 或无 requested grant 直接提交 waiting”取得真实失败，原 state 入口已补最小守卫；合法普通无需审批 claim 保留。实际完成工具→模型中断→磁盘重开→显式恢复组合首次即通过，按补覆盖记录，不伪造失败。旧未跟踪工作流测试缺完整字节快照的追溯限制保留，已知语义和当前真实断言核对通过，不声称逐字全部无损。
+
+独立审查 §10 的规格／质量限定通过，无新 Critical／Important。其当时待收的修后统一结果由父独立运行补齐：原 Step4 完整受影响范围普通后 race，Windows 全部 exit 0（Code 54.858s/252.228s、Web 25.712s/27.325s、consumer 6.452s/17.765s）；实际 Linux 全部 exit 0（Code 60.233s/273.257s、Web 28.179s/31.056s、consumer 8.287s/24.054s）。两平台根 `go vet ./...`、`go build ./...` exit 0，根 `gofmt -l .` 无输出，差异卫生 exit 0；index 仍为 302 项纯机械重命名、内容增删 0。结合实际接线、全部具体问题关闭和这些证据，父验收 Step4 行为门槛。
+
+按原计划进入 Step5：独立 Web definitions/run routes、创建去重、快照/SSE/实例审批/操作查询，与 Workflow 自有默认 TODO 后端／manifest／重放安全两个不交叉范围并行实施。已交付前端和外部业务组合消费者复用，不再重做；真实工具后端及 HTTP 路径仍待本步交付审查，最终浏览器、全仓和授权 live 仍待稳定文件集。此结论不认证 macOS、动态恶意文件系统或 P3 宿主全局回调隔离。
+
+### Step5 实施中的父真实 HTTP 联调发现
+
+父新增永久默认 `internal/web/review_workflow_sse_contract_test.go`，通过真实服务启动、独立 Workflow 创建和完成、Server.Close/Wait、服务重开及历史 SSE 到 `end` 验证前后端帧合同。`go test ./internal/web -run '^TestReviewWorkflowSSEUsesConsumerFrameEvent$' -count=1 -v` 首跑 exit 1（0.248s）：四个持久产品事实把 `workflow.created`、`workflow.input.accepted` 和 `workflow.state_changed` 用作 SSE 分发名；已交付前端 `syncWorkflow` 只处理分发名 `event`，会漏掉状态刷新。JSON 内原事件类型、独立 runId、持久游标和 Code 模型零调用均正确。父未编辑并行实施者的生产文件，定向修正要求保留 JSON 原 `type`，仅将产品 SSE 分发名固定为 `event`；修后实际验证和独立审查尚未完成，不据当前部分接线认证 Step5。
+
+本次父前端 `npm run typecheck`、完整 `npm run test -- --run`（197/197）及浏览器脚本离线 TypeScript 编译均 exit 0。这些仍不是完整浏览器或最终文件集认证。父当前 `go test ./internal/web ./internal/workflowagent ./internal/storage/... ./internal/architecture ./sdk ./sdk/testdata/consumer ./cmd/web -count=1` 集成检查点 exit 1，唯一失败为上述 SSE 分发合同（Web 30.607s）；Workflow（9.954s）、storage 全部后端、architecture、SDK（12.585s）及 consumer（8.439s）、cmd/web 均通过，整条仍按失败记录。此前独立 TODO 全部定向普通测试 exit 0（1.129s），覆盖一次票据、跨运行拒绝、host 替换、版本与重放、效果或观察提交丢回执保持 unknown、磁盘重开不重跑；不能以该子范围代替最终集成。两项 Step5 实施仍在进行，未读取或探测凭据文件、没有真实模型请求、Gemini 请求零；macOS 延期未验与 P3 原生检查点宿主全局回调阻塞保留。
+
+### Step5 双范围交付与后续父验收
+
+两个范围已交付：Web 分别挂载全局定义、独立运行及其 snapshot/open/control/instance approval/operation/SSE；Workflow 工厂装配自有默认 TODO，宿主注入完全替换，ownership 固定在 manifest。父已核对实际上层工厂、reservation/原回执和原工具管道，没有 Web 执行 manager/store、第二 DTO 或新 SDK 联动框架。SSE 分发问题已由原 owner 最小修正，父真实 HTTP 定向普通 exit 0（0.295s）、race exit 0（1.280s）；原 RED 和失败集成仍保留。
+
+父 Windows 完整受影响范围普通后 race 两条全部 exit 0：Code 67.368s/266.359s、Web 32.923s/35.101s、Workflow 10.657s/11.292s、consumer 7.937s/24.210s。收到最终报告后又独立重跑 Web/Workflow/storage/architecture/SDK/consumer/cmd/web 所属普通后 race，全部 exit 0（Web 27.175s/33.495s），避免报告最后增量未被先前编译纳入。根 `gofmt -l .` 空输出、Windows `go vet ./...` 和 `go build ./...` exit 0；实际 Linux 完整受影响普通和竞态也已整条 exit 0（Code 57.816s/283.118s、Web 29.352s/35.141s、consumer 6.894s/26.241s），保留 WSL localhost 代理提示。独立规格/质量审查仍在进行，尚未通过 Step5 整体门槛。父已在稳定交付源码上启动 Windows 全仓普通→race→单独消费者普通/race；最终结果尚未取得，任何审查修正后须重验覆盖范围。
+
+父已实际执行完整 `npm run test:e2e`，exit 1：宿主 `OPENAI_MODEL`、`OPENAI_API_KEY`、`OPENAI_BASE_URL` 配置不足，测试收集 0，未启动真实浏览器、服务或模型。这不是 `--list` 发现检查，也不是浏览器通过。前端构建 exit 0，资源仍为 `index-C8EVfAhx.js` 和 `index-DWwsvm-M.css`；类型与197项默认测试通过不能替代此未验项目。继续其余所有离线工作及最终已授权四协议 live；不读取或探测凭据文件、不桥接配置、不回退假模型、不提前宣布所有 Step 或 P3 完成。
+
+### Step5 行为门槛与 Step6 最终候选文件集
+
+Step5 独立审查已交付规格限定通过／质量通过，无新 Critical、Important 或 Minor；真实 SSE 分发问题关闭。父以两报告、实际 source 调用链、完整 Windows／实际 Linux 受影响普通及 race、最终报告后 Windows 所属普通及 race共同验收源码、默认 HTTP 与业务消费者行为门槛。完整真实浏览器仍保留为最终外部未验项，未由 Go HTTP 或前端离线测试代替。进入 Step6 的原文档状态同步、退出范围清理核对和跨步骤源码审查；只读清理预检精确删除候选为 0，原私有 child 尝试、流式、预算、取消、有限安全恢复与原生检查点拒绝保护都有真实调用，不按前缀删除。
+
+父对稳定候选源码按平台串行执行最终全仓：
+
+- Windows：`go test ./... -count=1` exit 0（Code 54.180s、Web 28.026s）；`go test -race ./... -count=1` exit 0（Code 259.914s、Web 33.427s）；单独 `go test ./sdk/testdata/consumer -count=1` 与对应 `-race` 均 exit 0（3.817s／14.135s），完整命令链 357.503s。
+- 实际 Linux（WSL Ubuntu-24.04、显式 Go 1.27）：根 `go vet ./...`、`go build ./...` exit 0；`go test ./... -count=1` exit 0（Code 62.875s、Web 33.150s）；`go test -race ./... -count=1` exit 0（Code 281.257s、Web 34.743s）；单独 consumer 普通／race 均 exit 0（4.743s／17.195s），完整链 446.907s。WSL localhost 代理提示保留；这是实际运行，不是跨编译。两平台均使用离线默认配置、竞态 CGO=1，没有多套昂贵 full race 并发。
+- `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` 首次因 `GOPROXY=off` 禁止模块 deprecation lookup 而 exit 1，没有执行漏洞分析；仅本命令改用官方模块源／校验库并授权数据库外网后实际 exit 0。最新结果为 0 个源码可达漏洞，另各 1 个导入包和 required module 中未被源码调用的 advisory，不能称全部依赖无漏洞。父随后以同一固定版本加 `-show verbose` 实际复查 exit 0，确认导入包 `GO-2026-6443`（grpc v1.84.0）与 required module `GO-2026-5932`（x/crypto v0.57.0 的 openpgp）均未被当前源码调用。没有改 go.mod/go.sum。
+
+这些是当前最终候选源码证据；文档与跨步骤审查尚未全部交付，任何后续生产修正须重验覆盖范围。完整 E2E 的宿主环境阻塞、macOS 延期未验、Windows 文件 symlink skip、动态 OS 保护有限边界及 P3 宿主全局回调缺陷继续保留，不能因此将 Step6 或 P3 整体记为完成。
+
+父最后执行唯一授权 live 命令 `go test -tags live ./internal/llm -run '^TestLocalCompatibleModel$/(OpenAIChat|OpenAIResponses|DeepSeekChat|AnthropicMessages)$' -count=1 -v`，实际 exit 0（25.215s），四个协议的非流式和流式各三次真实对话请求，共 24 次 HTTP 200；每次 observed=1、physical=1、输入／输出 usage 存在，全部原断言通过，无 skip。Responses、DeepSeek 和 Anthropic 使用已授权同源网关及原模型派生配置，只认证实际执行工厂，不推广为所有供应商能力。Gemini 没有被选中，请求为零。父未读取或探测凭据文件、未将 live 测试配置桥接到 E2E 的宿主环境，也没有输出配置地址或凭据值。
+
+最终前端再次 `npm run typecheck`、完整 `npm run test -- --run`（10文件197/197）、`npm run build` 和 E2E 脚本离线 TypeScript 编译均 exit 0，资源 hash不变。Header 路径最后定向两平台 exit 0：Windows 目录 junction 真执行通过，文件 symlink 缺权限仍 skip；实际 Linux 对应文件和目录 symlink 攻击均真执行通过。`git diff HEAD --check` exit 0；index 仍302项R100、内容增删0，不应交付产物清单无输出，实际构建依赖旧 sessions 数为0；新 source和文档常见 secret格式、冲突标记定向扫描无匹配。这些有限检查不代表强 OS 沙箱、所有恶意文件系统或全部依赖安全认证。
+
+### Step6 最终跨步骤审查发现与真实复现
+
+最终只读源码审查在原未提交全增量中确认一项 Important，规格不完全／质量需改：默认 Workflow TODO 后端额外要求最终冻结参数与转换前原调用逐字相等，导致公开 `PrepareArguments` 的合法转换不能提交。父直接核对共享工具的转换→最终验证→冻结→授权→claim，以及 `workflow_frozen` 保存原／最终各自摘要的路径，随后新增永久默认 `internal/workflowagent/review_todos_prepared_test.go`，使用真实 `write_todos` builtin、工厂和本运行 JSONL 后端，不注入替代 TODO。
+
+`go test ./internal/workflowagent -run '^TestWorkflowTodosPreparedArgumentsUseFrozenContent$' -count=1 -v` 实际 exit 1（0.174s）：原调用 A、最终冻结 B、分别摘要及原 callId 检查均先通过，随后运行 failed/resource_unavailable、TODO=0、claim=1、prepare=1、工具占额=1、逻辑／物理模型请求=0。此为真实组合缺陷的断言失败，不是编译或夹具错误；不能用先前全部默认套件绿色否定新增覆盖。
+
+按既有转换与权限合同精准修正：原调用 A 保留，执行内容逐字绑定原已批准最终 B，不重新 prepare；只移除多余 A=B 条件，其他一次票据、scope、frozen digest、current policy、claim、唯一 receipt、invocation 连续版本、unknown／丢回执和回放拒绝均保留。原 owner 正在完成审批及真实 Close/Open 组合的 RED/GREEN 和覆盖复验；修复与精准复核交付前不宣布 Step6通过，先前最终候选全仓结果保留但不冒充修后文件集认证。最终原文档同步仍待交付。四协议已授权真实24次通过的事实保留，Gemini请求零；本修法不触及 LLM。P3全局回调及浏览器宿主配置阻塞仍开放。
+
+### Step6 修后完整源码验证与文档交付（最终文档审查待收）
+
+上述 TODO 参数转换缺陷已最小修正：只删除最终 B 必须等于原 A 的额外条件，原 A 和其摘要保留，执行逐字绑定原已批准的冻结 B。默认套件新增四项直接、审批、真实磁盘重开和逐字回放负向；审批与重开组合先取得同一真实 RED，修后完成、TODO／claim／version 各一次、prepare 一次、模型及物理请求为零；Answer 不产生效果，重开重新询问，B 加空白、改回 A 或改 frozen hash 均拒绝。原 18 项 TODO 负向及故障测试未改。原最终源码审查 §9 已独立复核，S6-I01 与其组合证据缺口关闭，规格／质量限定通过，无新剩余 Critical／Important／Minor；清理预检的 `ToolRecord.ModelContent` 调用方缺口也由真实 caller 及普通／race关闭，仍无足够依据批准新的删除项。
+
+父随后对修后 Go 源码、当前默认测试及最终嵌入资源独立串行验证，不复用修前候选全仓绿色：
+
+- Windows：`gofmt -l .` 无输出，根 `go vet ./...`、`go build ./...` exit 0；Workflow/tools/Web/SDK/显式 consumer/architecture 全受影响普通及 race exit 0（Web 26.628s／30.447s）。`go test ./... -count=1` exit 0（Code 57.664s、Web 27.780s）；`go test -race ./... -count=1` exit 0（Code 265.999s、Web 32.251s、Workflow 13.053s）；单独 consumer 普通／race均 exit 0（3.903s／15.711s）；diff check exit 0。整条命令链 exit 0，452.319s。
+- 实际 Linux（WSL Ubuntu-24.04，显式 Go1.27.0 且 child PATH固定同工具链）：根 vet/build、同受影响普通／race均 exit 0（Web 27.405s／31.891s）。全仓普通 exit 0（Code 59.461s、Web 31.686s）；全仓 race exit 0（Code 281.537s、Web 34.127s、Workflow 16.934s）；单独 consumer 普通／race均 exit 0（4.704s／16.493s）。整条链 exit 0，513.720s。首次启动未引用的 PATH 展开了 Windows `Program Files` 空格，bash export invalid identifier，实际 exit 1（5.153s）、Go 尚未开始；只修当前进程 PATH 为固定 Linux 目录后重跑完整成功，保留启动失败而不冒称产品失败或初次通过。WSL localhost代理告警保留；两平台没有多套昂贵 Code/full race并发。
+- 修后前端 `npm run typecheck`、完整 unit（10文件197/197，无 skip）、`npm run build`、E2E脚本离线 tsc全部 exit 0，完整23.328s，资源仍 `index-C8EVfAhx.js`／`index-DWwsvm-M.css`。完整 `npm run test:e2e` 又实际 exit 1：仍缺宿主 `OPENAI_MODEL`／`OPENAI_API_KEY`／`OPENAI_BASE_URL`，收集0、浏览器／服务／模型未启动。保留真实断言，不以 --list、假模型、skip 或凭据文件桥接替代。
+- 修后 `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -show verbose ./...` 实际 exit 0，21根包／95模块／Go1.27；0源码可达漏洞，grpc `GO-2026-6443` 与 x/crypto OpenPGP `GO-2026-5932` 为未被当前源码调用的 advisory，不能称依赖无漏洞。只该安全命令临时官方proxy/sum和授权数据库网络，不改依赖。LLM源码和依赖未变化，上方唯一授权四协议24次真实通过的限定证据保留；没有重复或扩大模型调用，Gemini请求零。
+- 当前 Header 定向：Windows exit 0（Code0.342s／SDK0.202s），目录 junction真执行通过，文件symlink缺权限仍skip；实际Linux exit0（Code0.125s／SDK0.069s），文件与目录symlink均真执行通过。SDK Open超限invalid_argument及内部Inspect incompatible_version配对保留，不推广为强沙箱／全面恶意文件系统认证。
+- 最后实际依赖图旧 sessions包为0；两改动Go文件分别 lints无诊断，source/docs六精确目录常见私钥／长token／冲突标记专用扫描无匹配，不扫描或探测环境文件。branch／HEAD保持原值，index仍302项R100、内容增删0；限定不应交付产物清单无输出，没有index写／提交／推送。
+
+原正文文档子项已自然交付，父完整读取报告，并独立补齐普通Code例子的显式ProfileMemory／StateRoot及已授权live记录引用；还启动限定只读文档规格／质量和链接／签名审查，报告待收，不能据文档实施者自查认证。当前全部源码验证已取得，但 Step6 整体仍须文档复核及浏览器外部阻塞裁决；P3宿主全局回调缺陷仍独立开放，macOS延期未验、Windows文件symlink skip、动态OS有限保护与历史失败继续保留。
+
+### Step6 文档精准复核与可执行收尾终态（浏览器验收外部阻塞）
+
+最终文档初审取得 C0/I1/M1，涉及三处正文：开发02把未来丰富工作区设计对象误写为现行 SDK／HTTP 接口；system-review 的 Code 迁移句与产品基础 FR-13 的独立 Workflow 能力句仍过时。父先实际核对唯一 SDK、两类 options、HTTP 创建 DTO／严格解码、路径工厂及已 mount 控制入口，再仅修改这三段：丰富 WorkspaceRequest／WorkspaceBinding 保留为未来部署和执行环境设计对象，当前 Workspace／workspace 是显式路径字符串；Code 已迁移；独立 Workflow 基本入口已接线，Coze／动态导入／热重载仍未来。没有新增绑定构造器或 HTTP 对象，也没有改动已验证的 Go、前端、测试或依赖。Code 路径会先解析为绝对路径，Workflow 入口明确要求绝对路径；新正文没有虚构两 SDK 均拒绝相对路径。
+
+原独立文档审查者已自然追加第8节，父实际完整读取：D01／D02 均关闭，原批准同步规格及文档质量／准确性在精准范围通过，新及当前未关闭的 Critical／Important／Minor 均为0。独立复核重读当前三段、真实 SDK/options/DTO/mount、FR-13 覆盖行及相邻示例，限定文档 diff check exit0；原初审与历史发现保留。父又重读当前段落、精确检索并核对实现，没有将实施者报告当作唯一依据。原链接／大覆盖表／全文／Markdown和Mermaid渲染检查的有限范围不扩大为穷尽认证。清理核对仍没有足够依据批准新的删除项，原安全子执行、原生检查点拒绝和旧契约负向均保留。
+
+纯文字收尾后，父新增实际验证：
+
+- 根 `gofmt -l .` exit0／空输出；`go vet ./...`、`go build ./...` 再次 exit0。`go list -deps ./... ./sdk/testdata/consumer` exit0，旧 `internal/sessions` 构建依赖0。没有重复昂贵全仓竞态或真实模型请求；上方两平台修后最终源码完整链、前端197项及唯一四协议限定证据仍对应未变源码／资源。
+- 根 `git diff HEAD --check` exit0；index仍302项全部R100、内容增删0，branch／HEAD不变，go.mod／go.sum／LLM相对HEAD差异0，限定exe/test/bin/node_modules/test-results/playwright-report未跟踪产物0。六指定源码目录按Go／Markdown／TS／TSX做典型私钥／长token／AKIA／冲突标记的专用检索，无匹配；三份修改文档额外行尾空白检索无匹配，分别读取lints无诊断。这是有限卫生检查，不是全面秘密／安全认证，未扫描或探测任何环境／凭据文件。
+- 工作区外的三段快照差异最初反向 `git apply --reverse --check` exit1：两hunk缺尾部上下文，被默认检查视作文件末尾。原补丁加 `--unidiff-zero --check` 实际0证实文字匹配；只补差异文件中的原有尾部上下文后，默认反向check实际0。所有命令只有check，没有真正apply或索引写；此辅助材料检查失败保留，未作为产品源码失败，也未改变仓库正文来迎合检查。
+- 完整 `npm run test:e2e` 最后再次真实 exit1：`live-openai-proxy.ts:18`／`e2e.spec.ts:19` 报“浏览器验收需要宿主环境中的 OPENAI_MODEL、OPENAI_API_KEY 和 OPENAI_BASE_URL”，随后 `No tests found`。实际收集0，浏览器／服务／模型未启动。保留原全部断言，不以 --list、假模型、skip、已有离线结果或凭据文件桥接代替。
+
+至此，本轮可执行实现、修正、复核和记录已收敛，没有仍在运行的实施／审查任务或新增必改发现。Step1—5 源码／默认行为门槛已完成，Step6 的整体验收仍因完整浏览器宿主配置阻塞而未关闭；须维护者让原验收进程继承正确的三项宿主模型配置后重跑完整命令，或明确批准本次浏览器认证延期且仍记未验，不能自行认证通过。凭据值不应进入聊天或记录。P3 原生检查点宿主全局 callbacks 独立阻塞仍开放，Eino v0.9.21未改；macOS批准延期未验、Windows文件symlink权限skip、Linux有限路径保护及历史失败保留。没有提交、推送、索引写、reset／restore／clean。
+
+### 维护者选择宿主配置补验与实际重试（仍阻塞）
+
+在全部可执行收尾完成后，维护者已选择在验收进程可继承的宿主环境配置模型变量，再重跑原完整浏览器验收；没有批准浏览器延期。父随后使用当前进程继承的宿主环境，以授权外网权限实际执行原 `npm run test:e2e`，记录 `HOST_CONFIGURATION_RETRY_FULL_E2E_EXIT=1`。相同 `live-openai-proxy.ts:18`／`e2e.spec.ts:19` 校验仍报需要 OPENAI_MODEL／OPENAI_API_KEY／OPENAI_BASE_URL，随后 No tests found；收集0，浏览器／服务／模型均未启动，新增模型请求0。外网权限没有解决环境配置不足，不把本次选择解释为配置已生效或测试通过。
+
+当前只待维护者使启动 Cursor／验收进程的宿主环境包含完整有效配置并可被新验收进程继承，必要时重新启动相关进程，再执行原完整命令。父没有读取／探测凭据文件或自行桥接配置，没有要求在聊天中提供凭据，也没有改测试、回退假模型或skip。Step6继续未完成；独立源码／文档与两平台默认门槛结论保留，P3宿主全局回调、macOS未验与Windows文件symlink权限skip不由此决定关闭。
+
+### Step6 最新授权后的真实浏览器补验与独立收口（最终原完整验收通过）
+
+维护者于 2026-10-02 11:58 明确模型信息在 `.test_env`，Gemini 每日限 15 次。父将此作为仅本次本地浏览器验收子进程的配置使用授权，替代本轮此前禁止文件桥接的执行限制；一般生产／CI 凭据政策不变。Node 原生 `--env-file` 装配 OpenAI 兼容三字段，Shell 先清空同名旧进程字段，工作区外无配置值运行器原样执行 `npm run test:e2e`。配置值没有交给 Read／Grep、没有输出或写入源码／仓库配置／持久宿主环境，配置源未修改；输出按完整行遮罩原值及 JSON／URI 转义形式，防止 pipe 分块泄漏。其他协议字段不传给测试子进程，模型名含 Gemini 启动前拒绝。原 E2E loader 仍只接收环境变量，生产、测试过程和原断言均不变。此次确有受控配置文件使用，不能继续对本轮补验声称完全未读；此前禁读／宿主配置不足记录均保留为历史。
+
+真实补验及复验按原完整套件与明确标识的诊断分别记录：
+
+- 首次原完整 `npm run test:e2e` 实际 exit 1，106.408s，18 项均执行，17 通过／1 失败／0 跳过。唯一失败是流式重载后的原助手 marker 计数，期望 1、实际 0，5 秒超时；最终 request delta 断言尚未执行。Playwright 失败后换 worker，两 worker 合计 20 个真实请求、20 个 HTTP 200。缺少该次即时 trace、持久助手消息、角色绑定 render 和 DOM 诊断，不能以 HTTP 200／idle 推断执行语义成功，也不能回溯确认前端、后端、selector 或上游模型根因。
+- 父仅在原最终断言之前临时追加脱敏状态、次数及布尔诊断。原命令附 `-- --grep 'reload during a real provider stream'` 实际 exit 0、1 项通过（8.0s），1 请求／HTTP 200；同 grep 再附 `--repeat-each 3` 实际 exit 0、3 项通过（16.8s），各 1 请求／HTTP 200。四次均记录 completed／settled=true、DOM 助手 p=1、原 locator=1、request delta=1。明确 journal 助手 1、标准消息含 marker、render occurrences=2 的逐次细项来自三轮重复；初次单项没有逐项记载这些细项。整体 render 含 marker 可由用户提示命中，标准消息含 marker 不替代公开助手投影证明。
+- 父准确删除了此次全部临时诊断，恢复原 case、原 5 秒 marker 断言及原 request delta=1 断言，没有生产修复、等待延长、额外 prompt／Resume、断言放宽、fake 或 skip。随后无 grep／重复／重试参数执行原完整 `npm run test:e2e`，实际 exit 0，115.028s，**18／18 通过、0 失败、0 跳过**。原重载 case 通过（2.8s），原助手计数与一次请求断言均已执行。真实 `cmd/web`、Chromium 和上游转发实际运行，20 请求／20 响应／20 HTTP 200。
+- 最终完整运行同时通过独立 Workflow 不创建 Code 会话／不调用 Code 模型、审批回答零效果→显式 Resume→TODO 恰一次，及原鉴权／资源边界、真实流／重分块／幂等／会话切换、惰性 markup／附件、分支／摘要／压缩、四布局主题／键盘／Code 与 Workflow 截图断言。这些是当前原 Windows 套件的实际通过范围，不外推 Linux／macOS 浏览器、所有供应商或穷尽稳定性。
+
+独立只读调查已自然交付，并按最终完整终态和当前原 case 精准追加第 7 节；父已全文读取并独立对照。当前原重载和 Windows 原完整套件符合现有验收断言，新增已确认产品／必改缺陷为 0、断言或流程放宽发现为 0。首次失败根因仍未定位，后续四次定向与一次完整通过不是修复证明；原第 1—6 节作为首次调查历史保留，候选离线复现设计未实施，不自动成为新必改任务。父浏览器执行报告与独立调查均保存在本次工作区外执行记录中，不依赖未来建议替代已运行断言。
+
+本次浏览器补验合计 **44 个真实模型请求**（20 首次完整＋1 单项＋3 重复＋20 最终完整），44／44 HTTP 200，**Gemini 请求 0**。既有唯一授权四协议 live 的 24 请求是另一限定运行，不计入这 44 次；LLM 和依赖未变，没有重复 live 或新增 Gemini 探针。每日 15 次仅作上限，不作为必须消费的请求数。
+
+完整浏览器之后的新鲜离线与静态收尾：
+
+- 前端再次完整 `npm run typecheck`、`npm run test -- --run`、`npm run build`，以及完整 E2E 脚本离线 `tsc --ignoreConfig --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --strict --skipLibCheck --types node tests/e2e.spec.ts tests/live-openai-proxy.ts playwright.config.ts`，各 exit 0；默认单元测试 10 文件、197／197、无失败或跳过。资源仍 `index-C8EVfAhx.js`／`index-DWwsvm-M.css`，无新行为变化。
+- Windows 最终根 `gofmt -l .` exit 0／空输出，`go vet ./...`、`go build ./...`、`go list -deps ./... ./sdk/testdata/consumer` 各 exit 0，旧 `internal/sessions` 依赖 0。实际 Linux 最后短静态链已读完整终态：Go1.27.0 linux/amd64，vet／build 各 0，整链 exit 0（48.040s），保留 WSL localhost 代理提示。修后 Windows／实际 Linux 的受影响和全仓普通／race、显式 consumer 普通／race完整终态仍对应未变源码文件集，不以本次短静态代替全仓，也不重复昂贵 full race 或模型网络请求。
+- 最终根 `git diff HEAD --check` exit 0；branch／HEAD 不变，index 仍 302 项 R100、其他类型 0、内容变更 0。go.mod／go.sum／LLM 相对 HEAD 差异 0，限定 exe／test／bin／node_modules／test-results／playwright-report 未跟踪产物 0。`git ls-files -- .test_env` exit 0、tracked 0，`git check-ignore -q .test_env` exit 0，只查 Git 元数据，不展示配置文件内容。记录更新后，父按 internal／sdk／web/src／web/tests／docs／cmd 六个精确目录的 Go／Markdown／TS／TSX 文件做典型私钥／长 token／AKIA／冲突标记专用扫描，无匹配；本文、浏览器执行报告和工作区外运行器额外行尾空白检索无匹配，分别单文件读取 lints 均无诊断。有限检查不声明全面秘密／安全认证，未扫描凭据文件。
+
+浏览器配置阻塞已通过最新授权和原完整实际通过解除，独立源码／文档发现也已具体关闭。最终状态以本文顶部当前入口和原计划六项状态为准；**六步迁移完成与整体 P3 完成是不同结论**。P3 原生检查点宿主全局 callbacks 基础恢复阻塞仍开放，Eino v0.9.21 不改；macOS 批准延期未验，Windows 文件 symlink 权限 skip、实际 Linux 有限路径保护和所有历史失败保留。没有索引写、提交、推送、reset／restore／clean，也没有启动 P4／P5。
+
+### 迁移前离线基线（Windows，2026-10-01）
+
+- `go test ./... ./sdk/testdata/consumer -count=1`：exit 0，约 61.918 秒；全仓默认测试与单独消费者通过。
+- `go test -race ./internal/sessions/... ./internal/agent/... -count=1`：exit 0，约 271.586 秒；会话、状态、存储与执行层通过。
+- 使用 Go 1.27.0 windows/amd64，`GOTOOLCHAIN=local`、`GOPROXY=off`、`GOSUMDB=off`；竞态检查设 `CGO_ENABLED=1`。没有读取或探测 `.test_env`，没有真实模型请求。
+- 以上对应目录迁移前的用户现有源码，不能替代最终文件集的全仓竞态、静态检查、安全、前端、实际 Linux 或四协议 live；也不认证宿主全局回调安全。
+- 实际 Linux（WSL Ubuntu-24.04）：首次 `GOTOOLCHAIN=local ... go test ./... ./sdk/testdata/consumer -count=1` 退出码 1，因 PATH 中 Go 1.22.2 低于项目要求；没有测试开始。确认已安装的 Go 1.27.0 后，以 `/home/admin/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.0.linux-amd64/bin/go` 执行同一全仓普通命令，退出码 0（sessions 59.773s）。`GOPROXY=off`、`GOSUMDB=off`，无真实模型请求；WSL 启动诊断编码乱码保留，不改写为产品失败或认证所有平台。
+- Windows 迁移前格式/静态/构建复查：`gofmt -l .` 无输出，`go vet ./...`、`go build ./...` 均退出码 0；随后 `go test -race ./... ./sdk/testdata/consumer -count=1` 全仓及消费者退出码 0（sessions 272.539s，consumer 18.520s）。这是迁移前基线，不是最终迁移文件集验证。
+- 实际 Linux（WSL Ubuntu-24.04、显式 Go 1.27.0）：`go test -race ./internal/sessions/... ./internal/agent/... -count=1` 退出码 0（sessions 276.345s）；包含会话、状态、存储和执行层，仍仅作为迁移前并发基线。
+- Step 1 原文档审查发现 M12 仍将 DSH 的持久审批决定推导为产品恢复许可，与 M10 和现有 `approval_memory.go` 的当前实例内存许可冲突。本次按批准计划“重开不复活一次性批准”和现有实现统一正文；冻结调用、执行意图、预算和结果继续持久化，宿主全局回调缺陷仍单列阻塞。文档修订不改变审批源码。
+### Step 1 文档前置门槛与 Step 2 启动
+
+原 PRD 与开发方案已统一同级 Code/Workflow Agent 的入口、身份、状态/日志写入者、版本、预算、实例审批、恢复及 Web 资源归属；覆盖表收窄 Code-only 条款的 D25 映射，独立工作流正向路径不再依赖 Code 会话/注册表。新目录、工厂及 Web 双资源接线仍明确为目标；动态导入/Coze/热重载/补参和高级跨运行编排未提前交付。主定义、关键图/接口/锚点及覆盖条款经人工复核，`git diff HEAD --check` 退出码 0，文档冲突标记和常见密钥格式定向扫描未命中。此结论仅通过文档前置门槛，不认证产品或 P3。
+
+2026-10-02 补充核对：覆盖表的完成报告指出 PRD 07 §4.9 与 EVT-D1/D6 仍将 A2UI 协议版本写作待确认。本次直接修订原正文并同步两条覆盖断言，统一为已批准的 Eino A2UI v0.8 子集及开发方案 13 的固定来源/交互契约；独立 Workflow 视图与完整协议兼容仍须实际验收，不记为通过。旧肯定措辞、上下文/压缩条款的 D25 错映射及冲突标记定向检索未命中，相关文档 `git diff HEAD --check` 退出码 0。本补修不改源码或迁移步骤状态。
+
+Step 2 先新增默认套件 `internal/architecture/dual_agent_layers_test.go`，实际执行 `go test ./internal/architecture -run 'TestApprovedLayerDirectories|TestImportCheckerRejectsDualAgentBoundarySamples' -count=1` 退出码 1：五个目标目录缺失、旧 `internal/sessions` 尚在，16 类禁止导入样例全部被旧检查器接纳，均为预期断言失败而非编译错误。随后开始机械迁移与导入检查修订；验证通过前不进入独立工作流步骤，也不把目录移动当作分层迁移完成。
+
+前期文档审查遇到服务 503 中断，保留内容后续完成复核。原生 `checkpoint_validation` 全局回调问题继续作为独立阻塞；未读取或探测 `.test_env`、未发起真实模型请求，未提交或推送。
+
+### Step 2 迁移后的父流程独立复验（2026-10-02）
+
+本节对应机械迁移后的文件集，不沿用迁移前基线或实施者的成功报告作为验收证据。父流程独立检查了创建/打开、工作区绑定、状态回放、JSONL 存储、SDK 工厂与 Web 受控调用链。`codeagent/views.go` 仅增加既有值类型别名；Code Agent 中原工作流调度和节点状态仍暂留，独立 Workflow Agent 尚未实施。
+
+- Git 保留核对：index 为 302 项 `R100` 纯重命名，其他暂存项为 0，暂存内容增删行为 0。迁移后的 Code Agent 有 25 个未跟踪文件，其中 24 个为原有安全修复/测试，另一个是 `views.go`；全仓 43 个未跟踪文件未发现 `*.exe`、`*.test`、`bin/`、`node_modules/` 或 `test-results/`。未执行 reset、restore、clean、提交或推送。
+- 实际构建依赖图：`go list -deps ./... ./sdk/testdata/consumer` 退出码 0，产品依赖使用 `internal/codeagent`、其 state 与 `internal/storage`/jsonl/memory，不含旧 `internal/sessions`。全仓检索曾返回已不存在的旧路径；直接读取旧文件失败，随后使用实际构建图和架构测试的文件系统遍历确认，未把检索索引条目认作仍存源码。
+- Windows、Go 1.27.0：`go test ./... ./sdk/testdata/consumer -count=1` 退出码 0（codeagent 67.485s）。随后 `go test -race ./internal/codeagent/... ./internal/storage/... ./internal/agent/... ./internal/architecture ./sdk/... ./sdk/testdata/consumer ./internal/web ./cmd/web -count=1` 退出码 0（codeagent 303.414s，consumer 24.866s）。
+- Windows 在受影响竞态检查通过后执行 `go test -race ./... ./sdk/testdata/consumer -count=1`，退出码 0（codeagent 281.629s，consumer 18.704s）；覆盖全仓和 `./...` 不包含的外部消费者。
+- Windows：`gofmt -l .` 退出码 0、无输出；`go vet ./...`、`go build ./...` 均退出码 0。`go test ./internal/architecture -count=1 -v` 退出码 0，目录门槛、唯一公开生产文件、标准库进程入口、实际导入方向与新增 26 类禁止导入样例均通过；样例实际调用现有检查器。
+- 实际 Linux（WSL Ubuntu-24.04、显式 Go 1.27.0）：`go test ./... ./sdk/testdata/consumer -count=1` 退出码 0（codeagent 85.246s）；与 Windows 相同的受影响包 `go test -race ... -count=1` 退出码 0（codeagent 301.200s，consumer 21.173s）。`go vet ./...`、`go build ./...` 均退出码 0。WSL 启动的代理配置/编码诊断保留，不影响实际 Go 命令终态。
+- 两个平台均使用 `GOTOOLCHAIN=local`、`GOPROXY=off`、`GOSUMDB=off`，竞态检查设 `CGO_ENABLED=1`。`git diff HEAD --check` 退出码 0，保留 Git 的 LF/CRLF 工作副本提示；迁移目录与新增架构文件的冲突标记、常见私钥/API key 模式定向扫描未命中。
+
+Step 2 只读独立复核随后完成：规格符合性通过，任务范围内未发现阻断交付的代码质量问题；实际创建/打开、状态提交、存储锁与只读、SDK 和 Web 接线已抽查。结合上述父流程独立运行证据，本步机械目录/依赖迁移验收通过，后续依次执行 Step 3/4，不能据此认证独立 Workflow 或双路由已经交付。
+
+保留核对的证据边界：24 项原有未跟踪修复均已逐项确认存在，引用与关键内容经抽查、对应默认测试已运行；缺少迁移前独立内容快照或散列，未声称对每个文件逐字证明仅发生机械替换。此检查点未重新运行 Linux 全仓 race、govulncheck、前端或四协议 live；这些仍须对最终迁移文件集验证。没有读取或探测 `.test_env`，真实模型请求与 Gemini 请求均为零；macOS 按已批准决定延期、未验证。原生检查点预检继承宿主全局回调的缺陷未处理，P3 继续未完成。
+
+## Step 3 独立工作流实施启动（2026-10-02）
+
+维护者于 2026-10-02 01:18 要求连续执行剩余 Step 3—6，并允许子任务加速。沿用原批准设计，不重做 Step 1/2，不新增跨 Agent 框架，不提交或推送。
+
+先在现存 Code Agent 工作流实际入口新增默认回归测试 `TestStandaloneWorkflowRejectsIncompleteModelBeforeNextTool`，以 `internal/testkit` 分别返回截断、缺失明确终结、意外工具调用和错误角色。`go test ./internal/codeagent -run '^TestStandaloneWorkflowRejectsIncompleteModelBeforeNextTool$' -count=1 -v` 退出码 1：四项均将模型节点与运行报告为 completed，后续 echo 实际调用 1 次，缺少应有的 invalid_argument，后续节点已接纳；这是目标缺陷导致的断言 RED，不是编译失败。新 owner 将用相同状态、类别、调用次数和后续零准入断言验证修复；旧测试只在断言迁入真实独立入口后退出，不 skip 或撤掉安全断言。
+
+独立 Workflow 实施按原 Eino Graph、`NewAuxiliaryModel`、受控工具执行器与独立逻辑调用账本/运行总额的联合提交接线；共享存储增加有限运行类型/命名空间，禁止把工作流 ID 填入 Code Session/Trace/Turn。Step 4 的旧调用链和业务管理迁移同时只读定位，依赖 Step 3 验证后实施。当前仍是实施开始，尚未交付独立 Workflow 或新 Web 路由；最终验证与宿主全局回调阻塞继续保留。
+
+并行处理浏览器验收的授权冲突：现有 `web/tests/live-openai-proxy.ts` 原先直接读取根 `.test_env`，与本次迁移的禁止读取/探测要求冲突。先新增默认套件凭据来源测试，用文件读取拒绝双验证只允许宿主环境；首跑 6 项断言失败（exit 1），未触及真实文件。随后将验收配置改为只接受 `OPENAI_MODEL`、`OPENAI_API_KEY`、`OPENAI_BASE_URL` 的宿主环境，保留真实模型代理及原验收断言，不回退假模型。定向 6 项 GREEN；首次类型检查因浏览器测试项目导入 Node 验收模块而缺少 Node 类型失败，给该 Node 环境测试显式类型引用后，`npm run typecheck`、完整 `npm run test -- --run` 均 exit 0（7 文件、57 项）。改动后差异卫生检查 exit 0。
+
+`npm run test:e2e -- --list` 的前置发现检查 exit 1：宿主环境缺少上述真实模型配置，测试收集为 0，未启动浏览器、服务或模型请求。这不是完整 E2E 执行，也不是验收通过。继续源码实施和可执行离线检查，最终完整浏览器验收仍需要维护者提供宿主环境配置；不读取凭据文件、不输出任何配置值，模型及 Gemini 请求仍为零。
+
+父流程在独立 Workflow 仍处于实施中时运行 `go test ./internal/workflowagent -count=1`，exit 1（0.705s）：新默认回放保护测试发现 complete attempt 的错误角色/缺终结/意外工具、节点接纳同批缺调用、completed 运行仍有未完成节点可被当前回放接纳。保留该中间失败；这不是交付后退化或最终测试结果，实施者正在按这些实际 RED 加强回放，不在其完成前删除旧工作流 owner。
+
+随后当前检查点 `go test ./internal/workflowagent ./sdk/testdata/consumer ./internal/architecture -count=1` exit 0（0.801s/2.573s/0.357s）。父流程尝试核心包 Windows/Linux race 时，实施者仍在修改回放方法：Windows `sdk` 中另行构建的独立 consumer 命中临时 `runState.definitionForNode` 未定义，整条核心 race exit 1；同轮 Linux 构建也命中该缺失符号。Windows直接 workflow/agent/storage/consumer包的race已执行通过，但整条命令不能记通过。后续仅在实施交付和审查后重跑最终文件集，避免用编辑中的不同构建快照认证交付。
+
+父流程已将真实 `web/tests/e2e.spec.ts` 中两条工作流用例改为独立资源创建、独立结果/审批/显式恢复、Workflow日志TODO一次提交，并验证不创建或修改Code会话及主模型零请求；四种视觉尺寸/主题场景也增加独立工作流页面与键盘断言。其余真实模型、附件、分支、摘要和压缩用例保留。离线脚本类型检查首次因TypeScript要求显式 `--ignoreConfig` 退出1；按该规则执行 `tsc --ignoreConfig --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --strict --skipLibCheck --types node tests/e2e.spec.ts tests/live-openai-proxy.ts playwright.config.ts` 退出0。该检查没有运行模型或浏览器，新双资源用例仍待服务端接线及真实环境验收，不记为GREEN。
+
+独立只读复核已发现需要修正的工作流持久证据、恢复审批和订阅交接边界。父流程针对其中注入后端跨类型遗漏新增默认 `TestCodeCreateRejectsInjectedWorkflowHeaderBeforeAppend`，实际定向命令 exit 1：Code 工厂返回成功会话，向 Workflow 类型 header-only 内存日志 Append 1 笔，错误为 nil、模型与工具各 0。这是运行类型隔离的实际 RED，不据已通过的磁盘 header 测试误称所有工厂都隔离；修正并复核前 Step 3 不完成。
+
+前端首轮实现报告的完整离线 typecheck 与 111 项默认测试通过，独立审查随后发现测试与实现同时使用了非规范工作流游标，以及 5xx 特定错误码/语义不完整回执丢原请求、同修订迟到实例快照等缺口。父流程直接核对了对应条件，已分派局部 RED/GREEN 修正并保留原 Code 请求安全基线；该首轮报告不是前端合同或 Step 5 整体验收通过证据。
+
+父流程进一步新增默认工作流审查回归。未回答审批恢复首跑 exit 1：Resume 被接纳、revision 6→10，原 waiting 节点变为 accepted，之后原交互回答 state_conflict、工具 0；实施中的后续修正已使该定向测试通过。另一条原冻结参数复用回归仍实测 RED：批准后显式 Resume 重新执行 Prepare/Resolve 各第二次，运行 failed/incompatible_resume，工具 0，而应复用原 A 参数一次执行。`go test ./internal/workflowagent -run '^(TestWorkflowApprovalResumeReusesFrozenPreparedArguments|TestWorkflowResumeBeforeApprovalKeepsRespondableWait)$' -count=1 -v` 最后 exit 1（0.217s），保留失败，不将安全拒绝新 B 参数误称为原冻结调用恢复已交付。
+
+独立 HTTP 纯值投影已按既定白名单先行准备，不取得运行 writer、也尚未挂新路由。父先以缺少 `projectWorkflowSnapshot` 的编译 RED 复现未实现，随后接线投影函数；默认测试覆盖私有字段/Code 身份零泄漏、旧/已答审批过滤、仅 completed 选定结束结果与 owned copy、安全 revision/真实 typed cursor、真实独立工厂与零模型/工具常量运行。`go test ./internal/web ./cmd/web -count=1`、对应 `-race` 均 exit 0（Web 4.689s/7.273s）。这是值边界和原 Web 回归证据，不认证尚未接通的 `/v1/workflow-runs` 或 Step 5。
+
+前端 R1—R5 修正交付后，父于 03:24 对当前前端文件集独立执行 `npm run typecheck` 和完整 `npm run test -- --run`，均 exit 0，10 文件、197 项全部通过、无失败或跳过。最终同范围独立复核已完成，五项问题逐项关闭，规格符合性与代码质量通过；后端 HTTP/SSE、真实浏览器、静态资源与全部最终验证仍未完成。
+
+本次继续执行时，父读取并验证新冻结描述查询已实际接到工具执行器。`go test ./internal/workflowagent -run '^(TestWorkflowApprovalResumeReusesFrozenPreparedArguments|TestWorkflowResumeBeforeApprovalKeepsRespondableWait|TestWorkflowSubflowConcurrencyUsesExistingInvocationLimit|TestWorkflowSubflowInputFailureRecordsFailedNode)$' -count=1 -v` exit 0（0.333s）：原 A 准备与解析各一次、批准后显式恢复效果一次；未回答恢复保持原等待；子流程输入失败记录稳定 failedNode，并发子调用按既有限额拒绝。此前冻结参数 RED 保留为历史，当前定向通过仍不代表 Step3 最终验收。
+
+父新增默认 `TestWorkflowSubscribeReplaysPreRegistrationToolPreview` 实际复现订阅交接缺口：在 Snapshot K 与订阅注册 B 之间产生一次工具临时输出，注册后只输出一次新片段；`go test ./internal/workflowagent -run '^TestWorkflowSubscribeReplaysPreRegistrationToolPreview$' -count=1 -v` exit 1（0.200s），注册前输出收到 0 次，注册后输出 1 次，工具真实执行 1 次且终态正确。实施者随后在同一锁内复制 B 点临时视图，按历史、交接视图、实时顺序交付。父对该回归、工具/模型/审批三类原子交接、预算请求/完成结果变异、owned Lookup、订阅注销和真实产物根执行定向 `-race -count=3`，exit 0（2.533s）；其前一次因编辑中的测试 helper 签名未同步而编译 exit 1，保留中间失败。旧条件分支、不等长汇合、深层子图及 Close 真实退出接替测试仍在补齐，最终复核前不删除旧 owner。
+
+父最新受影响包验证检查点：Windows `go test -race ./internal/workflowagent/... ./internal/agent/... ./internal/storage/... ./internal/codeagent/... ./sdk/... ./sdk/testdata/consumer ./internal/architecture -count=1` exit 0（336.763s），编译时尚未包括新交接回归。实际 Linux 同范围普通测试通过；随后 race 因注册前临时输出回归失败，串联命令整体 exit 1（428.586s）。后续 Linux Workflow 全包 race 又暴露编辑中新增的已接纳模型结果恢复及 Store 事件别名两项 RED，以及新不等长汇合 fixture 未声明资源、被原调度器保守地放入工作区独占 guard 的配置问题。补齐显式共享只读资源后，用原不等长图和默认 AllPredecessor 验证：a 完成、b2 仍阻塞时 join 为 0，b2 退出后 join 恰为 1。父最初仅从任务等待方法推断框架整批等待，未完整追踪编译默认值；后续核对固定 Eino v0.9.21 的图编译源码，确认 DAG 默认启用 eager，已纠正执行说明，未改框架或产品调度。接替测试四项完成后，父独立 `go test -race ./internal/workflowagent -run '^TestWorkflowMigration' -count=3 -v` exit 0（1.987s），包含条件两分支、该汇合、深度4静态子图和 Close 超时不提前关闭后端。已接纳模型结果恢复与 Store owned 事件两项此前已由父在 Windows 定向验证 exit 0（0.190s）。这些检查点仍待稳定文件集及最终独立审查，不能记为 Step3 或完整跨平台通过。
+
+### Step3 续接审查和消费者修正（2026-10-02）
+
+原独立 reviewer 在修复后复核中关闭了原类型隔离、审批、预算请求、节点结果、冻结参数恢复、订阅交接和所有权问题，另发现根最终结果尚未与原结束节点投影核对，以及自定义注入 Store 的 Load 历史事件仍可共享可变引用。父先核对真实 replay/Open/Subscribe 路径，新增永久默认 `review_root_result_test.go`。两项定向命令首跑 exit 1（0.149s）：输入、工具和模型三个真实完成日志分别仅替换根结果为伪对象或数组，Open 均错误接受；后端在成功打开后修改保留的历史事件 payload/seq，原 8 个事件变为 0 个。模型、工具及新 Append 均未增加，失败来自组合证据和引用所有权遗漏。
+
+原实施者随后在 completed 根运行中使用原 manifest 的唯一 end、根 invocation 和纯 `projectValues` 校验 canonical 结果，在 replay 保存事件时使用 `cloneEvent`。父 `go test -race ./internal/workflowagent/... -count=3` exit 0（15.990s），包含全部 Workflow 默认测试及上述两项；最终受影响范围普通/race与同范围复核仍在收齐，暂不删除旧 owner。
+
+业务组合取消测试的原失败已经得到确定性诊断。无关联 Code runner 阻塞期间会合法持久化自身活动续租：revision 8→9、Activity revision 1→2，新 commit 只有同一 trace 的活动事实；所有非活动字段、预算、执行身份、操作、历史和取消通知均不变。测试改为每次实际观察一次默认续租，逐条核验新增 durable commit，并对剩余完整快照及无关联 Workflow 完整快照作精确比较，没有停止续租、修改生产计时器、skip 或仅放宽所有断言。父独立 `go test ./sdk ./sdk/testdata/consumer -count=1` 及对应 race，在 Windows 均 exit 0（consumer 5.386s/15.597s），实际 Linux 均 exit 0（consumer 5.462s/20.123s）。Linux 首次跨 shell GO 变量引号命令 exit 2、bash binary operator expected，改用绝对工具链后两条完整成功；该启动失败保留，不算产品通过。
+
+当前前端源码再次独立执行 `npm run typecheck`、完整 `npm run test -- --run`、`npm run build`，均 exit 0，10 文件、197 项通过；嵌入资源为 `index-C8EVfAhx.js` 与 `index-DWwsvm-M.css`。此时独立 Web 后端尚未接线，构建与离线测试不能代替真实浏览器验收。固定版本 `go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...` 当前检查点 exit 0，发现 0 个源码可达漏洞；另有各 1 个未被当前代码调用的导入包及依赖 module 漏洞，未宣称所有依赖零漏洞。最终源码稳定后仍重跑全部验收。
+
+额外全仓 race 曾分别出现 Code 自动压缩及普通 child overflow 等待条件未达；孤立定向通过不能认定根因或抹去失败。业务组合修正后的另一轮 Windows 全仓普通及 race 实际通过，但后续父新增回放 RED 又使 Linux 受影响普通范围失败，因此不把早期成功覆盖新文件集。所有历史失败、P3 原生预检全局 callback 阻塞、macOS 未验和真实 E2E 环境缺口继续保留。
+
+### Step3 对应行为验收及 Step4 启动
+
+主实现报告与最终修复审查均已收齐。原类型、审批、预算、节点／根结果、冻结调用、产物根、订阅交接与引用所有权的具体问题全部修正；新增合法子图嵌套常量对象被字节比较误拒，以及消费者修改已收事件序号导致 DATA RACE／484 条历史只交付 256 条，也已先实际 RED 后以最小规范化与本地序号修复。原根、模型、工具和子图真值伪造拒绝保护保留，修后两平台所属包及定向 race 均通过，最后独立审查未发现新增 Important/Critical。
+
+父稳定共享／Code／Workflow／SDK／显式消费者／架构全受影响范围普通后 race：Windows整条 exit 0（396.259s，Code 73.252s／298.420s），实际 Linux整条 exit 0（430.668s，Code 94.093s／316.670s）。之后两处生产修正只影响 Workflow `state.go` 和 `events.go`，共享和 Code 生产未再修改。最后 Workflow／SDK／显式消费者／架构在 Linux普通后 race整条 exit 0（48.088s）；Windows首次普通因并行审批测试没有控制“模型已进入才发生兄弟审批”的前提而等待失败，后续 race未执行。原实施者以合法迟入场场景实证 paused／model 0／attempt 0／未答工具等待，说明该测试缺同步前提；不宣称父原自然失败那一轮必为同一原因。测试新增受控模型入场通道和只读 before hook，保留原并行图、5 秒上界及权限／占额／失败优先，进一步检查稳定 failedNode、incomplete／invalid_argument、终态问题不能回答、工具未 claim且 none／未执行。两平台该测试普通和 race各 20 轮、全 Workflow默认普通和 race均 exit 0。
+
+父最后 Windows对 Workflow／SDK／显式消费者／架构再次普通后 race，全部 exit 0（Workflow 3.038s／5.958s、consumer 4.596s／15.383s）。独立 reviewer 已核对上述测序源码且规格／质量通过，交付时“§9执行证据待核对”由父读取完整追加报告和独立运行结果解决。结合已有全部具体问题关闭、对应真实调用和平台证据，Step3 的独立运行接替行为通过前置门槛，开始 Step4。此验收不认证 Step6 最终全仓、HTTP/E2E、macOS或 P3 原生 callback安全；旧全仓等待失败保留，根因未证实。
+
+Step4分为文件不交叉的两个独立实施范围：退出 Code工作流并迁移定义／编译／图；迁移 Web应用目录、展示 metadata和附件管理及安全只读端口。两者完成后仍须统一审查和父流程整合验证，当前没有将尚未实施完成的删除或 Web管理迁移记为通过。
+
+## 2026-10-01 简洁 SDK 范围调整（前序决定与证据）
+
+维护者明确要求公开 SDK 尽量简洁，复用现有执行路径，先修真实缺陷、接通基础页面，高级功能由业务应用实现。已将职责边界固定于 [SDK 与业务层的职责边界](sdk-scope.md)，并同步 README、架构与覆盖入口；现有公开 API 和未提交代码保留，不进行破坏性删除。
+
+- 原收尾中的完整子树进度、联合／嵌套恢复、委派审批恢复、子树核对联动和专属高级故障／页面矩阵退出本轮 SDK 范围，交由业务实现；历史证据保留，不记为通过，也不自动排入下一阶段 SDK 开发。
+- 现有模型调用、工具授权、预算、取消、已实现的条件恢复与 Web 基础行为仍须维护。原生检查点预检继承 Eino 全局回调的实际缺陷已影响基础路径，继续记录为未解决，不能以范围调整忽略。
+- 先整合已交付的 Web 控制和客户端修改、重建嵌入资源并进行本地验证；全仓、实际 Linux、浏览器、安全和四协议最终验证仍未完成。历史普通／race 成功不能替代当前最终文件集认证。
+- P3 仍未完成，不启动 P4/P5；macOS 延期记为未验证，Gemini 本轮零请求。没有新的提交、推送或 PR 授权。
+
+### 本轮基础整合验证（Windows）
+
+本次没有新增公开 API、改写执行循环或删除已有恢复代码；生产变化仅为重建已有前端修改对应的嵌入资源。实际运行环境 Node v24.19.0、npm 11.17.0、Go 1.27.0 windows/amd64。
+
+- `web/`：`npm run typecheck`、`npm run test -- --run`、`npm run build` 均 exit 0；6 个文件、51 个测试通过。构建产物为 `index-DeLXQsy7.js` / `index-CKwdAIFR.css`，嵌入 HTML 引用已核对，仍只有本地资源。
+- 根目录：`go test ./sdk/... ./sdk/testdata/consumer ./internal/architecture ./internal/web ./cmd/web -count=1` exit 0；对应 `go test -race ./sdk/... ./sdk/testdata/consumer ./internal/architecture ./internal/web ./cmd/web -count=1` exit 0。SDK、独立消费者、架构、Web 与入口五个包两套全部通过。
+- `gofmt -l .` 无输出，`go vet ./...`、`go build ./...`、`git diff HEAD --check` 均 exit 0。Git 的 LF/CRLF 工作副本提示保留，不视为验证失败。
+- Go 检查设置 `GOPROXY=off`、`GOSUMDB=off`、`GOTOOLCHAIN=local`，未读取或探测 `.test_env`；本轮模型请求零。没有重新安装依赖、启动真实模型服务或运行浏览器套件。
+- 本轮未运行全仓普通／race、govulncheck、Linux、真实 Chromium E2E 或四协议 live。上述限定包通过不等于 P3 完成；未解决的全局回调预检缺陷与未交付的出口审查仍保留。
+
+本节是当前范围决定和限定整合证据；后续历史章节中的“P3 必须项”如与该决定冲突，以当前职责边界为准。范围变更与运行验收分别记录。
+
 ## 2026-09-29 实施开始
 
 环境：Windows/amd64，Go 1.27.0，分支 `feat/p0-p1-runtime`。实施前工作区已有 P2 未提交修改及新测试；保留，不混记为 P3 交付。本轮未提交/推送。

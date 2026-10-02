@@ -27,6 +27,30 @@ export type Snapshot = {
   pendingReconciliations?: PendingReconciliation[];
 };
 export type WorkflowInfo = { name: string; version: string; description?: string; inputSchema?: unknown };
+export type WorkflowRunEntry = { runId: string; definitionName: string; definitionVersion: string; state: string; available: boolean };
+export type WorkflowDecision = "allowed-once" | "rejected" | "cancelled";
+export type WorkflowNode = { nodeExecutionId: string; nodeId: string; kind: string; state: string };
+export type WorkflowInteraction = { interactionId: string; nodeExecutionId: string; question: string; options: string[]; instanceId: string };
+/** This is the public HTTP projection, never the SDK's execution snapshot. */
+export type WorkflowSnapshot = {
+  runId: string;
+  definitionName: string;
+  definitionVersion: string;
+  state: string;
+  revision: number;
+  cursor: string;
+  durableSeq: string;
+  instanceId: string;
+  executionStopped: boolean;
+  canResume: boolean;
+  workflowNodes: WorkflowNode[];
+  interactions: WorkflowInteraction[];
+  errorCode?: string;
+  failedNode?: string;
+  result?: unknown;
+};
+export type WorkflowOperationReceipt = { operationId: string; state: string; target: string; acceptedCommit: number; scope: "durable" | "instance"; instanceId?: string };
+export type WorkflowOperationStatus = { operationId: string; state: string; revision: number; result?: unknown; error?: string };
 export type Attachment = { artifactId: string; mimeType: string; size: number; name?: string };
 export type OperationStatus = { operationId: string; state: string; revision: number; error?: string };
 export type ReconcileBody = { invocationId: string; toolCallId: string; observationId: string; observationVersion?: number; queryId?: string; evidenceRef?: string };
@@ -85,8 +109,11 @@ export class Client {
   listSessions(signal?: AbortSignal) {
     return this.json<{ sessions: SessionEntry[]; next?: string }>("GET", "/v1/sessions", { signal });
   }
-  createSession(workspace: string, key: string) {
-    return this.json<Snapshot>("POST", "/v1/sessions", { body: { workspace, model: "default" }, key });
+  createSession(workspace: string, key: string, signal?: AbortSignal) {
+    return this.json<Snapshot>("POST", "/v1/sessions", { body: { workspace, model: "default" }, key, signal });
+  }
+  openSession(sid: string, signal?: AbortSignal) {
+    return this.json<Snapshot>("POST", `/v1/sessions/${enc(sid)}/open`, { body: {}, signal });
   }
   snapshot(sid: string, signal?: AbortSignal) {
     return this.json<Snapshot>("GET", `/v1/sessions/${enc(sid)}/snapshot`, { signal });
@@ -116,8 +143,48 @@ export class Client {
   operation(sid: string, oid: string) {
     return this.json<OperationStatus>("GET", `/v1/sessions/${enc(sid)}/operations/${enc(oid)}`);
   }
-  workflows(sid: string, signal?: AbortSignal) {
-    return this.json<{ workflows: WorkflowInfo[] }>("GET", `/v1/sessions/${enc(sid)}/workflows`, { signal });
+  workflows(signal?: AbortSignal) {
+    return this.json<{ workflows: WorkflowInfo[] }>("GET", "/v1/workflows", { signal });
+  }
+  listWorkflowRuns(signal?: AbortSignal, options?: { after?: string }) {
+    const query = options?.after ? `?after=${enc(options.after)}` : "";
+    return this.json<{ runs: WorkflowRunEntry[]; next?: string }>("GET", "/v1/workflow-runs" + query, { signal });
+  }
+  createWorkflowRun(workspace: string, workflow: string, version: string, input: Record<string, unknown>, key: string, signal?: AbortSignal) {
+    return this.json<WorkflowSnapshot>("POST", "/v1/workflow-runs", { body: { workspace, workflow, version, input }, key, signal });
+  }
+  workflowSnapshot(rid: string, signal?: AbortSignal) {
+    return this.json<WorkflowSnapshot>("GET", `/v1/workflow-runs/${enc(rid)}/snapshot`, { signal });
+  }
+  openWorkflowRun(rid: string, signal?: AbortSignal) {
+    return this.json<WorkflowSnapshot>("POST", `/v1/workflow-runs/${enc(rid)}/open`, { body: {}, signal });
+  }
+  pauseWorkflowRun(rid: string, expectedRevision: number, key: string, signal?: AbortSignal) {
+    safeRevision(expectedRevision);
+    return this.json<WorkflowOperationReceipt>("POST", `/v1/workflow-runs/${enc(rid)}/pause`, { body: { expectedRevision }, key, signal });
+  }
+  cancelWorkflowRun(rid: string, expectedRevision: number, key: string, reason?: string, signal?: AbortSignal) {
+    safeRevision(expectedRevision);
+    const body: { expectedRevision: number; reason?: string } = { expectedRevision };
+    if (reason !== undefined) body.reason = reason;
+    return this.json<WorkflowOperationReceipt>("POST", `/v1/workflow-runs/${enc(rid)}/cancel`, { body, key, signal });
+  }
+  resumeWorkflowRun(rid: string, expectedRevision: number, key: string, signal?: AbortSignal) {
+    safeRevision(expectedRevision);
+    return this.json<WorkflowOperationReceipt>("POST", `/v1/workflow-runs/${enc(rid)}/resume`, { body: { expectedRevision }, key, signal });
+  }
+  respondWorkflowInteraction(rid: string, iid: string, decision: WorkflowDecision, expectedRevision: number, instanceId: string, key: string, signal?: AbortSignal) {
+    safeRevision(expectedRevision);
+    return this.json<WorkflowOperationReceipt>("POST", `/v1/workflow-runs/${enc(rid)}/interactions/${enc(iid)}/responses`, { body: { decision, expectedRevision, instanceId }, key, signal });
+  }
+  workflowOperation(rid: string, oid: string, signal?: AbortSignal) {
+    return this.json<WorkflowOperationStatus>("GET", `/v1/workflow-runs/${enc(rid)}/operations/${enc(oid)}`, { signal });
+  }
+  async workflowEvents(rid: string, cursor: string, onFrame: (f: SSEFrame) => void, signal: AbortSignal) {
+    const q = cursor ? `?cursor=${enc(cursor)}` : "";
+    const resp = await this.request("GET", `/v1/workflow-runs/${enc(rid)}/events${q}`, { signal });
+    if (!resp.body) throw new APIError(0, "resource_unavailable");
+    await readSSE(resp.body, onFrame, signal);
   }
   /** uploadAttachment saves raw bytes only; it never submits input. */
   uploadAttachment(sid: string, data: Blob, mimeType: string, name: string, key: string) {
@@ -187,5 +254,5 @@ export function errorText(err: unknown): string {
     resource_unavailable: "服务资源暂不可用。",
     network: "网络连接失败。",
   };
-  return map[code] ?? "服务内部错误。";
+  return Object.hasOwn(map, code) ? map[code] : "服务内部错误。";
 }

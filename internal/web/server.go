@@ -14,29 +14,32 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ww1489/seasprak/internal/codeagent"
 	"github.com/ww1489/seasprak/internal/config"
-	"github.com/ww1489/seasprak/internal/sessions"
 )
 
 // Server owns the listener, the per-instance credential file and, when no test
-// handler is injected, the session catalog behind the /v1 routes.
+// handler is injected, both resource catalogs behind the /v1 routes.
 type Server struct {
 	url, tokenPath string
-	options        sessions.Options
+	options        codeagent.Options
+	runtime        runtimeOptions
+	catalog        *Catalog
 	cancel         context.CancelFunc
 	done           chan struct{}
 	err            error // Written before done closes; read only by Wait.
+	closeErr       error // Original resource cleanup errors, kept out of public error details.
 }
 
-func (s *Server) URL() string                      { return s.url }
-func (s *Server) TokenPath() string                { return s.tokenPath }
-func (s *Server) SessionOptions() sessions.Options { return s.options }
-func (s *Server) Close()                           { s.cancel() }
-func (s *Server) Wait() error                      { <-s.done; return s.err }
+func (s *Server) URL() string                       { return s.url }
+func (s *Server) TokenPath() string                 { return s.tokenPath }
+func (s *Server) SessionOptions() codeagent.Options { return s.options }
+func (s *Server) Close()                            { s.cancel() }
+func (s *Server) Wait() error                       { <-s.done; return s.err }
 
 // testOptions is set only by this package's tests to substitute an offline
 // model after trusted startup parsing. Production code never assigns it.
-var testOptions func(*sessions.Options)
+var testOptions func(*codeagent.Options)
 
 // unusedConns tracks connections that have not started a request.
 type unusedConns struct {
@@ -81,13 +84,15 @@ func Start(parent context.Context, c Config, handler http.Handler) (*Server, err
 	if err != nil {
 		return nil, err
 	}
-	options, err := loadOptions(parent, c)
+	runtime, err := loadOptions(parent, c)
 	if err != nil {
 		return nil, err
 	}
+	options := runtime.Code
 	if testOptions != nil {
 		testOptions(&options)
 	}
+	runtime.Code = options
 	var secret [32]byte
 	if _, err = rand.Read(secret[:]); err != nil {
 		return nil, unavailable("credential generation failed")
@@ -120,20 +125,22 @@ func Start(parent context.Context, c Config, handler http.Handler) (*Server, err
 		_ = os.Remove(path)
 		return nil, err
 	}
-	// A nil handler assembles the real session routes over one catalog that owns
-	// the state root's creation registry for the lifetime of the service.
-	var catalog *sessions.Catalog
+	// Both catalogs borrow one creation registry. Only their combined owner
+	// closes it after real execution and admitted file IO have exited.
+	var catalog *Catalog
+	var resources *resourceCatalogs
 	if handler == nil {
-		catalog, err = sessions.NewCatalog(options)
+		resources, err = newResourceCatalogs(runtime)
 		if err != nil {
 			listener.Close()
 			_ = os.Remove(path)
 			return nil, unavailable("session catalog unavailable")
 		}
-		handler = newRoutes(catalog, localPrincipal)
+		catalog = resources.code
+		handler = newRoutes(catalog, localPrincipal, resources.workflows)
 	}
 	ctx, cancel := context.WithCancel(parent)
-	s := &Server{url: "http://" + listener.Addr().String(), tokenPath: path, options: options, cancel: cancel, done: make(chan struct{})}
+	s := &Server{url: "http://" + listener.Addr().String(), tokenPath: path, options: options, runtime: runtime, catalog: catalog, cancel: cancel, done: make(chan struct{})}
 	conns := &unusedConns{fresh: map[net.Conn]struct{}{}}
 	server := &http.Server{
 		ConnState:         conns.track,
@@ -174,12 +181,20 @@ func Start(parent context.Context, c Config, handler http.Handler) (*Server, err
 				s.err = unavailable("HTTP service stopped unexpectedly")
 			}
 		}
-		if catalog != nil {
+		if resources != nil {
 			closeCtx, stop := context.WithTimeout(context.Background(), config.WebShutdownTimeout)
-			if err := catalog.Close(closeCtx); err != nil && s.err == nil {
-				s.err = unavailable("session shutdown did not complete")
-			}
+			err := resources.Close(closeCtx)
 			stop()
+			if err != nil {
+				s.closeErr = errors.Join(s.closeErr, err)
+				if s.err == nil {
+					s.err = unavailable("resource shutdown did not complete")
+				}
+				// The deadline limits the first wait, not the writer's lifetime.
+				// Keep this owner reachable and wait for actual execution exit
+				// before Wait reports service completion or releases the registry.
+				s.closeErr = errors.Join(s.closeErr, resources.Close(context.Background()))
+			}
 		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			s.err = unavailable("credential file cleanup failed")

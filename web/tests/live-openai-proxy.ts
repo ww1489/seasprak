@@ -1,9 +1,7 @@
 import { createServer, request as httpRequest, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { request as httpsRequest } from "node:https";
-import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { once } from "node:events";
-import { join } from "node:path";
 
 export type LiveConnection = { model: string; endpoint: string; key: string };
 export type ChatRequest = { stream: boolean; text: string; body: unknown };
@@ -12,25 +10,20 @@ export type StreamShape = { status: number; contentType: string; contentEncoding
 
 type PendingGate = StreamGate & { release: Promise<void>; hit: () => void };
 
-/** loadOpenAI reads only the approved local test file and never logs values. */
-export function loadOpenAI(repoRoot: string): LiveConnection {
-  const env: Record<string, string> = {};
-  for (const source of readFileSync(join(repoRoot, ".test_env"), "utf8").split(/\r?\n/)) {
-    const line = source.trim();
-    if (!line || line.startsWith("#") || !line.includes("=")) continue;
-    const at = line.indexOf("=");
-    const key = line.slice(0, at).trim().replace(/^export\s+/, "");
-    let value = line.slice(at + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
-    env[key] = value;
+/** loadOpenAI uses host environment only; missing configuration fails closed. */
+export function loadOpenAI(): LiveConnection {
+  const model = process.env.OPENAI_MODEL?.trim();
+  const key = process.env.OPENAI_API_KEY?.trim();
+  let endpoint = process.env.OPENAI_BASE_URL?.trim().replace(/\/+$/, "");
+  if (!model || !key || !endpoint) throw new Error("浏览器验收需要宿主环境中的 OPENAI_MODEL、OPENAI_API_KEY 和 OPENAI_BASE_URL");
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw new Error("浏览器验收环境中的 OPENAI_BASE_URL 不安全");
   }
-  const model = env.OPENAI_MODEL?.trim();
-  const key = env.OPENAI_API_KEY?.trim();
-  let endpoint = env.OPENAI_BASE_URL?.trim().replace(/\/+$/, "");
-  if (!model || !key || !endpoint) throw new Error(".test_env 中 OPENAI live 配置不完整");
-  const parsed = new URL(endpoint);
   if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.host || parsed.username || parsed.password || parsed.search || parsed.hash) {
-    throw new Error(".test_env 中 OPENAI_BASE_URL 不安全");
+    throw new Error("浏览器验收环境中的 OPENAI_BASE_URL 不安全");
   }
   if (!parsed.pathname.endsWith("/v1")) endpoint += "/v1";
   return { model, endpoint, key };

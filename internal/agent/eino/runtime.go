@@ -205,16 +205,16 @@ func compactMessages(ctx context.Context, c agent.CompactionRequester, scope age
 	return append(out, converted...), true, nil
 }
 
-// overflowRecovery allows OverflowRecoveries retries per Turn after a
-// certified context overflow, and only when the compaction service committed
-// a replacement projection. Without one the original failure is kept.
+// overflowRecovery allows OverflowRecoveries retries per logical generation
+// after a certified context overflow, and only when the compaction service
+// committed a replacement projection. Without one the original failure is kept.
 type overflowRecovery struct {
 	compactor agent.CompactionRequester
 	scope     agent.ExecutionScope
 	limit     int
 	context   agent.ContextBudget
 	mu        sync.Mutex
-	turn      string
+	callID    string
 	used      int
 }
 
@@ -227,9 +227,13 @@ func (r *overflowRecovery) decide(ctx context.Context, rc *adk.TypedRetryContext
 	}
 	no := &adk.TypedRetryDecision[*schema.AgenticMessage]{Retry: false}
 	scope := ScopeFromContext(ctx, r.scope)
+	callID := scope.TurnID
+	if budg != nil {
+		callID = budg.Snapshot().ModelCallID
+	}
 	r.mu.Lock()
-	if r.turn != scope.TurnID {
-		r.turn, r.used = scope.TurnID, 0
+	if r.callID != callID {
+		r.callID, r.used = callID, 0
 	}
 	exhausted := r.used >= r.limit
 	if !exhausted {

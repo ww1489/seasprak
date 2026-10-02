@@ -79,7 +79,7 @@ func SaveOutputLog(ctx context.Context, artifacts agent.ArtifactStore, input age
 		return agent.ArtifactRef{}, logError
 	}
 	sum := sha256.Sum256([]byte(input.Content))
-	if result.ID == "" || !result.Available || result.SessionID != input.Binding.SessionID || result.Environment != input.Binding.Environment || result.Size != int64(len(input.Content)) || result.Hash != hex.EncodeToString(sum[:]) {
+	if result.ID == "" || !result.Available || result.SessionID != input.Binding.SessionID || result.WorkflowRunID != input.Binding.WorkflowRunID || input.Binding.WorkflowRunID != "" && input.Binding.SessionID != "" || result.Environment != input.Binding.Environment || result.Size != int64(len(input.Content)) || result.Hash != hex.EncodeToString(sum[:]) {
 		return agent.ArtifactRef{}, product.CodeStateConflict + ": saved process log reference does not match output"
 	}
 	// Reserve space for the fixed process-result envelope as well as the

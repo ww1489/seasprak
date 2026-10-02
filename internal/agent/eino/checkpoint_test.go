@@ -61,7 +61,7 @@ func TestCheckpointWithoutRunnerStateCannotPause(t *testing.T) {
 	}{CanceledItems: []agent.InputRef{checkpointPrompt}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidatePausedCheckpoint(out.Bytes(), checkpointPrompt); err == nil {
+	if err := ValidatePausedCheckpoint(out.Bytes(), checkpointPrompt, "main"); err == nil {
 		t.Fatal("checkpoint without runner state was accepted")
 	}
 }

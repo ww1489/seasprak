@@ -84,7 +84,7 @@ func (e *Executor) projectProcessLog(ctx context.Context, scope agent.ExecutionS
 		if environment == "" {
 			environment = "trusted-injected"
 		}
-		input := agent.OutputArtifactInput{Binding: agent.OutputArtifactBinding{SessionID: scope.SessionID, Environment: environment, CallID: call.CallID}, Content: full, MediaType: "text/plain", Name: frozen.Tool + ".log"}
+		input := agent.OutputArtifactInput{Binding: agent.OutputArtifactBinding{WorkflowRunID: scope.WorkflowRunID, SessionID: scope.SessionID, Environment: environment, CallID: call.CallID}, Content: full, MediaType: "text/plain", Name: frozen.Tool + ".log"}
 		out.Artifact, out.LogError = SaveOutputLog(ctx, e.operations.Artifacts, input)
 	}
 	out = boundProcessOutput(out)

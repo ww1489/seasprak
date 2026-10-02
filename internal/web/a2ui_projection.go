@@ -10,9 +10,8 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/ww1489/seasprak/internal/agent"
+	"github.com/ww1489/seasprak/internal/codeagent"
 	"github.com/ww1489/seasprak/internal/config"
-	"github.com/ww1489/seasprak/internal/sessions"
-	"github.com/ww1489/seasprak/internal/sessions/state"
 )
 
 // uiState is the per-stream memory of what the A2UI surface shows. It is
@@ -32,8 +31,8 @@ type uiState struct {
 	traces     map[string]*a2uiTask
 	approval   map[string]*a2uiApproval
 	outputs    map[string]string
-	// progress lists Invocation then WorkflowNode children, each sorted by
-	// product ID; they have no durable events and refresh from snapshots.
+	// progress lists delegated Invocation children, sorted by product ID;
+	// they refresh from controlled session snapshots.
 	progress []string
 	progComp map[string]a2uiComponent
 }
@@ -122,7 +121,7 @@ func boundPreview(s string) string {
 	return s[i:]
 }
 
-func newUIState(sid string, snap sessions.Snapshot, instanceID string) *uiState {
+func newUIState(sid string, snap codeagent.Snapshot, instanceID string) *uiState {
 	st := &uiState{sid: sid, seedCursor: snap.Cursor, messages: map[string]*uiMessage{}, texts: map[string]string{}, calls: map[string]*a2uiToolCall{}, callOwner: map[string]string{}, provider: map[string]string{}, traces: map[string]*a2uiTask{}, approval: map[string]*a2uiApproval{}, outputs: map[string]string{}}
 	byProvider := map[string]string{}
 	for id, rec := range snap.Calls {
@@ -187,17 +186,13 @@ func newUIState(sid string, snap sessions.Snapshot, instanceID string) *uiState 
 	return st
 }
 
-// syncProgress replaces the Invocation and WorkflowNode components with the
+// syncProgress replaces the delegated Invocation components with the
 // snapshot's records and reports whether any visible component changed.
-func (st *uiState) syncProgress(snap sessions.Snapshot) bool {
+func (st *uiState) syncProgress(snap codeagent.Snapshot) bool {
 	next := map[string]a2uiComponent{}
 	var order []string
 	for _, id := range sortedKeys(snap.Invocations) {
 		c := invocationComponent(snap.Invocations[id])
-		next[c.ID], order = c, append(order, c.ID)
-	}
-	for _, id := range sortedKeys(snap.WorkflowNodes) {
-		c := workflowNodeComponent(snap.WorkflowNodes[id])
 		next[c.ID], order = c, append(order, c.ID)
 	}
 	changed := !slices.Equal(order, st.progress)
@@ -227,7 +222,7 @@ func (st *uiState) traceDone(traceID string) bool {
 // syncApprovals replaces the approval set with the pending runtime approvals
 // of this instance and reports whether the visible set changed. Only the
 // product interactionId is exposed, never framework interrupt addresses.
-func (st *uiState) syncApprovals(snap sessions.Snapshot, instanceID string) bool {
+func (st *uiState) syncApprovals(snap codeagent.Snapshot, instanceID string) bool {
 	next := map[string]*a2uiApproval{}
 	var order []string
 	if instanceID != "" {
@@ -266,19 +261,12 @@ func (st *uiState) taskComponent(id string) a2uiComponent {
 	return a2uiComponent{ID: taskID(id), Component: a2uiComponentValue{Task: &t}}
 }
 
-func invID(id string) string  { return "inv:" + id }
-func nodeID(id string) string { return "node:" + id }
+func invID(id string) string { return "inv:" + id }
 
 // invocationComponent projects identity, target name and state of one child
 // invocation; its result text never leaves the session.
-func invocationComponent(inv state.Invocation) a2uiComponent {
+func invocationComponent(inv codeagent.Invocation) a2uiComponent {
 	return a2uiComponent{ID: invID(inv.ID), Component: a2uiComponentValue{Invocation: &a2uiInvocation{InvocationID: inv.ID, ParentCallID: inv.ParentCallID, Agent: inv.Target.Name, State: inv.State}}}
-}
-
-// workflowNodeComponent projects identity, node, kind and state of one node
-// execution; node results and error text stay private.
-func workflowNodeComponent(n state.WorkflowNodeRun) a2uiComponent {
-	return a2uiComponent{ID: nodeID(n.ID), Component: a2uiComponentValue{WorkflowNode: &a2uiWorkflowNode{NodeExecutionID: n.ID, TraceID: n.TraceID, NodeID: n.NodeID, Kind: n.Kind, State: n.State}}}
 }
 
 func (st *uiState) approvalComponent(id string) a2uiComponent {
@@ -289,7 +277,7 @@ func (st *uiState) approvalComponent(id string) a2uiComponent {
 
 // renderSnapshot rebuilds the complete surface of one consistent snapshot:
 // beginRendering, every component plus root, then the bound texts.
-func renderSnapshot(sid string, snap sessions.Snapshot, instanceID string) []a2uiMessage {
+func renderSnapshot(sid string, snap codeagent.Snapshot, instanceID string) []a2uiMessage {
 	return newUIState(sid, snap, instanceID).render()
 }
 
@@ -310,7 +298,7 @@ func (st *uiState) render() []a2uiMessage {
 			}
 		case "task":
 			comps = append(comps, st.taskComponent(id))
-		case "inv", "node":
+		case "inv":
 			comps = append(comps, st.progComp[child])
 		case "approval":
 			comps = append(comps, st.approvalComponent(id))

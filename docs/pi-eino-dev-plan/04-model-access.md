@@ -1,6 +1,6 @@
 # 04 模型接入、流与缓存
 
-对应 PRD M04；L1 负责统一协议能力，L2 负责 attempt 与响应接纳，L3 选择配置/凭据引用。源码事实不等于实际 endpoint 已认证。
+对应 PRD M04；L1 `internal/llm` 负责统一协议能力和实际请求计量，L2 `internal/agent` 及 Eino 适配负责 attempt 与完整响应接纳。两类同级 L3（Code Agent / Workflow Agent）分别选择配置/凭据引用并接纳各自运行事实；L1 不依赖任一上层运行对象。`internal/codeagent`、`internal/workflowagent` 的独立接线已实现；工作流模型节点通过 `NewAuxiliaryModel` 接纳完整响应，逻辑调用和实际请求提交到本运行账本，并有对应默认测试。源码事实不等于实际 endpoint 已认证。
 
 <a id="catalog"></a>
 ## 1. 配置与模型工厂
@@ -33,7 +33,7 @@ ThinkingLevel 支持 off/minimal/low/medium/high/xhigh/max，未指定使用装�
 
 思考与答案共用响应上限时只预留一次，独立限制按对应口径；不能套一个跨厂商固定 token 表。切换模型后重新映射、投影和预算。
 
-选择操作分成 SetDefaultModel（下一独立 Trace）与 SelectNextTurnModel（当前 Trace 已获准候选，下一 Turn）。请求有 operationId，验证失败保留原配置；当前流、重试、工具批次和审批恢复不换配置。新 Trace 显式选择优先，其次待生效默认，再取选定历史路径配置/应用初值；resume 使用 checkpoint 的实际配置。
+选择操作在 Code Agent 中分成 SetDefaultModel（下一独立 Trace）与 SelectNextTurnModel（当前 Trace 已获准候选，下一 Turn）。请求有 operationId，验证失败保留原配置；当前流、重试、工具批次和审批恢复不换配置。新 Code Agent Trace 显式选择优先，其次待生效默认，再取选定历史路径配置/应用初值；resume 使用自身 checkpoint 的实际配置。Workflow Agent 模型节点按独立运行固定的定义/绑定解析选项，恢复沿用原节点配置，不借用 Code Agent 的默认模型、Turn 选择或聊天历史。其独立调用链已接线且有对应默认测试，最终认证见验证记录。
 
 <a id="adapters"></a>
 ## 3. 适配器与五步调用
@@ -49,13 +49,14 @@ ThinkingLevel 支持 off/minimal/low/medium/high/xhigh/max，未指定使用装�
 ```mermaid
 flowchart TB
     C["有效配置与最终投影"] --> O["L1 思考/缓存选项"]
-    O --> B["M08 完整预算"]
+    O --> B["所属模型请求完整预算 / 07"]
     B --> R["取客户端/凭据"]
     R --> P["协议请求与 before_provider_request"]
     P --> V["复核最终 payload / 预算"]
     V --> H["SDK 或协议 HTTP"]
     H --> N["内容、终止、usage、错误归一化"]
-    N --> G["L2 聚合 / 接纳 / 持久提交"]
+    N --> G["L2 聚合 / 完整接纳"]
+    G --> S["所属 L3 独立日志 / 预算提交"]
 ```
 
 D09-调用图：取得客户端/凭据 → 构建请求 → 发起 → 解析 → 关闭释放。连接池可复用。before_provider_request 只处理声明支持的字段；若改变内容/工具/输出预算相关字段，必须返回重新预算的有效描述并验证，否则拒绝请求。after_provider_response 只传脱敏诊断，不把密钥和整份响应发布给客户端。
@@ -69,13 +70,13 @@ P2 当前私有回放兼容边界：工厂对包含私有推理签名、Claude r
 
 模型 Stream/Recv 的 error 保留 Go 语义。L2 ValidatedModel 包装器单独消费 L1 reader，以 ConcatAgenticMessages 聚合内容块，实时向临时事件端口发送增量或快照；送给 Eino 工具分支的是**通过完整响应校验后的整条消息**。这保留客户端流式体验，同时阻止框架见到早期 tool chunk 就启动工具。
 
-Generate 使用同一检查。ADK 内部模型事件用于执行诊断，不能再作为第二路 product delta/finalized 发布。工具 wrapper 还复核该 Turn/attempt 已接纳，构成执行入口的检查。
+Generate 使用同一检查，Workflow Agent 模型节点的 Generate/Stream 必须经过同一 ValidatedModel 和完整响应接纳门槛，不得绕过包装器直接把早期块交给 Graph 工具节点。ADK 内部模型事件用于执行诊断，不能再作为第二路 product delta/finalized 发布。工具 wrapper 还复核所属 Code Turn/attempt，或所属工作流模型调用/节点的响应已接纳；失败、截断或取消候选不能启动任何后续工具，不为工作流伪造 Turn。
 
 每次 attempt 在创建请求前登记，建流失败也有唯一结局。正常结束需 adapter 声明的结束标志、完整内容、finish reason 和必要配对检查；EOF 只代表 reader 耗尽。响应块完成不等于模型结束。
 
 | 响应类别 | 处理 |
 | --- | --- |
-| 正常文本 / 工具调用 | 完整校验后提交助手消息，才向 Eino 交付可执行结果 |
+| 正常文本 / 工具调用 | 完整校验后接纳所属 Code 助手消息或工作流模型节点结果并保存所属日志事实，才向 Eino 交付可执行结果 |
 | length | 保留截断诊断，不执行其中任何工具调用；有界纠正或失败 |
 | 服务端拒绝 | 保存真实原因，不伪装 completed |
 | 建流/Recv 错误 | 关闭 reader，记录失败 attempt；有部分内容则保存 incomplete |
@@ -116,15 +117,15 @@ sequenceDiagram
     end
 ```
 
-D10-重试图不经过工具重执行。ADK MaxRetries=2，ShouldRetry 只重试尚未接纳的请求；已接纳消息不再由内容质量规则重新生成。参数、鉴权、必需能力、取消、审批和工具错误不自动重试；429/暂时服务故障/可恢复连接错误才进入普通退避。
+D10-重试图是 Code Agent 原 Turn 的重试/溢出路径，不经过工具重执行。独立工作流模型节点复用完整响应校验、错误分类和所属请求额度，在同一逻辑节点调用内重试；不继承 Code 聊天历史或自动压缩，结构化请求超限时明确拒绝或按已声明节点策略处理。ADK MaxRetries=2，ShouldRetry 只重试尚未接纳的请求；已接纳消息/节点结果不再由内容质量规则重新生成。参数、鉴权、必需能力、取消、审批和工具错误不自动重试；429/暂时服务故障/可恢复连接错误才进入普通退避。
 
 实际 Eino v0.9.21 已提供模型重试循环、可取消等待、BackoffFunc 和指数抖动退避，产品不再实现这些执行机制。产品通过 ShouldRetry 判定错误、已接纳状态及剩余预算，只有为了在等待前核对 Retry-After/剩余活动时间才计算并返回显式 Backoff；该策略计算不是新增重试执行器，也不构成请求速率限制器。
 
-SDK 支持时关闭内部重试。所有实际请求还经过 request-context 计数器，同一次逻辑调用最多 3 次物理请求；SDK 隐藏重试也计入。传输耗尽额度返回不可重试预算错误，不能以 ADK attempt 计数掩盖 3×3 请求。缓存资源/摘要等额外模型服务请求也占全 Trace 对应预算；计费与业务用途分别标记。
+SDK 支持时关闭内部重试。所有实际请求还经过 request-context 计数器，同一次逻辑调用最多 3 次物理请求；SDK 隐藏重试也计入。传输耗尽额度返回不可重试预算错误，不能以 ADK attempt 计数掩盖 3×3 请求。缓存资源/摘要等额外模型服务请求也占所属运行对应预算；Code Agent 主/普通子 Agent 的共享 Trace 总账与独立 Workflow Agent 的节点总账分别维护，业务组合不承诺跨运行原子占额。计费与业务用途分别标记。
 
 上下文溢出首先匹配 endpoint 认证的结构/错误码，补充认证过的文本规则；400/413、length、空文本单独都不是溢出证据。可信 inputTotal 超窗或已认证满窗零输出组合可作为证据，必须排除限流、输出上限过小以及工具/推理非空输出。
 
-溢出恢复在原逻辑生成中最多一次，仍受总请求/压缩预算。ShouldRetry 调同一压缩服务取得已提交新投影，再设置 ModifiedInputMessages 与 PersistModifiedInputMessages；失败返回原错误和压缩诊断，不反复原样发超限请求。未发送成功消息，因而没有本轮工具可重跑。正常模型前软压缩和失败后硬压缩使用同一实现。
+溢出恢复在 Code Agent 原逻辑生成中最多一次，仍受总请求/压缩预算。ShouldRetry 调同一压缩服务取得已提交新投影，再设置 ModifiedInputMessages 与 PersistModifiedInputMessages；失败返回原错误和压缩诊断，不反复原样发超限请求。未发送成功消息，因而没有本轮工具可重跑。正常模型前软压缩和失败后硬压缩使用同一实现；此路径不自动赋予 Workflow Agent 聊天压缩能力。
 
 自动 failover 默认关闭；显式启用需预先给出获准模型、能力/费用约束和投影规则，只发生在尚未接纳的模型生成内。
 
@@ -133,7 +134,7 @@ SDK 支持时关闭内部重试。所有实际请求还经过 request-context �
 
 CacheIntent=none/short/long，默认 short；long 未认证回退 short并记录 requested/effective/reason。none 不注入主动标记或创建资源，不承诺关闭供应商隐式缓存。
 
-缓存作用域由 L3 注入，在同 Session/账号权限范围内稳定；不按每次 traceId/attempt/时间重建。L1 以 provider/endpoint/账号作用域/model/策略版本和实际前缀摘要验证显式句柄，缓存键不等于权限证明。L1 只装饰请求副本，原历史不含缓存字段。
+缓存作用域由所属 L3 注入，在同 Code Agent Session 或同 Workflow Agent 运行、账号权限范围内稳定；两类运行独立命名，不因业务组合继承彼此句柄，也不按每次 traceId/attempt/时间重建。L1 以 provider/endpoint/账号作用域/model/策略版本和实际前缀摘要验证显式句柄，缓存键不等于权限证明。L1 只装饰请求副本，原历史不含缓存字段。
 
 | 家族 | 默认策略与失效处理 |
 | --- | --- |
@@ -165,10 +166,10 @@ UsageRecord 每个字段都有 value/known/source，记录 inputTotal、uncached
 <a id="evidence"></a>
 ## 8. 证据与验收
 
-- [agenticopenai](../../eino-ext/components/model/agenticopenai/responses_model.go)：Responses 缓存与自动续接是不同机制。
-- [agenticclaude](../../eino-ext/components/model/agenticclaude/convertor.go)与[HTTPClient 入口](../../eino-ext/components/model/agenticclaude/model.go)：缓存字段与 usage 差异。
-- [agenticgemini](../../eino-ext/components/model/agenticgemini/model.go)、[agenticdeepseek](../../eino-ext/components/model/agenticdeepseek/model.go)：现成入口。
-- [Eino RetryDecision](../../eino/adk/retry_chatmodel.go)：修改输入并持久化 state；本产品需验证错误/预算处理。
+- [agenticopenai](../../../eino-ext/components/model/agenticopenai/responses_model.go)：Responses 缓存与自动续接是不同机制。
+- [agenticclaude](../../../eino-ext/components/model/agenticclaude/convertor.go)与[HTTPClient 入口](../../../eino-ext/components/model/agenticclaude/model.go)：缓存字段与 usage 差异。
+- [agenticgemini](../../../eino-ext/components/model/agenticgemini/model.go)、[agenticdeepseek](../../../eino-ext/components/model/agenticdeepseek/model.go)：现成入口。
+- [Eino RetryDecision](../../../eino/adk/retry_chatmodel.go)：修改输入并持久化 state；本产品需验证错误/预算处理。
 - [PRD 厂商官方文档与能力边界](../pi-eino-prd/04-model-access.md#452-本地实现对照)。
 
-V-MODEL/V-CACHE：逐个 M-E 用例、完整/流式双路径、中文/emoji/多块/多工具、truncated 工具零执行、SDK 隐藏重试计数、缓存命中缺失/过期/模型切换/分支切换、Claude cacheWrite 与 DeepSeek hit/miss unknown 边界。真实模型认证必须记录 endpoint、模型版本、适配 commit、fixture 和实际结果。
+V-MODEL/V-CACHE：逐个 M-E 用例、完整/流式双路径、中文/emoji/多块/多工具、Code Turn 与 Workflow 模型节点同一完整响应门槛、truncated/失败工具零执行、逻辑调用和 SDK 隐藏物理请求计数、工作流并行节点在所属预算内原子占额、缓存命中缺失/过期/模型切换/分支切换、Claude cacheWrite 与 DeepSeek hit/miss unknown 边界。独立工作流接线、计数和并行预算仍待迁移真实调用链验收；历史模型测试不替代。真实模型认证必须记录 endpoint、模型版本、适配 commit、fixture 和实际结果，本轮不新增模型调用或 Gemini 请求。

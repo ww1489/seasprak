@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"strconv"
 
-	"github.com/ww1489/seasprak/internal/sessions/store"
+	store "github.com/ww1489/seasprak/internal/storage"
 )
 
 const maxCursorBytes = 512

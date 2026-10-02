@@ -24,10 +24,9 @@ const (
 	AgentKindWorkflow = "workflow"
 )
 
-// AgentDefinition is one execution target registered at startup. Kind "agent"
-// runs the shared controlled Agentic loop with its own instruction and optional
-// model; kind "workflow" runs a validated static workflow. Definitions are
-// immutable after registration; there is no runtime reload.
+// AgentDefinition is one ordinary execution target registered at startup.
+// It runs the shared controlled Agentic loop with its own instruction and
+// optional model. Definitions are immutable; there is no runtime reload.
 type AgentDefinition struct {
 	Name        string
 	Version     string
@@ -38,8 +37,6 @@ type AgentDefinition struct {
 	// Delegable exposes the target to other agents through the controlled task tool.
 	Delegable bool
 	Kind      string
-	// Workflow is the compiled static workflow for Kind "workflow".
-	Workflow *CompiledWorkflow
 	// Tools names the session generation tools this agent may call when it
 	// runs as a delegated child. The session rejects unknown names at start;
 	// an empty list keeps the child tool-less.
@@ -48,13 +45,12 @@ type AgentDefinition struct {
 
 // AgentInfo is the public capability view of a registered target.
 type AgentInfo struct {
-	Name        string          `json:"name"`
-	Version     string          `json:"version"`
-	Description string          `json:"description,omitempty"`
-	Kind        string          `json:"kind"`
-	Delegable   bool            `json:"delegable,omitempty"`
-	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
-	Hash        string          `json:"hash,omitempty"`
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Description string `json:"description,omitempty"`
+	Kind        string `json:"kind"`
+	Delegable   bool   `json:"delegable,omitempty"`
+	Hash        string `json:"hash,omitempty"`
 }
 
 // AgentRegistry is the immutable startup inventory of execution targets.
@@ -89,21 +85,10 @@ func NewAgentRegistry(mainInstruction string, defs []AgentDefinition) (*AgentReg
 		}
 		switch def.Kind {
 		case AgentKindAgent:
-			if def.Workflow != nil {
-				return nil, product.NewError(product.CodeInvalidArgument, "agent definition cannot carry a workflow")
-			}
 		case AgentKindWorkflow:
-			if def.Workflow == nil || def.Model != nil || def.Instruction != "" {
-				return nil, product.NewError(product.CodeInvalidArgument, "workflow target requires only a compiled workflow")
-			}
-			if def.Workflow.Definition.Name != def.Name || def.Workflow.Definition.Version != def.Version {
-				return nil, product.NewError(product.CodeInvalidArgument, "workflow target identity differs from its definition")
-			}
+			return nil, product.NewError(product.CodeInvalidArgument, "workflows require the independent workflow owner")
 		default:
 			return nil, product.NewError(product.CodeInvalidArgument, "agent kind is unsupported")
-		}
-		if def.Kind != AgentKindAgent && len(def.Tools) != 0 {
-			return nil, product.NewError(product.CodeInvalidArgument, "only agent targets declare tools")
 		}
 		seen := map[string]bool{}
 		for _, name := range def.Tools {
@@ -157,11 +142,8 @@ func definitionHash(def AgentDefinition) string {
 			modelIdentity = cfg.Model + "@" + cfg.Version
 		}
 	}
-	workflow := ""
-	if def.Workflow != nil {
-		workflow = def.Workflow.Hash
-	}
-	fields := []any{def.Name, def.Version, def.Kind, def.Description, def.Instruction, modelIdentity, def.Delegable, workflow}
+	// Preserve the historical empty workflow slot for ordinary target hashes.
+	fields := []any{def.Name, def.Version, def.Kind, def.Description, def.Instruction, modelIdentity, def.Delegable, ""}
 	// Tools are appended only when declared, so tool-less definitions keep
 	// their earlier hash and saved targets still resolve.
 	if len(def.Tools) != 0 {
@@ -207,26 +189,12 @@ func (r *AgentRegistry) Delegates(caller string) []AgentDefinition {
 	return out
 }
 
-// Workflows lists registered workflow targets in name order.
-func (r *AgentRegistry) Workflows() []AgentDefinition {
-	var out []AgentDefinition
-	for _, name := range r.names {
-		if def := r.byName[name]; def.Kind == AgentKindWorkflow {
-			out = append(out, def)
-		}
-	}
-	return out
-}
-
 // Infos returns the capability view in name order.
 func (r *AgentRegistry) Infos() []AgentInfo {
 	out := make([]AgentInfo, 0, len(r.names))
 	for _, name := range r.names {
 		def := r.byName[name]
 		info := AgentInfo{Name: def.Name, Version: def.Version, Description: def.Description, Kind: def.Kind, Delegable: def.Delegable, Hash: r.hashes[name]}
-		if def.Workflow != nil {
-			info.InputSchema = append(json.RawMessage(nil), def.Workflow.InputSchema...)
-		}
 		out = append(out, info)
 	}
 	return out

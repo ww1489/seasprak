@@ -78,7 +78,7 @@ func TestImportCheckerRejectsForbiddenSample(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	src := "package agent\n\nimport _ \"github.com/ww1489/seasprak/internal/sessions\"\n"
+	src := "package agent\n\nimport _ \"github.com/ww1489/seasprak/internal/codeagent\"\n"
 	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
 		t.Fatal(err)
 	}

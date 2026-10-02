@@ -1,8 +1,10 @@
 # 11 安全策略、一次许可与沙箱
 
-**2026-09-27 适用范围修订（待实现）：**本章的强制策略、审批、预算、执行票据、工作区隔离和防重复执行适用于模型及受控工具；不适用于受信宿主明确发起的用户直接 shell。后者以宿主账户权限执行，工作区仅为初始目录，不承诺沙箱或 stateRoot 写保护，保留超时、主动取消、输出和退出状态。模型/普通扩展不能通过 origin 标记进入该入口。该例外是显式用户能力，不是模型安全后端失效后的裸跑降级；模型的 ask/never、后端不可用拒绝、unknown 与恢复规则全部保留。用户 shell 与日志处理详见 [05 §2.1 和 §7](05-tools-and-operations.md)。
+**2026-09-27 历史适用范围修订（当时标为待实现）：**本章的强制策略、审批、预算、执行票据、工作区隔离和防重复执行适用于模型及受控工具；不适用于受信宿主明确发起的用户直接 shell。后者以宿主账户权限执行，工作区仅为初始目录，不承诺沙箱或 stateRoot 写保护，保留超时、主动取消、输出和退出状态。模型/普通扩展不能通过 origin 标记进入该入口。该例外是显式用户能力，不是模型安全后端失效后的裸跑降级；模型的 ask/never、后端不可用拒绝、unknown 与恢复规则全部保留。用户 shell 与日志处理详见 [05 §2.1 和 §7](05-tools-and-operations.md)。
 
-对应 PRD M12。DSH 继续作为文件效果策略、审批和审核职责的参考；Zero 作为 Go 原生三平台沙箱的主要实现来源，按本产品冻结描述、一次许可和运行数据保护契约适配。策略判断不等于 OS 隔离，文件写限制不表示网络/读取/任意 Go 代码已隔离。Zero `internal/sandbox` 不能直接 import，采用必要抽取/移植并保留许可声明。
+对应 PRD M12。Code Agent 与 Workflow Agent 分别在本运行内复用本章的强制策略、冻结参数、一次许可、请求计量、预算和取消真实退出规则；共享 L2 不提供跨两类运行的全局审批、冻结或原子预算。Code Agent 与共享存储已迁移；独立 Workflow 目录、工厂和受控节点安全路径已接通，并有对应默认测试。这不替代真实平台限制或完整 P3 认证。普通 Code Agent 子委派的权限/预算/版本/取消保护，以及工作流内部静态子流程、条件、汇合和已有节点级暂停/审批/显式恢复保留。完整子树恢复、跨任务审批、补偿和跨运行总预算由业务实现，外层批准始终不授权内层副作用。
+
+DSH 继续作为文件效果策略、审批和审核职责的参考；Zero 作为 Go 原生三平台沙箱的主要实现来源，按本产品冻结描述、一次许可和运行数据保护契约适配。策略判断不等于 OS 隔离，文件写限制不表示网络/读取/任意 Go 代码已隔离。Zero `internal/sandbox` 不能直接 import，采用必要抽取/移植并保留许可声明。
 
 <a id="policy"></a>
 ## 1. 模式、策略与配置
@@ -18,7 +20,7 @@ full/partial/none/unavailable 是实际后端能力等级，和模式不同；fu
 <a id="grants"></a>
 ## 2. 冻结描述、一次批准与占用
 
-**2026-09-28 已确认修订，实施与验收进行中：**一次性审批请求、决定与许可消费状态仅保存在当前会话运行实例内存，不写入历史或可恢复授权记录；关闭/重启后失效。批准关联 approvalId、interactionId、原调用、描述 hash、generation、资源范围、权限版本、有效期和决定者，只适用于同一冻结操作，不能把工具名或“用户说可以”作为通行证。
+**2026-09-28 已确认修订，实施与验收进行中：**一次性审批请求、决定与许可消费状态仅保存在当前所属 Agent 运行实例内存，不写入历史或可恢复授权记录；关闭/重启后失效。Code Agent 与 Workflow Agent 分别维护，批准关联 approvalId、interactionId、所属运行类型/ID、原调用、描述 hash、generation、资源范围、权限版本、有效期和决定者，只适用于同一冻结操作，不能把工具名、业务父调用批准或“用户说可以”作为内层通行证。
 
 显式恢复未执行调用时重新检查当前权限，必要时生成新审批；只读浏览和 Open 不自动询问或执行。已有结果直接复用，执行状态未知必须先核对，不能因旧批准消失就重新执行。调用 claim、执行意图、预算及观察仍按原事务持久保存，但不包含可恢复的一次批准。永久授权规则与会话级复用授权不属于本次迁移的新增能力。
 
@@ -51,7 +53,7 @@ D26-授权时序：审批等待的 checkpoint 关联见 09。常驻策略/Auto �
 
 | 已有事实 | 许可和恢复行为 |
 | --- | --- |
-| 未批准/拒绝/取消/过期/决定未提交 | 不执行 |
+| 未批准/拒绝/取消/过期/本实例无有效决定 | 不执行 |
 | 已批准未 claim | 描述、当前权限和恢复条件满足才原子 claim |
 | 已 claim，可信后端证明目标未开始 | 保存证据和 release 后重新评估原调用 |
 | 已 claim，目标启动不明 | 保留占用，outcome_unknown，核对 |
@@ -63,7 +65,7 @@ D26-授权时序：审批等待的 checkpoint 关联见 09。常驻策略/Auto �
 <a id="escalation"></a>
 ## 3. 单次扩大许可
 
-工具可声明 sandbox_permissions 与非空 justification，必须同时提供且相对当前解析模式严格扩大。一次扩大不修改 Session 常驻模式，不自动改变 backend/镜像/挂载。
+工具可声明 sandbox_permissions 与非空 justification，必须同时提供且相对当前解析模式严格扩大。一次扩大不修改所属运行常驻模式，不自动改变 backend/镜像/挂载，也不传递给业务调用的另一独立 Agent。
 
 模型/用户申请“重试原操作”时关联原调用，比较目标、参数和效果。已有 partial/unknown 效果先核对或证明幂等；检测到 sandbox denied 不等于完全没执行。新执行使用新调用身份及原调用关联，旧批准不转移。禁止先裸跑后补审批。
 
@@ -72,11 +74,13 @@ D26-授权时序：审批等待的 checkpoint 关联见 09。常驻策略/Auto �
 <a id="protected-data"></a>
 ## 4. 运行数据和产物保护
 
-Session 日志、调用 claim、checkpoint、可信 manifest 位于 stateRoot；一次性审批请求和决定仅存运行实例内存，不保存原授权原文。artifactRoot 和 tempRoot 是业务材料。创建时用真实路径/文件身份检查重叠、junction/symlink、硬链接和挂载别名，不仅比较字符串前缀。
+Code Agent 日志、Workflow Agent 独立运行日志、各自调用 claim/checkpoint/可信 manifest 位于按所属类型分区的 stateRoot；一次性审批请求和决定仅存所属实例内存，不将批准写成可恢复授权。受保护原始输入按 02/09 的本运行引用管理，不借业务引用或另一运行的摘要补许可。artifactRoot 和 tempRoot 是业务材料。创建时用真实路径/文件身份检查重叠、junction/symlink、硬链接和挂载别名，不仅比较字符串前缀。
 
 默认 stateRoot 在业务可写根之外；有包含关系时只有后端真正落实子目录写禁止才允许。文件 Operations 和进程后端都要验证，不能只隐藏工具描述。探测报告单独列 runtimeDataWriteProtected，generic partial 标签不是证明。
 
-每 Session/环境有共享产物根及调用临时根，文件工具与 shell 的映射一致；read-only 不因为“临时目录”就获得任意业务写权限，仅允许后端声明且受控的必要临时/sink。私有 tmpfs 需先导出才能持久引用。产物内容可被业务修改，manifest/审批等可信元数据不能放在产物根。
+前述路径别名、硬链接及挂载规则是安全验收目标。当前有限文件访问以受信 stateRoot 及其祖先为部署边界，same-root 的受检子目录、完整重解析点/SameFile、owned/borrowed 句柄、默认工厂/JSONL/附件已接受范围、Blob H1/M1 复审关闭及父两平台完整 storage 普通/race/vet/build 的有限证据、13.2e清单 publisher、Workflow.Close 安全错误及可写创建父目录同步经独立复核和父两平台实际证据有界接受的状态统一见 [09 §layout](09-persistence-and-recovery.md#layout)。长期 Windows journal/lock 禁止 DELETE 共享，目录同步失败不吞 ACCESS_DENIED；Repair 的任意 parent 不是可信锚点，旧 WRITE_THROUGH 替换仍暂停，原 raw-path/旧 flock 清理不因默认 Store 加固而宣称关闭。该实现不认证强 OS 沙箱、任意硬链接/挂载/设备、同用户恶意修改或全部 ABA 换位窗口。Code 检查点的回调隔离也只按 [09 §checkpoint](09-persistence-and-recovery.md#checkpoint) 的固定版本、单次探针和根资格范围成立，宿主 codec 不受零执行保证。
+
+每个所属运行/环境有自己的产物根及调用临时根，文件工具与 shell 的映射一致；共享后端不合并 Code Session 与 Workflow 运行的绑定或产物权限。read-only 不因为“临时目录”就获得任意业务写权限，仅允许后端声明且受控的必要临时/sink。私有 tmpfs 需先导出才能持久引用。产物内容可被业务修改，manifest/claim/checkpoint 等可信元数据不能放在产物根。
 
 受信进程内 Go 代码或 danger-full-access 不具备上述模型工作负载隔离保证；不能宣称它们也被文件沙箱强制约束。
 
@@ -136,14 +140,14 @@ D27-Windows 时序：这是本产品目标设计，不是 Zero 已实现。Zero 
 
 ACL 修改对规范化路径加互斥，读取当前 ACL、合并自有 ACE、退出时只撤销自有 ACE，保留其他修改。Zero 按 root 持久复用 capability SID，成功后通常保留 ACL，unelevated 还会丢弃 rollback；这与本产品“本次调用所有权/只撤销自有 ACE”不同，不能标成上游已有。写保护对象不得自动添加可被工作负载使用的写 SID。清理失败/崩溃残留记录在受保护日志，重启只清理可证明属于本部署且无人引用的条目，不重置整目录 ACL。
 
-Zero 当前 `WRITE_RESTRICTED` 路径默认不加入 Everyone，不能把 DSH 的 Everyone 已知缺口不加区分地复制成 Zero 事实。硬链接、junction、未来路径和运行数据保护仍须本产品验收。专门测试工作负载能否写 Session/approval/checkpoint；不满足则该配置拒绝，不能以用户选择 Windows 为由跳过。Windows DenyRead 在 Zero runner 中直接拒绝，默认凭据 deny-read 基线在 Windows 跳过。
+Zero 当前 `WRITE_RESTRICTED` 路径默认不加入 Everyone，不能把 DSH 的 Everyone 已知缺口不加区分地复制成 Zero 事实。硬链接、junction、未来路径和运行数据保护仍须本产品验收。专门测试工作负载能否写所属 Code/Workflow 日志、调用账目或 checkpoint；不满足则该配置拒绝，不能以用户选择 Windows 为由跳过。Windows DenyRead 在 Zero runner 中直接拒绝，默认凭据 deny-read 基线在 Windows 跳过。
 
 <a id="docker"></a>
 ## 7. 宿主主程序与 Docker shell
 
 首版使用本机 Docker Engine 与受控 docker CLI，命令参数数组由后端产生，不将模型 command 拼入 docker 控制字符串。每个 execute 创建一个调用专属容器；image 由应用预配置为不可变 digest，默认不在工具调用中自动 pull。镜像必须具备声明的 shell；缺失是环境错误。
 
-ResourceMap 每项包含 logicalRoot、hostRealRoot、containerRoot、mode、资源身份；工作区和会话共享产物作为显式 bind mount。文件工具解析同一 logicalRoot 到宿主真实文件；shell cwd/路径转换到 containerRoot。Windows Docker Desktop 等共享文件机制只有验证读写同一文件后才认证，不能凭字符串推断。
+ResourceMap 每项包含 logicalRoot、hostRealRoot、containerRoot、mode、资源身份；所属运行的工作区和产物作为显式 bind mount。文件工具解析同一 logicalRoot 到宿主真实文件；shell cwd/路径转换到 containerRoot。Windows Docker Desktop 等共享文件机制只有验证读写同一文件后才认证，不能凭字符串推断。
 
 ```mermaid
 flowchart TB
@@ -161,7 +165,7 @@ D28-容器部署图。默认只读根、cap-drop=ALL、no-new-privileges、非 p
 
 网络单独记录：原生保持环境既有网络；容器默认 bridge，应用可明确选 none/指定获准网络。本模式不宣称网络隔离或自动域名授权；网络改变属于冻结描述，不能让工具临时自己换 host network。
 
-启动采用 create → 保存 containerId/调用关联 → start/attach → wait/inspect 的可核对流程；容器标签含部署/Session/call 非秘密 ID。Docker CLI 超时后通过本机 daemon 查询精确 containerId/标签，不重新 run。create/start 与日志之间仍有未知窗口，不从 CLI exit code 猜未执行。
+启动采用 create → 保存 containerId/调用关联 → start/attach → wait/inspect 的可核对流程；容器标签含部署/所属运行类型与 ID/call 非秘密 ID。Docker CLI 超时后通过本机 daemon 查询精确 containerId/标签，不重新 run。create/start 与日志之间仍有未知窗口，不从 CLI exit code 猜未执行。
 
 取消先 stop，再按确认窗口 kill并等待；结束后保存状态、完整日志和必要私有产物，最后清理该调用容器。未导出私有路径不返回可读 artifactRef。失败/崩溃保留容器关联供 Reconcile；清理只能针对已验证属于该调用的容器，不全局删除容器。
 
@@ -172,7 +176,7 @@ Auto 默认关闭，保留显式装配的审核接口和完整行为。开启也
 
 审核独立读取受保护原始输入、直接父委派和有效限制，分 human-instruction/direct-parent-instruction/constraint/checkpoint/fact。只有已经消费且适用于本操作范围的原文可授权；input/context 改写、项目规范、摘要、工具输出与导入标签不能升级身份。
 
-审核对象是冻结后的完整动作，包括内层 Workflow/子工具；只批准外层 task 不能无限批准内部效果。结构化结果包含 risk/decision/reason/授权证据引用，闭合校验：
+审核对象是所属运行冻结后的实际动作。业务外层工具仅按自己的范围审核；独立 Workflow Agent、普通子工具及节点效果仍由各自受控入口复核有效权限，不能用外层 task 批准代替内层许可，也不要求一次审核冻结另一独立 Agent 的完整子树。结构化结果包含 risk/decision/reason/授权证据引用，闭合校验：
 - low：常规低风险且符合当前限制时可 allow；
 - medium：需要明确目标/范围授权，否则 ask 或 deny；
 - high：硬拒绝，普通批准不能覆盖。
@@ -188,6 +192,6 @@ Auto 默认关闭，保留显式装配的审核接口和完整行为。开启也
 <a id="evidence"></a>
 ## 10. 证据与验收
 
-策略与审核：[DSH sandbox-local](../../deepseek-harness/packages/sandbox/sandbox-local/src/index.ts)、[profiles](../../deepseek-harness/packages/sandbox/sandbox-local/src/profiles.ts)、[Auto](../../deepseek-harness/packages/experimental/auto-review/src/index.ts)。原生实现：[Zero 平台选择](../../zero/internal/sandbox/manager.go)、[命令计划](../../zero/internal/sandbox/runner.go)、[Linux helper](../../zero/internal/sandbox/linux_helper.go)、[Landlock](../../zero/internal/sandbox/landlock_linux.go)、[Windows 启动](../../zero/internal/sandbox/windows_process_windows.go)、[Windows ACL](../../zero/internal/sandbox/windows_acl.go)、[Windows runner](../../zero/internal/sandbox/windows_runner.go)。
+策略与审核：[DSH sandbox-local](../../../deepseek-harness/packages/sandbox/sandbox-local/src/index.ts)、[profiles](../../../deepseek-harness/packages/sandbox/sandbox-local/src/profiles.ts)、[Auto](../../../deepseek-harness/packages/experimental/auto-review/src/index.ts)。原生实现：[Zero 平台选择](../../../zero/internal/sandbox/manager.go)、[命令计划](../../../zero/internal/sandbox/runner.go)、[Linux helper](../../../zero/internal/sandbox/linux_helper.go)、[Landlock](../../../zero/internal/sandbox/landlock_linux.go)、[Windows 启动](../../../zero/internal/sandbox/windows_process_windows.go)、[Windows ACL](../../../zero/internal/sandbox/windows_acl.go)、[Windows runner](../../../zero/internal/sandbox/windows_runner.go)。
 
 V-SEC/V-PLATFORM：SEC-A01～26；转换后冻结、普通 allow 不跳过策略、ask/never/过期/迟到批准、claim 并发及每个崩溃窗、假 stderr、运行数据路径别名与硬链接、原生实际限制、Docker 同一文件/私有产物、取消子进程、Auto 原文/缺材料/卸载不放宽；helper 可信来源、拒绝 Zero auto degraded、Windows 初始化/文件限制/网络要求的条件组合、文件工具与 shell 实际一致性。按 OS/arch/backend/mode 记录实际 full/partial/unavailable；未运行平台不标通过。Zero 真沙箱测试需显式环境开关，普通 `go test` 或交叉编译不能替代本产品认证。

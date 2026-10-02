@@ -42,12 +42,15 @@ const (
 )
 
 type MessageScope struct {
-	SessionID    string `json:"sessionId,omitempty"`
-	TraceID      string `json:"traceId,omitempty"`
-	TurnID       string `json:"turnId,omitempty"`
-	InvocationID string `json:"invocationId,omitempty"`
-	InputID      string `json:"inputId,omitempty"`
-	ToolCallID   string `json:"toolCallId,omitempty"`
+	WorkflowRunID   string `json:"workflowRunId,omitempty"`
+	NodeExecutionID string `json:"nodeExecutionId,omitempty"`
+	ModelCallID     string `json:"modelCallId,omitempty"`
+	SessionID       string `json:"sessionId,omitempty"`
+	TraceID         string `json:"traceId,omitempty"`
+	TurnID          string `json:"turnId,omitempty"`
+	InvocationID    string `json:"invocationId,omitempty"`
+	InputID         string `json:"inputId,omitempty"`
+	ToolCallID      string `json:"toolCallId,omitempty"`
 }
 
 type SourceRef struct {
@@ -151,9 +154,12 @@ func (m AgentMessage) Validate() error {
 }
 
 type EventScope struct {
-	SessionID string `json:"sessionId"`
-	TraceID   string `json:"traceId,omitempty"`
-	TurnID    string `json:"turnId,omitempty"`
+	SessionID       string `json:"sessionId,omitempty"`
+	WorkflowRunID   string `json:"workflowRunId,omitempty"`
+	NodeExecutionID string `json:"nodeExecutionId,omitempty"`
+	InvocationID    string `json:"invocationId,omitempty"`
+	TraceID         string `json:"traceId,omitempty"`
+	TurnID          string `json:"turnId,omitempty"`
 }
 
 type Event struct {
@@ -172,8 +178,8 @@ func (e Event) Validate() error {
 	if e.SchemaVersion != 1 {
 		return product.NewError(product.CodeIncompatibleVersion, "unsupported event schema")
 	}
-	if e.Type == "" || e.Scope.SessionID == "" {
-		return product.NewError(product.CodeInvalidArgument, "event type and session are required")
+	if e.Type == "" || (e.Scope.SessionID == "") == (e.Scope.WorkflowRunID == "") || e.Scope.WorkflowRunID != "" && (e.Scope.TraceID != "" || e.Scope.TurnID != "") {
+		return product.NewError(product.CodeInvalidArgument, "event type and exactly one compatible execution root are required")
 	}
 	return nil
 }

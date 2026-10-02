@@ -11,9 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ww1489/seasprak/internal/agent"
+	"github.com/ww1489/seasprak/internal/codeagent"
 	"github.com/ww1489/seasprak/internal/config"
-	"github.com/ww1489/seasprak/internal/sessions"
 	"github.com/ww1489/seasprak/internal/testkit"
 )
 
@@ -70,7 +69,7 @@ func upload(t *testing.T, s *Server, token, sid, key, mimeType, name string, bod
 // startAt starts the real routes over an existing config (same state root).
 func startAt(t *testing.T, c Config, model *testkit.FakeModel) (*Server, string) {
 	t.Helper()
-	testOptions = func(o *sessions.Options) { o.Model = model }
+	testOptions = func(o *codeagent.Options) { o.Model = model }
 	defer func() { testOptions = nil }()
 	ctx, cancel := context.WithCancel(context.Background())
 	s, err := Start(ctx, c, nil)
@@ -271,61 +270,22 @@ func TestMetadataRoutes(t *testing.T) {
 }
 
 func TestWorkflowRoute(t *testing.T) {
-	s, token, c, _ := offlineServer(t)
+	s, token, c, model := offlineServer(t)
 	sid := createSession(t, s, token, c)
-	if status, out := call(t, s, token, "GET", "/v1/sessions/"+sid+"/workflows", "", nil); status != 200 || len(out["workflows"].([]any)) != 0 {
-		t.Fatalf("empty workflows status=%d %v", status, out)
-	}
-
-	wf, err := agent.CompileWorkflow(agent.WorkflowDefinition{
-		Name: "echo-flow", Version: "v1", Description: "echo", Source: "test", FormatVersion: agent.WorkflowFormatV1,
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"topic":{"type":"string"}},"required":["topic"]}`),
-		Nodes: []agent.WorkflowNode{
-			{ID: "s", Type: agent.WorkflowNodeStart},
-			{ID: "e", Type: agent.WorkflowNodeEnd, Inputs: map[string]agent.WorkflowValue{"answer": {Ref: &agent.WorkflowRef{Node: "s", Field: "topic"}}}},
-		},
-		Edges: []agent.WorkflowEdge{{From: "s", To: "e"}},
-	}, agent.WorkflowBindings{})
+	journal := s.SessionOptions().StateRoot + "/sessions/" + sid + "/journal.jsonl"
+	before, err := os.ReadFile(journal)
 	if err != nil {
-		t.Fatalf("compile: %v", err)
+		t.Fatal(err)
 	}
-	c2 := testConfig(t)
-	setProfile(t, c2, "memory")
-	model := testkit.NewFake()
-	testOptions = func(o *sessions.Options) {
-		o.Model = model
-		o.Agents = []agent.AgentDefinition{{Name: "echo-flow", Version: "v1", Description: "echo", Kind: agent.AgentKindWorkflow, Workflow: wf}}
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	s2, err := Start(ctx, c2, nil)
-	testOptions = nil
-	if err != nil {
-		cancel()
-		t.Fatalf("start: %v", err)
-	}
-	t.Cleanup(func() { cancel(); _ = s2.Wait() })
-	raw, _ := os.ReadFile(s2.TokenPath())
-	token2 := string(raw)
-	sid2 := createSession(t, s2, token2, c2)
-	status, out := call(t, s2, token2, "GET", "/v1/sessions/"+sid2+"/workflows", "", nil)
-	list, _ := out["workflows"].([]any)
-	if status != 200 || len(list) != 1 {
-		t.Fatalf("workflows status=%d %v", status, out)
-	}
-	item := list[0].(map[string]any)
-	if item["name"] != "echo-flow" || item["version"] != "v1" || item["description"] != "echo" || item["inputSchema"] == nil {
-		t.Fatalf("workflow item=%v", item)
-	}
-	for _, private := range []string{"nodes", "edges", "hash", "source"} {
-		if _, ok := item[private]; ok {
-			t.Fatalf("workflow exposed %s", private)
+	for _, id := range []string{sid, "missing"} {
+		status, out := call(t, s, token, "GET", "/v1/sessions/"+id+"/workflows", "", nil)
+		if status != http.StatusNotFound {
+			t.Fatalf("retired workflow route status=%d %v", status, out)
 		}
 	}
-	if status, _ = call(t, s2, token2, "GET", "/v1/sessions/missing/workflows", "", nil); status != 404 {
-		t.Fatalf("unknown session status=%d", status)
-	}
-	if model.Calls() != 0 {
-		t.Fatal("workflow listing invoked the model")
+	after, err := os.ReadFile(journal)
+	if err != nil || !bytes.Equal(before, after) || model.Calls() != 0 {
+		t.Fatal("retired route wrote or executed")
 	}
 }
 

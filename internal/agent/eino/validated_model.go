@@ -20,10 +20,12 @@ var ErrControlledStop = errors.New("controlled stop")
 
 // ValidatedModel returns a tool-bearing message only after the full response is accepted.
 type ValidatedModel struct {
-	inner model.AgenticModel
-	sink  agent.ExecutionSink
-	budg  *agent.BudgetLedger
-	scope agent.ExecutionScope
+	inner   model.AgenticModel
+	sink    agent.ExecutionSink
+	budg    *agent.BudgetLedger
+	scope   agent.ExecutionScope
+	purpose string
+	callID  string // fixed for a workflow node; summaries start a fresh call
 }
 
 type resolvedModelKey struct{}
@@ -43,10 +45,30 @@ func (m *ValidatedModel) resolveModel(ctx context.Context) (model.AgenticModel, 
 }
 
 func NewValidatedModel(inner model.AgenticModel, sink agent.ExecutionSink, budg *agent.BudgetLedger, scope agent.ExecutionScope) *ValidatedModel {
-	return &ValidatedModel{inner: inner, sink: sink, budg: budg, scope: scope}
+	return &ValidatedModel{inner: inner, sink: sink, budg: budg, scope: scope, purpose: "agent"}
+}
+
+// NewAuxiliaryModel uses the same attempt and transport validation without
+// inheriting an enclosing agent's active logical call. Auxiliary responses
+// cannot admit tools; workflow calls retain their original node identity.
+func NewAuxiliaryModel(inner model.AgenticModel, sink agent.ExecutionSink, budg *agent.BudgetLedger, scope agent.ExecutionScope, purpose, callID string) (*ValidatedModel, error) {
+	if purpose != "compaction" && purpose != "workflow_node" || purpose == "workflow_node" && callID == "" || purpose == "compaction" && callID != "" {
+		return nil, product.NewError(product.CodeInvalidArgument, "auxiliary model purpose and logical identity are invalid")
+	}
+	return &ValidatedModel{inner: inner, sink: sink, budg: budg, scope: scope, purpose: purpose, callID: callID}, nil
+}
+
+func (m *ValidatedModel) requestBase(ctx context.Context) context.Context {
+	if ctx == nil || m.purpose == "agent" {
+		return ctx
+	}
+	ctx = WithExecutionScope(ctx, m.scope)
+	ctx = context.WithValue(ctx, resolvedModelKey{}, struct{}{})
+	return context.WithValue(ctx, attemptContextKey{}, struct{}{})
 }
 
 func (m *ValidatedModel) Generate(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.AgenticMessage, error) {
+	ctx = m.requestBase(ctx)
 	if err := contextErr(ctx); err != nil {
 		return nil, m.fail(ctx, nil, "failed", err)
 	}
@@ -79,6 +101,7 @@ func (m *ValidatedModel) Generate(ctx context.Context, input []*schema.AgenticMe
 }
 
 func (m *ValidatedModel) Stream(ctx context.Context, input []*schema.AgenticMessage, opts ...model.Option) (*schema.StreamReader[*schema.AgenticMessage], error) {
+	ctx = m.requestBase(ctx)
 	if err := contextErr(ctx); err != nil {
 		return nil, m.fail(ctx, nil, "failed", err)
 	}
@@ -183,7 +206,7 @@ func (m *ValidatedModel) requestContext(ctx context.Context) (context.Context, e
 		return ctx, err
 	}
 	ctx = context.WithValue(ctx, resolvedModelKey{}, inner)
-	identity := agent.ModelAttemptIdentity{ID: agent.MustID(), ModelCallID: ScopeFromContext(ctx, m.scope).TurnID, MessageID: agent.MustID(), StreamID: agent.MustID()}
+	identity := agent.ModelAttemptIdentity{ID: agent.MustID(), ModelCallID: ScopeFromContext(ctx, m.scope).TurnID, MessageID: agent.MustID(), StreamID: agent.MustID(), Purpose: m.purpose}
 	if m.budg != nil {
 		identity.ModelCallID = m.budg.Snapshot().ModelCallID
 	}
@@ -215,13 +238,33 @@ func (m *ValidatedModel) requestContext(ctx context.Context) (context.Context, e
 	if !m.budg.ModelRetryAllowed() {
 		return ctx, product.NewError(product.CodeBudgetExhausted, "model budget exhausted")
 	}
-	request := llm.RequestIdentity{ModelCallID: identity.ModelCallID, AttemptID: identity.ID, Purpose: "agent"}
-	ctx = llm.WithSessionCacheScope(ctx, ScopeFromContext(ctx, m.scope).SessionID)
+	request := llm.RequestIdentity{ModelCallID: identity.ModelCallID, AttemptID: identity.ID, Purpose: m.purpose}
+	scope := ScopeFromContext(ctx, m.scope)
+	cacheScope := ""
+	if scope.SessionID != "" {
+		cacheScope = "code:" + scope.SessionID
+	}
+	if scope.WorkflowRunID != "" {
+		if scope.SessionID != "" || scope.TraceID != "" || scope.TurnID != "" {
+			return ctx, product.NewError(product.CodeInvalidArgument, "model cache scope has conflicting execution roots")
+		}
+		cacheScope = "workflow:" + scope.WorkflowRunID
+	}
+	ctx = llm.WithSessionCacheScope(ctx, cacheScope)
 	return llm.WithRequestObservation(ctx, request, m.budg), nil
 }
 
 func (m *ValidatedModel) beginTurn(ctx context.Context) error {
-	if m.budg == nil || turnStarted(ctx) {
+	if m.budg == nil {
+		return nil
+	}
+	if m.purpose != "agent" {
+		if m.callID != "" {
+			return m.budg.BeginTurnID(m.callID)
+		}
+		return m.budg.BeginTurn()
+	}
+	if turnStarted(ctx) {
 		return nil
 	}
 	if scope := ScopeFromContext(ctx, m.scope); scope.TurnID != "" {
@@ -273,14 +316,8 @@ func (m *ValidatedModel) accept(ctx context.Context, msg *schema.AgenticMessage)
 	if msg == nil {
 		return nil, m.fail(ctx, nil, "failed", product.NewError(product.CodeInternal, "empty model response"))
 	}
-	for _, block := range msg.ContentBlocks {
-		if !validAssistantBlock(block) {
-			return nil, m.fail(ctx, stripTools(msg), "incomplete", product.NewError(product.CodeInvalidArgument, "malformed model content block"))
-		}
-	}
-	calls := toolCalls(msg)
-	if msg.Role != schema.AgenticRoleTypeAssistant || !explicitSuccess(finishReason(msg)) || badToolCalls(calls) {
-		return nil, m.fail(ctx, stripTools(msg), "incomplete", product.NewError(product.CodeInvalidArgument, "incomplete model response"))
+	if err := agent.ValidateModelResponse(msg, m.purpose == "agent"); err != nil {
+		return nil, m.fail(ctx, stripTools(msg), "incomplete", err)
 	}
 	if err := m.record(ctx, msg, "complete", nil); err != nil {
 		return nil, m.fail(ctx, stripTools(msg), "incomplete", err)
@@ -334,69 +371,6 @@ func finishReason(msg *schema.AgenticMessage) string {
 	}
 	reason, _ := msg.Extra["seasprak.finish"].(string)
 	return reason
-}
-
-func explicitSuccess(reason string) bool {
-	return reason == "stop" || reason == "tool_calls"
-}
-
-func toolCalls(msg *schema.AgenticMessage) []*schema.FunctionToolCall {
-	if msg == nil {
-		return nil
-	}
-	var calls []*schema.FunctionToolCall
-	for _, block := range msg.ContentBlocks {
-		if block.Type == schema.ContentBlockTypeFunctionToolCall && block.FunctionToolCall != nil {
-			calls = append(calls, block.FunctionToolCall)
-		}
-	}
-	return calls
-}
-
-func validAssistantBlock(block *schema.ContentBlock) bool {
-	if block == nil {
-		return false
-	}
-	populated := 0
-	for _, present := range []bool{
-		block.Reasoning != nil, block.AssistantGenText != nil, block.AssistantGenImage != nil, block.AssistantGenAudio != nil, block.AssistantGenVideo != nil, block.FunctionToolCall != nil,
-		block.UserInputText != nil, block.UserInputImage != nil, block.UserInputAudio != nil, block.UserInputVideo != nil, block.UserInputFile != nil, block.FunctionToolResult != nil,
-		block.ToolSearchFunctionToolResult != nil, block.ServerToolCall != nil, block.ServerToolResult != nil, block.MCPToolCall != nil, block.MCPToolResult != nil, block.MCPListToolsResult != nil, block.MCPToolApprovalRequest != nil, block.MCPToolApprovalResponse != nil,
-	} {
-		if present {
-			populated++
-		}
-	}
-	if populated != 1 {
-		return false
-	}
-	switch block.Type {
-	case schema.ContentBlockTypeReasoning:
-		return block.Reasoning != nil
-	case schema.ContentBlockTypeAssistantGenText:
-		return block.AssistantGenText != nil
-	case schema.ContentBlockTypeAssistantGenImage:
-		return block.AssistantGenImage != nil
-	case schema.ContentBlockTypeAssistantGenAudio:
-		return block.AssistantGenAudio != nil
-	case schema.ContentBlockTypeAssistantGenVideo:
-		return block.AssistantGenVideo != nil
-	case schema.ContentBlockTypeFunctionToolCall:
-		return block.FunctionToolCall != nil
-	default:
-		return false
-	}
-}
-
-func badToolCalls(calls []*schema.FunctionToolCall) bool {
-	seen := map[string]bool{}
-	for _, call := range calls {
-		if call.CallID == "" || call.Name == "" || seen[call.CallID] || !json.Valid([]byte(call.Arguments)) {
-			return true
-		}
-		seen[call.CallID] = true
-	}
-	return false
 }
 
 func stripTools(msg *schema.AgenticMessage) *schema.AgenticMessage {

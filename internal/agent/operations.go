@@ -333,6 +333,7 @@ type OutputArtifactStore interface {
 }
 
 type OutputArtifactBinding struct {
+	WorkflowRunID                  string `json:"workflowRunId,omitempty"`
 	SessionID, Environment, CallID string
 }
 type OutputArtifactInput struct {
@@ -349,6 +350,7 @@ type OutputArtifactRead struct {
 type OutputRedactor func(context.Context, string) (string, error)
 
 type ArtifactRef struct {
+	WorkflowRunID                    string `json:"workflowRunId,omitempty"`
 	ID, SessionID, Environment, Hash string
 	Size                             int64
 	Available                        bool

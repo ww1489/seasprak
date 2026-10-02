@@ -11,7 +11,6 @@ import (
 
 	"github.com/ww1489/seasprak/internal/config"
 	product "github.com/ww1489/seasprak/internal/errors"
-	"github.com/ww1489/seasprak/internal/sessions"
 )
 
 // Attachment routes save and read user material. Saving never submits input
@@ -68,7 +67,7 @@ func (r *routes) saveAttachment(w http.ResponseWriter, req *http.Request) {
 		WriteError(w, invalid("attachment body cannot be read"))
 		return
 	}
-	rec, dup, err := r.catalog.SaveAttachment(req.Context(), req.PathValue("sid"), sessions.SaveAttachmentRequest{IdempotencyKey: key, MimeType: mediaType, Name: req.URL.Query().Get("name"), Content: data})
+	rec, dup, err := r.catalog.SaveAttachment(req.Context(), req.PathValue("sid"), SaveAttachmentRequest{IdempotencyKey: key, MimeType: mediaType, Name: req.URL.Query().Get("name"), Content: data})
 	if err != nil {
 		WriteError(w, err)
 		return

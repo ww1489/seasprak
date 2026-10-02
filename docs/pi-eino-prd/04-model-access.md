@@ -8,7 +8,7 @@
 
 通用底座需要在更换模型后保留相同的任务、工具与事件语义，同时承认不同模型在工具调用、上下文窗口、图片、推理参数和计量上的差异。只把 endpoint 与 model ID 改成配置，无法保证这些行为兼容。
 
-拟定方案：L1 基于 Eino/eino-ext 实现统一模型请求/响应、供应商兼容和前缀缓存策略；L2 的 Agent 负责模型调用、重试边界和工具派发，消费 L1 已归一化的结果；L3 的应用装配方提供模型配置、凭据和默认策略，AgentSession 确定 Trace 模型基线及逐 Turn 选择策略，SessionManager 保存记录。**eino-ext 是复用的实现基础，pi 的统一响应和供应商优化语义仍是产品需要验收的能力。**
+拟定方案：L1 `internal/llm` 基于 Eino/eino-ext 提供统一请求/响应、供应商兼容与缓存；L2 `internal/agent` 保留 Agent 名称，处理通用调用、重试与工具派发；L3 同级 Code/Workflow Agent 分别装配模型、凭据引用和策略。Code Agent 的 AgentSession/SessionManager 管理自身 Trace 模型基线与记录，Workflow 独立管理图/节点调用及 usage；两类不共用历史、generation 或隐式预算。Code Agent 与共享存储已迁移，独立 Workflow Agent、工厂和 Web 三类资源路由已接通；工作流模型节点走受控辅助模型包装及本运行账本，默认测试不替代真实供应商认证。**eino-ext 是复用的实现基础，pi 的统一响应和供应商优化语义仍需产品验收。**
 
 建议验收门槛：
 
@@ -139,7 +139,7 @@ DeepSeek 使用原生 [agenticdeepseek](../../eino-ext/components/model/agenticd
 
 ### 3.2 计量与预算
 
-Trace 总预算、单个模型调用重试上限及超时由底座提供开发者默认策略，终端用户无需配置。steering、follow-up、内部重试和恢复都归属同一 Trace，不重置总预算；主 Agent、子 Agent、工作流与自动压缩的模型消耗均计入。手动会话维护消耗归 operationId。默认值在开发验证时确定。
+Code Agent 的 Trace 总预算、重试与超时沿用开发方案 [M12 defaults](../pi-eino-dev-plan/12-delivery-and-validation.md#defaults)，不新增数值。steering、follow-up、普通子 Agent、内部重试、自动压缩与恢复计入同一 Code Agent Trace，不重置预算；手动维护归 operationId。Workflow 节点模型调用计入 Workflow 自身运行，不计入另一类 Trace，也不因工具包装获得隐式共享总额。两类互调的跨运行总预算由业务显式管理；被调方仍独立限制与计量。
 
 本地 general-purpose 子 Agent 的构造传入了 `ModelFailoverConfig`，该构造处没有传入主 Agent 的 `ModelRetryConfig`。见 [子 Agent 配置](../../eino/adk/prebuilt/deep/task_tool.go#L90)。[VERIFY: eino/adk/prebuilt/deep/task_tool.go:90] 因而“主 Agent 配置了重试”不能作为子 Agent 重试一致性的验收依据；产品需要对各执行来源分别验证预算和失败行为。
 
@@ -154,11 +154,11 @@ Eino `AgenticResponseMeta.TokenUsage` 可以缺失；结束原因分布在 OpenA
 | 对象 | 最少内容及约束 |
 | --- | --- |
 | 模型配置 | `provider`、`protocol`、`model`、endpoint、凭据引用、能力记录、模型参数、配置版本；凭据值不进入可序列化快照 |
-| Trace 模型基线 | 初始模型、能力/凭据引用、可用模型选择策略和总预算；工具/skill generation 固定；子 Agent 的模型差异显式列出 |
-| Turn 内模型调用 | traceId/turnId、模型 attempt、本轮实际生效配置版本、请求模型与响应模型、终止原因；可选观测 span 单独记录 |
+| Trace 模型基线 | Code Agent 初始模型、能力/凭据引用、策略与本 Trace 预算；工具/skill/普通子 Agent generation 固定。Workflow 模型节点基线归自身运行，不共享总额或版本 |
+| Turn 内模型调用 | Code Agent traceId/turnId、attempt、实际配置版本与终止原因；Workflow 节点调用按其自身运行/节点身份关联，无模型不伪造 Turn；观测 span 另记 |
 | 消耗记录 | attempt 归属、已报告 usage、估算及其算法版本、费用估算版本；不得重复累加同一累计值 |
 
-L1 接受已解析的凭据与本轮请求选项，不依赖 AgentSession、SessionManager、队列或 HTTP。CreateAgentSession 注入配置及选择策略，AgentSession 为 Trace 选择基线；L2 的 prepareNextTurn 可按已装配策略为下一 Turn 选择已获准模型/思考参数，默认沿用现有配置。每次改变都记录生效轮次，并重验消息兼容、上下文预算和缓存作用域；不得修改正在消费的流、扩大权限或加载新的工具/skill generation。选择失败保留当前有效配置并报告未生效，不能半途混用两个模型的流。
+L1 接受已解析凭据与请求选项，不依赖 AgentSession、WorkflowAgent、任一状态管理器/Store、队列或 HTTP。下面的 Trace/Turn 配置选择是 Code Agent 契约；Workflow 自己选择并冻结节点配置/预算，再使用 L2/L1 窄契约，不共享 Code 模型基线或恢复。CreateAgentSession 注入配置及选择策略，AgentSession 为 Trace 选择基线；L2 的 prepareNextTurn 可按已装配策略为下一 Turn 选择已获准模型/思考参数，默认沿用现有配置。每次改变都记录生效轮次，并重验消息兼容、上下文预算和缓存作用域；不得修改正在消费的流、扩大权限或加载新的工具/skill generation。选择失败保留当前有效配置并报告未生效，不能半途混用两个模型的流。
 
 扩展的模型/思考选择入口使用同样规则：明确请求“下一独立 Trace 默认值”或“当前 Trace 下一 Turn 的获准选择”，不以一个含糊 setModel 操作覆盖两种作用域。选择请求和实际生效位置可查询，失败保留原有效配置；新 provider/模型适配实现仍通过现有登记与装配契约提供，不因运行操作而加载新代码。
 
@@ -242,7 +242,7 @@ pi 同时处理错误模式、成功但用量超窗及满窗零输出，并排�
 
 模型流拥有唯一负责消费和关闭的运行方；外部 HTTP/SSE 消费产品事件，不直接持有供应商 reader。客户端断开后后端仍按 Trace 预算执行，可按第 7 章查询与重连。
 
-文本与工具参数增量是临时输出，不是已提交历史。模型完成并通过接纳检查后，AgentSession 委托 SessionManager 提交完整消息，再发布对应产品事件；失败、取消和被重试替代的输出按第 6 章保留诊断状态，不投影为成功助理回复。事件持久游标 `durableSeq`、瞬态 `chunkSeq` 的规则由[第 7 章](07-events-and-access.md)定义。
+文本与参数增量为临时输出。Code Agent 在接纳后由 AgentSession/SessionManager 提交，Workflow 由自身协调者提交节点模型结果，再分别发布产品事实；不跨类合并历史或写入者。失败、取消和替代 attempt 保留诊断，不投影成功回复。各自事件范围的 durableSeq/chunkSeq 见第 7 章。
 
 finish reason 统一区分正常结束、请求工具、长度截断、服务端拒绝、取消及模型错误，并保留脱敏原始值。`length` 不自动等于任务成功；建议保守拒绝执行被标为截断响应中的所有工具调用，即使部分 JSON 恰好能解析也不据此认定意图完整。产品明确反馈截断原因，按预算决定重新生成或失败，不执行半完成参数。
 
@@ -275,7 +275,7 @@ pi 的中间事件携带 partial，done/error 携带最终消息；本产品复�
 | 公开推理与回放数据 | 服务实际返回的公开推理内容；签名/opaque metadata 按原协议保留 | Reasoning 块、Signature、协议扩展与 Extra 按能力映射；签名不作为正文展示，不向不兼容模型原样回放 |
 | 工具调用 | 多调用身份、名称、完整参数、参数增量及完成状态 | 复用 FunctionToolCall / FunctionToolResult，按 CallID 配对；本地调用、服务端工具和 MCP 块分别识别，M05 再校验与执行 |
 | 终止与错误 | 正常终答、工具请求、截断、拒绝、取消、传输/服务错误，附原始原因 | L1 统一供应商原因；L2 决定任务推进，不能把 EOF 普遍等同于成功 |
-| 用量与缓存 | 输入/输出总量、缓存读、缓存写、推理明细、已知或未知、累积或增量语义 | L1 返回归一结果，由 AgentSession 协调 SessionManager 保存；各来源字段的包含关系不能直接相加 |
+| 用量与缓存 | 输入/输出总量、缓存读、缓存写、推理明细、已知或未知、累积或增量语义 | L1 返回归一结果，Code 由 AgentSession/SessionManager 保存，Workflow 由自身运行/节点记录保存；分别计量，不直接相加包含关系或形成跨类总额 |
 | 响应来源 | 模型/API/endpoint 配置版本、供应商 response ID、适配器/策略版本 | response ID 是标识，是否可用于服务端续接须另行认证 |
 
 pi 的 AssistantMessageEvent 区分文本、thinking、工具参数的 start/delta/end 和 done/error；Usage 区分 input/output/cacheRead/cacheWrite。[流事件](../../pi/packages/ai/src/types.ts#L535) `[VERIFY: pi/packages/ai/src/types.ts:535]`；[Usage](../../pi/packages/ai/src/types.ts#L382) `[VERIFY: pi/packages/ai/src/types.ts:382]`。这是本产品对齐的响应语义，不要求 Go 层照抄所有 TypeScript 类型或事件名。
@@ -338,7 +338,7 @@ Gemini GenerateContent 的显式缓存资源与隐式缓存分别定义，不能
 
 #### 4.5.3 L1/L2/L3 的联合约束
 
-1. AgentSession 提供稳定、不含秘密的不透明缓存作用域与模型/资源版本；L1 无需理解或查询 Session 对象。缓存作用域不以每次新建的 traceId、executionId、attempt 或时间戳作为唯一键，否则会人为破坏复用。
+1. 两类 L3 各自提供稳定、不含秘密的不透明缓存作用域与模型/资源版本；Code Agent 作用域包含自身会话/分支，Workflow 包含自身运行/节点绑定，不串用显式句柄或有状态续接 ID。L1 不查询任何运行对象。作用域不以 traceId/executionId/attempt/时间戳为唯一键，不因一次尝试变化破坏合法复用。
 2. M08 负责内容与顺序稳定。L1 在完成协议序列化后选择合法断点/参数；只装饰本次请求副本，不把 cache_control 或缓存句柄写成用户话语，不改变产品历史。
 3. L1 内同一请求只采用已验证的缓存策略组合；优先复用 eino-ext 开关/选项，缺失时使用明确限定的适配或扩展，不在 L2 按供应商品牌插入字段。
 4. 显式缓存句柄绑定 provider/endpoint、账号权限范围、模型、缓存策略版本和被缓存内容摘要。只有输入等价且作用域兼容才可引用；generation 变更要检查相关内容是否改变，不假定一个字符串缓存键能证明内容相等。

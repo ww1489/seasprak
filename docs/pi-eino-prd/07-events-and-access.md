@@ -4,7 +4,9 @@
 
 状态：完整讨论稿。对应教程 [M07 事件驱动](https://dg-ai-notes.pages.dev/modules/ch07-event-driven)。前端实现不纳入产品范围、使用最小 Web 页面验证已确认；工作区、默认基础能力、安全与取消后队列已获确认；HTTP/SSE 具体路径和 DTO 仍是可评审建议。状态机引用[执行状态契约](03-agent-loop.md)，消息结构引用[第 6 章](06-messages.md)。
 
-对象名称与[第 2 章的职责划分](02-architecture-boundaries.md#23-与-pi-对齐的对象名称与职责)一致：AgentSession 协调会话操作和事件发布，SessionManager 负责持久提交；HTTP/SSE 仅映射这些公开能力。
+对象名称与[第 2 章](02-architecture-boundaries.md#23-与-pi-对齐的对象名称与职责)一致。Code Agent 的 AgentSession 协调会话操作/发布，SessionManager 提交历史；Workflow 自己协调图、节点、审批、恢复及事件。内部 Web 经受控 L3 接口，既不导入 sdk，也不直接操作管理器/Store；外部消费者只导入唯一 sdk 包。外层分别路由两类能力，不把 Workflow 输入送入 AgentSession/targetAgent。Code Agent 与共享存储已迁移；独立 Workflow Agent、工厂、Web 三类资源路由和各自视图已接通，有对应默认测试。HTTP/SSE 只是映射，最终认证见 [P3 验证记录](../p3-verification.md)，不证明 P3 完成。
+
+本章 Session/Trace 队列、会话 hooks 与历史路由属于 Code Agent；通用事件、参数冻结、审批、取消真实退出及 unknown 核对语义也约束 Workflow 自身调用，但不共享写入者、历史、审批、恢复、generation 或隐式预算。两类订阅/查询以产品类型和各自身份过滤，业务工具只记录自己的配对结果，不合并事件游标或被调方恢复树。
 
 ## 1. 执行摘要
 
@@ -12,7 +14,7 @@
 
 如果页面连接拥有任务生命周期，刷新页面可能丢任务或重复执行；如果观察者和权限判断使用同一类回调，慢客户端可能阻塞执行，权限检查失败也可能被误当作日志错误忽略。
 
-Agent 产生通用执行事件，AgentSession 协调 SessionManager 提交状态和历史，保存成功后由 AgentSession 发布产品事实，最外层将操作与事件映射到 HTTP/SSE。观察订阅、执行控制钩子、必须完成的内部持久化分别定义责任；A2UI 按需读取同一套消息和事件并回传普通操作。
+Code Agent 的 Agent 产生通用执行事件，AgentSession 协调 SessionManager 提交自身状态和历史，保存成功后由 AgentSession 发布 Code 产品事实；Workflow 由自身运行/节点协调者提交节点、执行意图/占用、审批恢复定位和事件事实。人工审批问答只存所属当前实例内存，决定不进入持久记录；Auto 最小决定元数据仍独立保留。最外层按产品类型分别将操作与事件映射到 HTTP/SSE。观察订阅、执行控制钩子、必须完成的内部持久化分别定义责任；A2UI 按需读取所属产品的消息和事件并回传普通操作。
 
 ### 1.2 成功标准
 
@@ -22,14 +24,14 @@ Agent 产生通用执行事件，AgentSession 协调 SessionManager 提交状态
 | EVT-K2 | 断开并重新连接后，客户端状态与查询快照一致，不重复提交任务、不重复展示终态消息 |
 | EVT-K3 | 观察订阅者失败或停止消费不会改变任务结果；权限钩子失败不会放行工具 |
 | EVT-K4 | 相同幂等请求重试多次只产生一次业务操作；相同键但不同内容被明确拒绝 |
-| EVT-K5 | 无需页面、HTTP 或 SSE 依赖即可运行 L2 Agent；HTTP 与 Go SDK 的同一输入得到相同 AgentSession 语义 |
+| EVT-K5 | 无需页面、HTTP 或 SSE 依赖即可运行 L2 Agent；Code 的 HTTP 与 Go SDK 同一输入得到相同 AgentSession 语义，Workflow 的入口与节点语义由自身验证 |
 | EVT-K6 | SDK 观察订阅可独立注销；Session 关闭后不保留监听器；注销与关闭不会留下重复事件投递 |
 | EVT-K7 | 扩展控制点能区分通知、拦截和链式转换；处理器顺序、短路、超时和错误行为可预测 |
 | EVT-K8 | 接入者能区分内核事件、会话事件和扩展独占控制点；压缩、重试、队列和模型选择均有可查询的状态/事件映射 |
 
 ## 2. 用户体验与功能
 
-用户包括 SDK 集成者、前端接入者、扩展作者及用 Web 页面联调的开发者。正常路径：提交带幂等键的输入 → 得到 inputId/traceId → 订阅 agent/turn/message/tool 事件 → 查询或收到 Trace 终态 → 在同一 Session 提交后续任务。SSE 只负责通知，不承担提交命令或确认副作用。
+用户包括 SDK 集成者、前端接入者、扩展作者及用 Web 页面联调的开发者。Code Agent 正常路径：提交带幂等键的输入 → 得到 inputId/traceId → 订阅 agent/turn/message/tool 事件 → 查询或收到 Trace 终态 → 在同一 Code Session 提交后续任务。Workflow 由业务提交自身运行/节点输入并订阅自身事件；SSE 只负责通知，不承担提交命令或确认副作用。
 
 ### 2.1 需求与验收
 
@@ -41,10 +43,10 @@ Agent 产生通用执行事件，AgentSession 协调 SessionManager 提交状态
 | EVT-04 | 作为使用者，我希望刷新页面后继续观察，以便任务不受浏览器影响 | 关闭连接不取消任务；可从游标重连；游标过期或临时流丢失时明确重同步，并返回当前任务/消息快照，不能静默跳过缺口 |
 | EVT-05 | 作为集成者，我希望失败的观察者不会使任务失败 | 同时挂一个正常订阅者和一个抛错/慢订阅者；任务继续，正常订阅者可看到最终事实，故障订阅有诊断；队列不无限增长 |
 | EVT-06 | 作为策略作者，我希望工具执行前能明确拒绝，以便权限规则可靠生效 | pre-execute 可返回 allow/deny/cancel/ask；ask 仅在 allowed-once 后继续；拒绝或钩子异常时执行为零；订阅 tool.started 不具备拦截能力 |
-| EVT-07 | 作为网络调用者，我希望提交、取消和恢复可重试，以便请求超时不会重复动作 | 同幂等键同请求内容返回原结果，跨重启仍有效至声明的保留边界；同键异请求冲突；返回 accepted 之前必须保存输入或命令事实 |
-| EVT-08 | 作为前端接入者，我希望有操作、状态查询与事件入口，以便自行实现界面 | SDK 和 HTTP 覆盖 Session、输入、Trace、取消、恢复、历史、分支及能力查询；权限拒绝、无效状态和版本不兼容具有结构化错误 |
+| EVT-07 | 作为网络调用者，我希望提交、取消和恢复可重试，以便请求超时不会重复动作 | 通用受控命令同幂等键同内容返回原结果，跨重启在声明保留边界内有效；同键异内容冲突，返回 accepted 前保存输入/命令事实。审批响应例外：仅当前实例内存去重，不持久保存决定或以操作回执复活批准，重开后按 M10/M12 显式恢复并重新复核策略 |
+| EVT-08 | 作为前端接入者，我希望有操作、状态查询与事件入口，以便自行实现界面 | SDK 和 HTTP 分别覆盖 Code Agent 的 Session、输入、Trace、取消、恢复、历史、分支及能力查询，以及 Workflow 的运行/节点、审批与显式恢复目标能力；权限拒绝、无效状态和版本不兼容具有结构化错误 |
 | EVT-09 | 作为测试者，我希望用最小 Web 页面验证公开接口 | 完成提交、流式观察、停止、继续、断连重连、等待输入应答和读取历史；页面不能直接调用内部存储或更改运行对象 |
-| EVT-10 | 作为协议适配作者，我希望按需增加 A2UI，以便结构化交互复用同一底座 | 映射器放在最外层；动作带 Session/Trace/交互请求身份，经过同一校验和权限；未知或过期动作拒绝，不直接执行模型给出的任意命令 |
+| EVT-10 | 作为协议适配作者，我希望按需增加 A2UI，以便结构化交互复用同一底座 | 映射器放在最外层；动作带所属产品的 Session/Trace 或 Workflow 运行/节点及交互请求身份，经过对应入口的校验和独立权限；未知或过期动作拒绝，不直接执行模型给出的任意命令 |
 | EVT-11 | 作为 SDK 使用者，我希望暂时观察一个 Session 后安全停止观察 | `Subscribe` 返回注销句柄；注销后不再投递新事件；Session 关闭释放所有订阅和临时流；在途回调完成后不得重新注册自身 |
 | EVT-12 | 作为扩展作者，我希望知道 hook 修改结果如何组合 | 通知 hook 只观察；拦截 hook 可短路；转换 hook 按注册顺序接收上一个结果；异常、超时和拒绝分别按 fail-closed/fail-safe 规则处理 |
 
@@ -54,7 +56,7 @@ Agent 产生通用执行事件，AgentSession 协调 SessionManager 提交状态
 
 **客户端在工具运行时掉线：**原 Trace 继续。重连恢复持久事实和当前消息快照；临时增量可有缺口。进程崩溃则查询 paused 及已知结果，不能把最后一段文本当作完整回复；日志不可用也不影响 traceId。
 
-**等待审批期间重复回复：**第一次有效回复已绑定对应交互请求并受理；同键重试返回该结果；另一个相互冲突的回答被拒绝。过期请求或旧执行尝试的无效交互不能用于批准新任务的工具调用。
+**等待审批期间重复回复：**第一次有效回复在当前运行实例内存绑定原冻结调用及交互请求；同键重试返回本实例结果，冲突回答拒绝。有效期、应答者、响应去重及消费状态不跨关闭/重开，旧请求或持久操作回执不能复活批准。重开后显式 Resume 重新复核策略，未占用且仍需审批时重新问，已占用未知先核对，已有结果复用；checkpoint 只定位原调用，不携带决定。
 
 ### 2.3 非目标
 
@@ -79,7 +81,7 @@ Trace：agent_start → agent_end（底层循环边界）→ trace.settled（产
         └── Tool execution：tool.requested → tool.started/progress → tool.finished
 ```
 
-一轮可能没有工具层；一条助手消息可能包含多个工具调用层。`tool.requested` 是按来源接纳的调用事实，`tool.started` 才表示执行后端已经启动；控制 hook 在二者之间运行。被拒绝的调用不产生 started，但必须有明确的 finished(denied) 或对应控制结果。事件消费者按 origin 和实际作用域关联：model 使用 traceId/invocationId/turnId/messageId/toolCallId，workflow_node 使用 traceId/invocationId/nodeExecutionId/toolCallId，direct 使用实际 invocation 或 operationId 与 toolCallId；后两类不伪造 Turn 或助手工具请求，不用到达顺序猜测父子关系。
+一轮可能没有工具层；一条助手消息可能包含多个工具调用层。`tool.requested` 是按来源接纳的调用事实，`tool.started` 才表示执行后端已经启动；控制 hook 在二者之间运行。拒绝调用无 started，但有明确 finished(denied) 或控制结果。上述嵌套图属于 Code：model 使用自身 traceId/invocationId/turnId/messageId/toolCallId；Workflow 的 workflow_node 使用自身运行/节点/nodeExecutionId/toolCallId，direct 使用所属运行的 invocation 或 operationId/toolCallId。两类不借用对方 Trace/Turn，不用到达顺序或业务工具关联推断内置父子关系。
 
 pi 的底层循环遵循这条嵌套顺序：首轮发出 agent/turn 起始事件，消息流产生 start/update/end，工具批次完成后发 turn_end，外层 follow-up 结束后才发 agent_end；无工具轮次仍然有 turn_end。coding-agent 还会在 retry/compaction/queue 都处理完后发 agent_settled。本产品分别表达为内部 `agent_end` 和产品 `trace.settled`，不能把底层边界直接当作最终收尾。见[循环源码](../../pi/packages/agent/src/agent-loop.ts#L95) `[VERIFY: pi/packages/agent/src/agent-loop.ts:95]`、[轮后与收尾](../../pi/packages/agent/src/agent-loop.ts#L224) `[VERIFY: pi/packages/agent/src/agent-loop.ts:224]`、[settled](../../pi/packages/coding-agent/src/core/agent-session.ts#L607) `[VERIFY: pi/packages/coding-agent/src/core/agent-session.ts:607]`。
 
@@ -90,9 +92,9 @@ pi 的底层循环遵循这条嵌套顺序：首轮发出 agent/turn 起始事�
 | 文本 → 工具 → 文本 | assistant 中间消息结束后 Trace 仍运行；工具请求、结果、最终答案及终态顺序可追溯 |
 | 同名工具并发 | 每个调用独立开始/结束；全局展示顺序由接收/提交序号决定，不误配结果 |
 | 取消与结果同时到达 | 只形成一个确定终态，已完成副作用如实保留；重复取消返回现状 |
-| SSE 断开、慢消费、重复重放 | 任务继续；客户端重同步后与查询一致；持久事件按 ID 去重 |
+| SSE 断开、慢消费、重复重放或错类游标 | 各自运行继续，重同步与自身查询一致；按所属日志/事件 ID 去重，另一类游标不能用于本订阅 |
 | 输入已提交但响应丢失 | 重试不会新增输入、任务或工具副作用 |
-| 等待输入后恢复、恢复前扩展更新 | 继续原 Trace，创建新执行尝试，使用原 Trace generation；旧审批答案不能串到新交互 |
+| 等待输入后恢复、恢复前扩展更新 | Code 继续原 Trace/执行尝试/generation，Workflow 恢复自身原节点/定义/绑定；旧审批不串到新交互或另一类，更新要求按原未来阶段验收 |
 | 存储提交失败 | 不发布虚假的持久成功事实；停止推进需要该提交的执行步骤，公开错误可查询 |
 | 权限钩子异常与观察者异常 | 前者按控制点策略阻止或暂停相应操作；后者只影响该订阅，不改变业务决策 |
 | 内核/会话/扩展事件分层 | `turn_*`、`message_*`、`tool_execution_*` 是执行事实；`trace.state_changed`、队列/压缩/重试是产品状态；`tool_call`、`context`、`input` 等控制点不从观察订阅泄漏 |
@@ -107,11 +109,13 @@ pi 的底层循环遵循这条嵌套顺序：首轮发出 agent/turn 起始事�
 | --- | --- | --- |
 | L1 模型能力 | 供应商流与模型调用观测 | 产品 Trace 状态、SSE 游标 |
 | L2 Agent | 消费 Eino 输出流，产生通用消息/工具执行事实；执行注入的控制钩子 | HTTP 状态码、客户端连接、AgentSession、SessionManager、ResourceLoader、ExtensionRegistry 的具体实现及产品存储实现 |
-| L3 AgentSession | 协调当前 Session 的串行操作、身份关联、命令去重和状态变更；SessionManager 保存成功后发布持久事实；管理订阅 | 直接实现存储后端、前端组件树和网络连接对象 |
-| L3 SessionManager | 管理历史与分支，校验并通过 SessionStore 保存输入、消息、任务记录及关联持久事件 | 决定请求调度、执行模型/工具、管理客户端订阅；SessionStore 只负责存储适配 |
-| 外侧接入 | HTTP 映射、SSE 编码、连接授权、可选 A2UI 映射 | 重写任务状态机、直接操纵 Eino Runner 或历史文件 |
+| L3 Code Agent：AgentSession | 当前 Code Agent Session 串行操作、身份/去重与状态；其提交成功后发布事实并管理订阅 | Workflow 定义、节点、审批/恢复、前端或存储后端 |
+| L3 Code Agent：SessionManager | 自身历史/分支与输入、执行、事件关联，经 storage 契约提交 | 调度、模型/工具、订阅及 Workflow 状态 |
+| L3 Workflow Agent（批准目标） | 自己的运行/节点状态、调用校验、审批/恢复、记录与事件发布 | Code Agent 输入队列、历史树、generation 或预算 |
+| 共用 internal/storage 与 jsonl/memory（目录已机械迁移） | 中立记录/提交契约与后端实现 | 两类调度/业务真相；不共享写入者或混合日志 |
+| 外侧业务/Web/SDK | 外部消费者通过唯一 sdk 包调用；内部 Web 不导入 sdk，而通过两类受控 L3 接口映射操作；已有受控工具组合、连接授权、HTTP/SSE/A2UI | 直接操作管理器/Store，SDK 专用跨 Agent 框架、隐式授权或整树恢复 |
 
-Eino `MessageStream` 有独占消费约束。建议由 Agent 统一消费并报告通用输出，AgentSession 聚合产品消息快照并分发事件；持久事实仍须先经 SessionManager 提交，再发送给客户端和观测器。不能让多个 SSE 连接竞争读取同一个框架流。多个观察者收到同一份不可变内容视图。
+Eino `MessageStream` 有独占消费约束。建议 Code Agent 由 Agent 统一消费并报告通用输出，AgentSession 聚合自身产品消息快照并分发事件；Workflow 由自身协调者消费节点流并提交自身快照/事件。各自持久事实仍须先经所属提交者保存，再发送给客户端和观测器。不能让多个 SSE 连接竞争读取同一个框架流。多个观察者收到同一份不可变内容视图。
 
 ### 4.2 观察订阅、控制钩子与提交
 
@@ -119,7 +123,7 @@ Eino `MessageStream` 有独占消费约束。建议由 Agent 统一消费并报�
 | --- | --- | --- |
 | 观察订阅 | 接收已经发生的事实；返回值不参与下一步决策 | 隔离该订阅的错误，记录诊断；慢订阅超出有界缓存后断开并要求重同步；不拖住工具和模型 |
 | 控制钩子 | 在输入处理、上下文准备、工具执行前等明确位置等待结果 | 需要返回决定；权限检查异常或超时不能放行；上下文变换失败不能静默继续；具体行为按对应章节定义 |
-| 会话内部提交 | AgentSession 协调，SessionManager 经 SessionStore 保存输入、消息、任务状态及其持久事件 | AgentSession 必须取得提交成功结果再确认受理/发布事实；不能放入可丢失的普通异步观察订阅 |
+| 会话/运行内部提交 | Code AgentSession 协调，SessionManager 经 SessionStore 保存 Code 输入、消息、任务状态及持久事件；Workflow 由自身协调者经中立 storage 提交运行/节点状态及事件 | 所属提交者必须取得保存成功结果再确认受理/发布事实；不能放入可丢失的普通异步观察订阅 |
 
 执行内控制钩子按 Trace generation 中确定的顺序运行；空闲会话维护在操作受理时固定 active generation 及处理器顺序，单次操作不混入 reload 的候选。观察者不能修改共享事件对象、悄悄写会话历史或通过返回值授权工具；需要操作时显式调用 AgentSession 的操作入口。扩展日志可异步，产品历史提交不可依赖日志是否送达。
 
@@ -189,12 +193,12 @@ Eino `MessageStream` 有独占消费约束。建议由 Agent 统一消费并报�
 | 字段 | 约束 |
 | --- | --- |
 | `schemaVersion / type` | 版本化产品事件；扩展类型使用命名空间 |
-| `sessionId / traceId / turnId` | 会话、完整运行与模型/工具轮次；Agent 执行相关事件必须关联 traceId，排队阶段无 turnId，无模型工作流节点以 invocation/nodeExecutionId/toolCallId 关联而不伪造 Turn；会话维护或独立 direct 操作以 operationId 关联，可无 traceId |
+| `sessionId / traceId / turnId` | Code Agent 会话/完整运行/模型轮次；排队无 turnId。Workflow 按自身运行/节点/nodeExecutionId/toolCallId 关联，不冒用 Code Agent Session 或父 Turn；维护/direct 用自身 operationId，可无 traceId。外层先区分产品类型及自身身份，不冻结新 DTO |
 | 诊断关联（可选） | 观测系统的 span 或供应商请求 ID 使用单独字段，不冒用产品 traceId；日志导出不决定 Trace 状态 |
 | `executionId` | 执行诊断和恢复记录按需提供，标识一次执行尝试；普通消息事件不强制重复携带 |
 | `messageId / toolCallId / inputId` | 按事件种类提供，不能把供应商 call ID 直接当作全局产品身份 |
 | `invocationId / parentToolCallId` | 区分顶层与子执行；父子关联由运行时装配建立，不能假定 Eino RunPath 就是完整业务调用树 |
-| `eventId / durableSeq` | 持久事件使用；同 Session 单调递增，重放保持原值；具体编码对客户端不透明 |
+| `eventId / durableSeq` | 持久事件使用；在各自所属日志内单调递增，重放保持原值。Code 以自身 Session 日志、Workflow 以自身运行日志限定作用域，不共用游标；具体编码对客户端不透明 |
 | `streamId / chunkSeq` | 临时消息流使用；在该流内递增，重同步后可创建新 streamId；不是可永久恢复的历史游标 |
 | `attempt / blockIndex` | 模型更新按适用事件携带尝试与块身份；delta 与 snapshot 由事件类型区分，不跨尝试拼接，不将重连流身份当作新的模型调用 |
 | `occurredAt / payload` | 时间与版本化事件内容；时间不用于排序；凭据、未授权文件内容不进入普通事件 |
@@ -217,8 +221,9 @@ Eino `MessageStream` 有独占消费约束。建议由 Agent 统一消费并报�
 | `tool.requested / tool.started / tool.finished` | 完整调用被接受、实际执行开始、本次执行观察结束 | 持久关键事实；许可占用不等于 started，缺少 started 不证明未执行；finished 可带 outcome_unknown；拒绝可直接由 requested 到 finished(denied) |
 | `tool.state_changed` | 执行未知、停止待确认或核对结果已提交 | 持久；核对记录关联原调用，不代表再次执行或第二条工具结果消息 |
 | `tool.progress` | 命令实际输出/可选更新；本次 P2 不要求动态百分比或阶段进度 | 临时；保留已有 SDK 实际输出回调，最终结果摘要或附件引用进入消息；不代表原生 Streamable 验收 |
-| `interaction.requested / interaction.resolved` | 可回答的澄清、确认或审批请求 | 持久；关联 interactionId、traceId、工具调用/作用域及有效期 |
-| `approval.asked / approval.decided / security.review_decided` | DSH 式一次审批及启用后的自动审核决定；后者为本产品最小审计增强 | 关联冻结执行描述；决定先提交，再按 M12 占用许可和启动；占用/核对属于原调用记录，不强制新增公共事件族 |
+| `interaction.requested / interaction.resolved` | 可回答的澄清、确认或审批请求 | 普通交互按原契约持久；审批只持久保存原冻结调用和等待/恢复定位，不保存决定、应答者或内存消费状态，也不经 resolved 或操作回执间接恢复批准；本实例问答关联 interactionId、traceId、工具调用/作用域及有效期 |
+| `approval.asked / approval.decided` | 当前运行实例内的一次审批通知，关联原冻结调用；参考 DSH 词汇而不采用其持久决定 | 只作本实例内存问答通知及响应去重，不作为 durable 事件、checkpoint 内容或跨重开许可；内存批准串行校验/消费后，原调用执行意图/占用及预算须提交成功才启动 |
+| `security.review_decided` | 启用后的自动审核最小决定元数据，与人工审批分开 | 仍按 M12 保存调用引用、规则/模型版本及最小决定类别，不保存 reviewer 推理，也不能代替人工审批或成为跨重开的一次许可 |
 | `security.policy_changed` | 已提交的常驻安全模式/策略变更 | 持久；模型状态快照按 M08 追加；不能暗自扩大旧批准 |
 | `context.compacted / session.branch_changed / extension.generation_changed` | 上下文、历史分支或能力版本的已提交变化 | 持久，详情引用对应记录；generation 变化不改正在执行的 Trace |
 | `diagnostic` | 重试、订阅故障等诊断 | 按诊断保留策略；不能代替终态事实 |
@@ -237,7 +242,7 @@ Agentic 事件使用 `TypedAgentEvent[*schema.AgenticMessage]`，从 `AgenticRol
 
 中间文本与工具进度可以合并或丢弃后重同步；任务状态、交互请求和终态消息不能当作可丢弃的 token 增量。持久事件保留窗口与会话历史保留不是同一概念：即使游标过期，仍可查询尚在保留期内的会话历史和当前状态。
 
-一次审批的内部审计与客户端 interaction 通过同一 approvalId/interactionId 映射，不成为两次独立提问。审批者身份由受信接入确定，客户端回传决定和对应引用，不回传可替换原操作的“新参数”；状态、有效期及冻结描述不匹配时拒绝。sandbox mode、enforcement、设施失败/拒绝分类放入原工具的执行详情与结果。Auto 拒绝的必要理由可给客户端，但 reviewer 推理不进入普通 SSE；完整规则见[安全补充篇](12-security-sandbox.md)。
+一次审批的本实例内存问答与客户端 interaction 通过同一 approvalId/interactionId 映射，不成为两次独立提问。审批者身份由受信接入确定，只参与本实例问答校验，不持久保存；客户端回传决定和对应引用，不回传可替换原操作的“新参数”，状态、有效期或冻结描述不匹配时拒绝。checkpoint 和等待记录只定位原调用，关闭/重开不恢复旧决定，响应去重也不跨实例。sandbox mode、enforcement、设施失败/拒绝分类放入原工具的执行详情与结果。Auto 最小决定元数据独立保留；拒绝的必要理由可给客户端，但 reviewer 推理不进入普通 SSE，完整规则见[安全补充篇](12-security-sandbox.md)。
 
 ### 4.5 顺序与提交边界
 
@@ -253,24 +258,26 @@ Agentic 事件使用 `TypedAgentEvent[*schema.AgenticMessage]`，从 `AgenticRol
 
 ### 4.6 HTTP 操作语义
 
-路径为可评审建议，具体错误码与 DTO 命名尚未冻结。创建入口通过 CreateAgentSession 组装对象；当前会话的操作、查询与订阅统一通过 AgentSession，历史与分支处理由其委托 SessionManager。网络层不另实现一套会话调度或直接写存储。
+Code Agent 路由域为 `/v1/sessions`；Workflow 定义与运行分别使用 `/v1/workflows`、`/v1/workflow-runs`，三类资源路由及独立视图已接线，有对应默认测试。下表保留完整产品接入语义，当前 mounted 子路径、HTTP 白名单 DTO、typed cursor 和精确 SDK 签名以开发方案 06/10/13 为准，最终认证见验证记录。CreateAgentSession/OpenAgentSession 取得 AgentSession，其委托 SessionManager 处理历史；Workflow 由自身创建/打开目标及运行/节点能力处理。内部 Web 通过受控 L3 接口映射操作，不导入 sdk、不直接操作管理器/Store；外部消费者只导入 `github.com/ww1489/seasprak/sdk`。不新增专用跨 Agent DTO，也不把 Workflow 当成 Code Agent targetAgent。
 
 | 建议入口 | 语义 |
 | --- | --- |
 | `POST /v1/sessions`、`GET /v1/sessions/{sid}` | 创建时必须提供并验证工作区/执行环境；返回默认已装配能力及状态，不泄露模型凭据 |
-| `POST /v1/sessions/{sid}/inputs` | 按 M03 区分 chat、prompt、steering、follow-up。新 chat/prompt 可选择 Agent，缺省为主 Agent；定向输入必须指定原 Trace，省略 Agent 时继承、显式错配拒绝，不创建新任务。返回 inputId、实际类别、绑定目标/版本和持久 traceId。改选另一 Agent 的新请求不能隐式变成旧 Trace 的 follow-up |
+| `POST /v1/sessions/{sid}/inputs` | Code Agent 按 M03 区分 chat/prompt/steering/follow-up；其目标仅为自身已装配执行目标，Workflow 不在 targetAgent 清单。定向输入绑定原 Trace，省略继承、错配拒绝；新 Code Agent 目标请求不误投 follow-up。返回 inputId、类别、目标/版本和 traceId；业务选择 Workflow 时调用其独立入口，不进入此路由 |
 | `GET /v1/sessions/{sid}/traces/{traceId}` | 查询完整 Trace、当前 Turn、待答交互、未消费输入和公开结果；内部执行尝试仅作必要详情 |
 | `POST /v1/sessions/{sid}/traces/{traceId}/cancel` | 取消指定 Trace；未启动时直接 cancelled，已启动按 M03 等待执行停止后收尾；重复操作返回现状 |
-| `POST /v1/sessions/{sid}/traces/{traceId}/resume` | 恢复符合条件的原 Trace；保留 traceId、targetAgent、未完成 turnId 和 generation，采用 checkpoint 当时有效的模型/上下文版本；新执行段可发内部边界事件，不创建新 Trace 或提前发布 trace.settled |
+| `POST /v1/sessions/{sid}/traces/{traceId}/resume` | 恢复符合条件的原 Trace；保留 traceId、targetAgent、未完成 turnId 和 generation，采用 checkpoint 当时有效的模型/上下文版本及原冻结调用定位，不恢复审批决定。重新复核当前策略，重开后未占用且仍需审批时重新问，已占用未知先核对，已有结果直接复用；新执行段可发内部边界事件，不创建新 Trace 或提前发布 trace.settled |
 | `POST /v1/sessions/{sid}/queue/continue` | 显式恢复所选 queued 项的自动调度；返回恢复范围和顺序，不抢占活动 Trace，不带入已终态 Trace 的旧 follow-up |
 | `POST /v1/sessions/{sid}/traces/{traceId}/reconcile` | 对已有 invocation/toolCall 发起受控查询或提交核对材料；返回 operationId 和受理结果，不代表效果已确认或 Trace 已恢复 |
 | `GET /v1/sessions/{sid}/operations/{operationId}` | 查询维护/核对操作的状态、可公开证据引用、结论及恢复资格；按会话权限过滤 |
 | `GET /v1/sessions/{sid}/messages`、分支查询/操作入口 | 查询分页历史和目标分支；分支变更须满足第 10 章的空闲与冲突要求 |
 | `GET /v1/sessions/{sid}/snapshot` | 返回一致的公开快照、持久游标和当前消息/工具状态，供首次连接及重同步 |
 | `GET /v1/sessions/{sid}/events` | SSE；接受服务端声明支持的游标与过滤方式 |
-| 能力查询与可选 Agent 清单 | 列出已装配能力、可独立选择的 Agent 及输入 schema；选择后的执行仍进入 AgentSession 任务调度与权限检查，不能旁路并发写同一 Session |
+| 能力查询与类型选择 | 外层分别列出 Code Agent 已装配执行目标与 Workflow 自身定义/输入 schema；选择类型分别路由公开入口。Code Agent 仍单 Session 写入，Workflow 使用自身生命周期，不能经此目标清单加入 AgentSession |
+| Workflow 定义域 `GET /v1/workflows`（已接线） | 白名单清单只公开 name/version/description?/inputSchema，不公开整份图或本地绑定；受信装配由独立 Workflow 校验，完整 DTO 见开发 06/13，不进入 Code 能力目标清单 |
+| Workflow 运行域 `/v1/workflow-runs`（已接线） | POST 提交 workspace/workflow/version/input，返回原受理 snapshot；GET 列表/详情/snapshot/events 只读，显式 POST open `{}` 取得 writer 且零自动 Resume；pause/resume/cancel、实例交互和 operation 查询均归 runId。精确回执/typed cursor 见开发 06/13，另一类票据/checkpoint 不能恢复本运行 |
 
-修改类请求带幂等键，作用域至少含调用者、Session（创建时为调用者作用域）及操作种类，并保存请求内容摘要和受理结果。同键同内容返回原结果；同键异内容为冲突。建议任务相关键至少保留到任务与其恢复窗口结束；服务端声明具体保留边界，超期不得暗示仍有历史去重保证。
+修改类受控命令带幂等键，作用域至少含调用者、Session（创建时为调用者作用域）及操作种类，并保存请求内容摘要和受理结果。同键同内容返回原结果；同键异内容为冲突。建议任务相关键至少保留到任务与其恢复窗口结束；服务端声明具体保留边界，超期不得暗示仍有历史去重保证。审批响应只在当前实例内存去重，不持久保存决定或应答者，也不经通用 operation 回执间接恢复批准；关闭/重开后按 M10/M12 恢复原调用定位并重新复核策略，而不是重放旧回答。
 
 异步操作受理不等于执行成功。请求级取消与任务取消是两个动作：提交请求超时、浏览器页面关闭、SSE 断连不能自动取消已受理任务。Abort 后按 M03 保留旧记录并暂停当时独立队列的自动启动；取消完成且无冲突时，新 prompt 可正常开始。旧队列只有显式继续才恢复，已终态 Trace 的未消费输入重做时需新 inputId/traceId。
 
@@ -296,7 +303,7 @@ Agentic 事件使用 `TypedAgentEvent[*schema.AgenticMessage]`，从 `AgenticRol
 
 游标过期、进程重启丢失临时流或慢连接发生缺口时，明确返回 `resync_required`。客户端获取一致快照和其游标，再订阅该游标之后的事实。快照覆盖之前的局部视图；快照获取和新订阅之间发生的持久事实不能遗漏。此流程是行为契约，不限定使用哪种缓存或数据库。
 
-连接心跳只检测连接存活，不表示任务进展。订阅可按 traceId 过滤，游标仍使用 Session 提交顺序；不能把其他 Trace 的过滤结果误判为缺口。SSE 关闭或框架 reader EOF 不代表 agent_end，更不代表 `trace.settled(completed)`。
+连接心跳只检测连接存活，不表示任务进展。Code 订阅按自身 traceId 过滤，游标仍属于自身 Session 日志；Workflow 按自身运行/节点过滤，游标属于自身日志。外层先校验产品类型和身份，错类游标/审批/恢复票据拒绝，过滤掉其他任务事件不视为缺口。SSE 关闭或 reader EOF 不表示 agent_end 或任何产品运行成功收尾。
 
 ### 4.8 控制钩子与观察订阅验收
 
@@ -316,7 +323,7 @@ Agentic 事件使用 `TypedAgentEvent[*schema.AgenticMessage]`，从 `AgenticRol
 
 本地验证建议默认仅监听回环地址；浏览器跨源访问遵循明确的来源和调用凭据策略，不能默认允许任意网页调用本地命令工具。若开放远程接入，HTTP 操作、快照、附件与 SSE 必须使用一致的调用者/Session 授权。SDK 由嵌入程序建立信任边界，不能自动沿用网络层身份。
 
-最小 Web 页面只验证已公开的输入、事件、查询、取消、恢复及历史能力。它需要能显示真实状态和结构化错误，但不规定控件、框架或布局。A2UI 未启用时这些能力仍然完整；启用后模型生成的 UI 动作只是候选输入，仍由 AgentSession 验证作用域和有效性，并按注入的策略检查权限。协议版本选择列为未决项，不虚构已完成完整兼容实现。
+最小 Web 页面只验证已公开的输入、事件、查询、取消、恢复及历史能力，需要显示真实状态和结构化错误，不规定控件/框架。A2UI 未启用时能力仍完整；启用后的 UI 动作只是候选输入，由外层按产品类型与自身身份路由，再由 Code AgentSession 或 Workflow 自身入口校验作用域、有效性及独立权限，错类型/错票据拒绝。P3 已批准采用 Eino 官方示例的 A2UI v0.8 子集，固定来源与具体呈现契约见 [开发方案第 13 章](../pi-eino-dev-plan/13-p3-web-contract.md#7-固定-a2ui-来源和安全改造)。独立 Workflow DTO 视图已接线并有对应默认测试，实际浏览器未认证；选定 A2UI 子集不等于完整协议兼容或 P3 通过。
 
 ### 4.10 已核实的证据与教程差异
 
@@ -338,11 +345,11 @@ Agentic 事件使用 `TypedAgentEvent[*schema.AgenticMessage]`，从 `AgenticRol
 
 | 编号 | 选择/风险 | 建议默认值与影响 |
 | --- | --- | --- |
-| EVT-D1 | HTTP/SSE 与其他传输的首个实现 | 建议 HTTP + SSE；保持 SDK 契约可用，A2UI 为外层可选映射，用户尚未确认具体协议版本 |
+| EVT-D1 | HTTP/SSE 与其他传输的首个实现 | HTTP + SSE 与 SDK 契约保持可用；P3 已批准 Eino 官方示例的 A2UI v0.8 外层子集，固定来源见开发方案 13 §7；完整协议兼容与具体产品路径仍须验收 |
 | EVT-D2 | 持久事件保留窗口与订阅缓存大小 | 必须有限且可查询；具体数值待运行环境确定，过期通过快照恢复，不承诺无限 token 回放 |
 | EVT-D3 | 控制钩子超时与可取消性 | 权限超时不放行；上下文失败不继续；具体超时数值与工具策略统一确认 |
 | EVT-D4 | 本地测试服务是否需要远程开放 | 建议先只开放回环地址；远程身份和多用户隔离需求需另行确认，不能由增加一个 HTTP 入口推导出来 |
 | EVT-D5 | 发布事件与历史提交的一致性 | 必须满足 EVT-02/07；实现方案需验证崩溃窗口，不用“事件驱动”四字代替可靠提交设计 |
-| EVT-D6 | A2UI 适配范围 | 当前只承诺适配位置和动作校验边界；选定版本与具体交互场景后再确定兼容验收，不影响基础 Web 验证 |
+| EVT-D6 | A2UI 适配范围 | P3 仅采用已批准的 Eino A2UI v0.8 子集，适配位置、动作校验及具体交互契约见开发方案 13；两类资源的 surface 与审批分别归属。独立 Workflow 的 DTO 视图已接线且有对应默认测试，最终认证见验证记录；不据子集选定推导完整协议兼容或 P3 通过 |
 
 章节评审通过条件：每个公开操作能对应 Trace 状态与执行尝试规则，每种事件有持久性与错误语义，断连、重复请求、等待输入和取消都能通过公开接口完整解释；L1/L2 不出现网络或页面依赖。

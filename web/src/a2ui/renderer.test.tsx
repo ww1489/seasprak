@@ -46,22 +46,35 @@ describe("Surface renderer", () => {
     expect(container.textContent).not.toContain("onerror");
   });
 
-  it("renders Invocation and WorkflowNode progress as text rows", () => {
+  it("keeps Code invocation progress and rejects legacy session workflow nodes", () => {
     const store = build([
       { id: "inv:i1", component: { Invocation: { invocationId: "i1", parentCallId: "c1", agent: XSS, state: "running" } } },
       { id: "node:n1", component: { WorkflowNode: { nodeExecutionId: "n1", traceId: "t1", nodeId: "fetch", kind: "tool", state: "waiting" } } },
-      { id: "node:bad", component: { WorkflowNode: { nodeExecutionId: "n2", traceId: "t1", nodeId: "x", kind: "html", state: "accepted" } } },
-      { id: "root", component: { Column: { children: ["inv:i1", "node:n1", "node:bad"] } } },
+      { id: "root", component: { Column: { children: ["inv:i1", "node:n1"] } } },
     ]);
     const { container, getByRole } = render(<Surface state={store.snapshot} />);
     expect(container.textContent).toContain("子 Agent 调用");
     expect(container.textContent).toContain(XSS);
     expect(container.textContent).toContain("运行中");
-    expect(container.textContent).toContain("工作流工具节点");
-    expect(container.textContent).toContain("等待审批");
+    expect(container.textContent).not.toContain("工作流工具节点");
+    expect(container.textContent).not.toContain("fetch");
     expect(container.querySelector("img")).toBeNull();
-    // An unknown node kind is rejected by the whitelist parser.
     expect(getByRole("alert").textContent).toBe("无法显示的组件");
+  });
+
+  it("exposes each message identity and projected role independently of shared content", () => {
+    const roles = ["user", "assistant", "tool", "summary"];
+    const store = build([
+      ...roles.map((role) => ({ id: "msg:" + role, component: { ChatMessage: { messageId: "message-" + role, role, status: "final", dataKey: "text:" + role } } })),
+      { id: "root", component: { Column: { children: roles.map((role) => "msg:" + role) } } },
+    ], Object.fromEntries(roles.map((role) => ["text:" + role, "same visible content"])));
+    const { getByRole, getAllByRole } = render(<Surface state={store.snapshot} />);
+    expect(getAllByRole("article")).toHaveLength(4);
+    for (const [role, label] of [["user", "用户"], ["assistant", "助手"], ["tool", "工具结果"], ["summary", "摘要"]]) {
+      const message = getByRole("article", { name: label + "消息" });
+      expect(message.getAttribute("data-message-id")).toBe("message-" + role);
+      expect(message.textContent).toContain("same visible content");
+    }
   });
 
   it("survives cycles in the component graph", () => {

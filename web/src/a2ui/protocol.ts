@@ -21,7 +21,6 @@ export type ApprovalComp = {
 };
 
 export type InvocationComp = { invocationId: string; parentCallId: string; agent: string; state: string };
-export type WorkflowNodeComp = { nodeExecutionId: string; traceId: string; nodeId: string; kind: "model" | "tool"; state: string };
 
 export type ComponentValue =
   | { Text: TextComp }
@@ -33,7 +32,6 @@ export type ComponentValue =
   | { Task: TaskComp }
   | { Approval: ApprovalComp }
   | { Invocation: InvocationComp }
-  | { WorkflowNode: WorkflowNodeComp }
   | { Unknown: string };
 
 export type Component = { id: string; component: ComponentValue };
@@ -44,7 +42,7 @@ export type A2UIMessage =
   | { dataModelUpdate: { surfaceId: string; contents: { key: string; valueString: string }[] } }
   | { deleteSurface: { surfaceId: string } };
 
-const KNOWN = new Set(["Text", "Column", "Card", "Row", "ChatMessage", "ToolCall", "Task", "Approval", "Invocation", "WorkflowNode"]);
+const KNOWN = new Set(["Text", "Column", "Card", "Row", "ChatMessage", "ToolCall", "Task", "Approval", "Invocation"]);
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
@@ -91,14 +89,6 @@ function parseComponent(raw: unknown): Component | null {
         id: raw.id,
         component: { Invocation: { invocationId: str(v.invocationId), parentCallId: str(v.parentCallId), agent: str(v.agent), state: str(v.state) } },
       };
-    case "WorkflowNode": {
-      const k = str(v.kind);
-      if (k !== "model" && k !== "tool") return { id: raw.id, component: { Unknown: kind } };
-      return {
-        id: raw.id,
-        component: { WorkflowNode: { nodeExecutionId: str(v.nodeExecutionId), traceId: str(v.traceId), nodeId: str(v.nodeId), kind: k, state: str(v.state) } },
-      };
-    }
     default:
       return {
         id: raw.id,

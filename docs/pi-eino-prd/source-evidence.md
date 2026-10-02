@@ -1,10 +1,10 @@
 # 源码证据与原方案差异
 
-本文件记录已核实的事实及其对 PRD 的影响。**源码事实、产品决策、设计建议是三类不同信息**；本轮只做文档与静态核查，没有实现 Agent，也没有运行上游测试或真实模型评测。
+本文件保留前序源码核查的事实、版本和引用，并修订其对现行 PRD 的产品推导。**源码事实、产品决策、设计建议是三类不同信息**；2026-10-01 分层迁移前的文档修订仅重读和检索文档，当时没有重新核查源码、实现 Agent 或运行测试/真实模型评测，新目录及 Workflow 入口尚未交付。2026-10-02 已依据本项目当前源码同步产品推导：同级 Code/Workflow 与中立 storage、两类公开工厂、单份定义/编译/图、Web 三类资源路由及独立视图已接线，旧 Code 内置工作流已退出，有对应默认测试与消费者；最终认证见 [P3 验证记录](../p3-verification.md)。本文件中的上游版本、路径与原始引用保持历史口径，不以历史上游证据认证当前 P3 或本项目测试。
 
 ## 版本与资料基线
 
-| 来源 | 本轮使用版本/位置 | 说明 |
+| 来源 | 前序核查使用版本/位置 | 说明 |
 | --- | --- | --- |
 | pi | `5cd93f688aaab89dbb6dfa4aca535f21796ae185`；包版本 0.84.2 | 本地参考源码；核查时工作区干净 |
 | Eino | `ebd616c8291e957684ea6ca99dd54225d04e0438` | 本地执行框架源码；存在既有未跟踪 `docs/`，未改动 |
@@ -18,7 +18,7 @@
 
 教程网页可访问；网页检索无法读取的内容通过其公开[源码仓库](https://github.com/buchidonggua/dg-ai-notes/tree/main/pi-agent/web/src/content/modules)补读 MDX 原文。本 PRD 不采纳教程的热度、性能或市场比较数字。以下保留前两章建立的基础证据，M03～M10 与补充篇各有本章新增证据表；不把全部引用重复复制到本文件。
 
-下文源码链接指向本地 checkout；`[VERIFY: ...]` 中的路径相对 `D:/Code/owner_agents`。行号以本轮工作树为准，升级后须重新核查。
+下文源码链接指向前序核查的本地 checkout；`[VERIFY: ...]` 中的路径相对 `D:/Code/owner_agents`。行号按记录时工作树保留，升级后须重新核查；2026-10-01 文档修订没有验证其最新源码位置。
 
 ## pi 证据
 
@@ -72,7 +72,7 @@ PRD 推导：Go 的 role/codec registry 是本产品设计，不是对 pi 原生
 - [工具注册](../../pi/packages/coding-agent/src/core/extensions/loader.ts#L267) `[VERIFY: pi/packages/coding-agent/src/core/extensions/loader.ts:267]`
 - [命令注册](../../pi/packages/coding-agent/src/core/extensions/loader.ts#L276) `[VERIFY: pi/packages/coding-agent/src/core/extensions/loader.ts:276]`
 
-PRD 推导：ExtensionRegistry 负责声明与版本，AgentSession 负责会话内的执行协调，Agent 实际执行；不能声称 pi 自带本方案的 Workflow Registry。
+PRD 推导：Code Agent 的 ExtensionRegistry 负责其扩展声明与版本，AgentSession 负责其会话内执行协调，Agent 实际执行；独立 Workflow Agent 自己拥有定义、编译与节点生命周期，不纳入 Code Registry，也不能声称 pi 自带本方案的 Workflow Registry。
 
 ### P-06：steering / follow-up 的真实消费边界
 
@@ -108,7 +108,7 @@ pi 的 `AgentSessionRuntime` 持有当前 AgentSession 和 cwd 相关服务，�
 - [AgentSessionRuntime](../../pi/packages/coding-agent/src/core/agent-session-runtime.ts#L74) `[VERIFY: pi/packages/coding-agent/src/core/agent-session-runtime.ts:74]`
 - [切换会话](../../pi/packages/coding-agent/src/core/agent-session-runtime.ts#L196) `[VERIFY: pi/packages/coding-agent/src/core/agent-session-runtime.ts:196]`
 
-本产品采用上述核心名称与职责语义，`CreateAgentSession` 是 Go 风格的创建入口名称。Agent 内部仍使用 Eino；ExtensionRegistry、AddSubAgent、SessionStore 及更强的提交/事件保证均是产品新增或适配契约，不伪称 pi 已有同名实现。统一术语见[第 2 章](02-architecture-boundaries.md#23-与-pi-对齐的对象名称与职责)。
+本产品的 Code Agent 保留上述核心名称与职责语义及 `CreateAgentSession`/`OpenAgentSession`；`Agent` 不改名、内部仍使用 Eino。ExtensionRegistry、AddSubAgent、SessionStore 及更强提交/事件保证均是产品新增或适配契约，不伪称 pi 已有同名实现。`WorkflowAgent` / `WorkflowOptions` / `CreateWorkflowAgent` / `OpenWorkflowAgent` 是当前已接线的独立公开能力，同级 `internal/codeagent` / `internal/workflowagent` 与中立 `internal/storage` 已在源码分离；Code 旧内置工作流已退出。两类只共用存储契约/后端，不共用日志写入者、历史、审批、恢复、generation 或隐式预算；唯一公开 import 为 `github.com/ww1489/seasprak/sdk`，生产入口仅 `sdk/sdk.go`。统一术语见[第 2 章](02-architecture-boundaries.md#23-与-pi-对齐的对象名称与职责)。
 
 ### P-09：Trace、轮后顺序与完整收尾
 
@@ -183,7 +183,7 @@ general-purpose 子 Agent 构造时接收主 Agent 的工具、middleware 和 ha
 - [默认子 Agent 配置](../../eino/adk/prebuilt/deep/task_tool.go#L85) `[VERIFY: eino/adk/prebuilt/deep/task_tool.go:85]`
 - [AgentTool 包装](../../eino/adk/prebuilt/deep/task_tool.go#L114) `[VERIFY: eino/adk/prebuilt/deep/task_tool.go:114]`
 
-推导出的产品要求：有状态的 steering、历史写入或权限 handler 需要区分主/子执行作用域；共享 handler 对象不应等于共享主任务输入队列。此项是基于继承关系识别的适配风险，不是已复现的产品缺陷。
+推导出的产品要求：普通 Code 子 Agent 的有状态 steering、历史写入和权限 handler 需区分主/子执行作用域；共享 handler 对象不应等于共享主任务输入队列，普通委派仍受父 Trace 权限/预算/generation/取消约束。上游可包装工作流是源码事实；本产品 Workflow 是同级独立产品，不内置于 Code 的 task/AddSubAgent，业务互调用已有受控工具接口另行组合，授权不转移。此项是基于继承关系识别的适配风险，不是已复现的产品缺陷。
 
 ### E-03：输入规划、准备实例和恢复
 
@@ -248,7 +248,7 @@ Workflow 基于依赖和字段映射，不支持循环，Compile 返回 Runnable
 - [ResumableAgent](../../eino/adk/interface.go#L481) `[VERIFY: eino/adk/interface.go:481]`
 - [AgentTool 恢复路径](../../eino/adk/agent_tool.go#L198) `[VERIFY: eino/adk/agent_tool.go:198]`
 
-PRD 推导：一期以声明式定义运行时编译为 Eino 图，再适配为 `WorkflowAgent`；工具名、schema、业务错误、事件和权限仍由产品定义。仅实现 Run 不能据此承诺 HITL 恢复。Eino 可工具封装是源码事实，产品使用方式只保留主 Agent 委派和对话框选择独立 Agent。
+PRD 推导：同级 Workflow Agent 独立拥有定义、编译、Eino Graph、节点状态与生命周期；WorkflowAgent 及其公开创建/打开契约已接入本项目源码，有对应默认测试及消费者，最终认证见验证记录。业务可直接调用，或用已有受控工具接口组合 Code↔Workflow；取消旧 workflow-as-tool 禁令，但不内置为 Code 子 Agent、不通过 AgentSession/targetAgent，也不引入 SDK 专用跨 Agent 框架、共享总额或整树恢复。被调方独立校验、授权、冻结参数、管理票据/预算/版本/恢复。静态子流程、条件/并行汇合、已有节点级暂停审批/显式恢复保留；仅实现 Run 不能据此承诺 HITL 或任意崩溃恢复。Coze 导入、动态定义/加载、热重载、业务补参仍在原未来阶段，本轮不启动 P4/P5。
 
 - [Coze 执行入口](../../coze-studio/backend/domain/workflow/service/executable_impl.go#L79) `[VERIFY: coze-studio/backend/domain/workflow/service/executable_impl.go:79]`
 - [Canvas 转换](../../coze-studio/backend/domain/workflow/internal/canvas/adaptor/to_schema.go#L66) `[VERIFY: coze-studio/backend/domain/workflow/internal/canvas/adaptor/to_schema.go:66]`
@@ -262,7 +262,7 @@ Coze 的转换先调用 PruneIsolatedNodes（to_schema.go:73），该函数会�
 - [内容块合并](../../eino/schema/agentic_message.go#L901) `[VERIFY: eino/schema/agentic_message.go:901]` 按 StreamingMeta.Index 聚合；不能把原始块都当新文本，也不能将已聚合快照再次追加为 delta。
 - agenticclaude 的[完整 usage](../../eino-ext/components/model/agenticclaude/convertor.go#L1317) `[VERIFY: eino-ext/components/model/agenticclaude/convertor.go:1317]` 与[流式 usage](../../eino-ext/components/model/agenticclaude/convertor.go#L1285) `[VERIFY: eino-ext/components/model/agenticclaude/convertor.go:1285]` 合并了未缓存/缓存读/缓存写输入，只单列缓存读。当前转换没有单独保留 cacheWrite，旧 claude 的 Message getter 不是本路径的读取 API。
 
-M04 要求在丢失前补采集写入明细，或明确标记未知；不得仅通过 PromptTokens - CachedTokens 推断未缓存输入。这里是源码静态事实和后续验收要求，尚未执行适配测试。
+M04 要求在丢失前补采集写入明细，或明确标记未知；不得仅通过 PromptTokens - CachedTokens 推断未缓存输入。这里保留 E-08 版本基线的静态事实与当时待验证结论；后续 2026-09-25 升级及定向测试的既有记录见 M04，不以旧事实覆盖升级结果，也不将其视为本次测试或本项目完整认证。
 
 ### E-09：动态工具已有框架入口，产品仍需约束选择与恢复
 
@@ -277,7 +277,7 @@ M04 要求在丢失前补采集写入明细，或明确标记未知；不得仅�
 | 已核对事实 | 本产品需要补足的规则 |
 | --- | --- |
 | pi [prepareToolCall](../../pi/packages/agent/src/agent-loop.ts#L600) `[VERIFY: pi/packages/agent/src/agent-loop.ts:600]` 在规范化/校验后调用 beforeToolCall；[ToolCallEventResult](../../pi/packages/coding-agent/src/core/extensions/types.ts#L1087) `[VERIFY: pi/packages/coding-agent/src/core/extensions/types.ts:1087]` 允许原地修改 input | 参数转换集中在准备阶段，所有转换后最终校验并冻结；授权 hook 只读，强制安全策略不因普通 allow 被跳过 |
-| DSH [approval.request](../../deepseek-harness/packages/interaction/user-approval/src/index.ts#L208) `[VERIFY: deepseek-harness/packages/interaction/user-approval/src/index.ts:208]` 在返回决定前记录 asked/decided；[escalation](../../deepseek-harness/packages/sandbox/sandbox/src/escalation.ts#L153) `[VERIFY: deepseek-harness/packages/sandbox/sandbox/src/escalation.ts:153]` 将允许的 mode 返回给该调用 | 产品另行保存许可占用、执行意图与启动/结果事实，跨 checkpoint 恢复不重复使用；这些不是 DSH Promise 自动提供的保证 |
+| DSH [approval.request](../../deepseek-harness/packages/interaction/user-approval/src/index.ts#L208) `[VERIFY: deepseek-harness/packages/interaction/user-approval/src/index.ts:208]` 在返回决定前记录 asked/decided；[escalation](../../deepseek-harness/packages/sandbox/sandbox/src/escalation.ts#L153) `[VERIFY: deepseek-harness/packages/sandbox/sandbox/src/escalation.ts:153]` 将允许的 mode 返回给该调用 | 产品不采用 DSH 的持久决定：审批问答、去重、有效期与消费仅在当前实例内存，重开不复活批准；持久记录仅保留冻结调用、执行意图/占用、预算、真实启动/结果和恢复定位，checkpoint 不携带决定；Auto 最小决策元数据独立保留。这些不是 DSH Promise 自动提供的保证 |
 | DSH [bwrap / Landlock profile](../../deepseek-harness/packages/sandbox/sandbox-local/src/profiles.ts#L16) `[VERIFY: deepseek-harness/packages/sandbox/sandbox-local/src/profiles.ts:16]` 分别使用私有 /tmp 与宿主 /tmp；[writableRoots](../../deepseek-harness/packages/sandbox/sandbox/src/roots.ts#L43) `[VERIFY: deepseek-harness/packages/sandbox/sandbox/src/roots.ts:43]` 包含平台临时目录 | 产品明确会话产物根、后端私有临时区和真实路径映射；运行数据写保护与跨 Session 临时范围须按本产品要求调整并验证 |
 | DSH [文件写检查](../../deepseek-harness/packages/fs/fs-sandbox/src/index.ts#L122) `[VERIFY: deepseek-harness/packages/fs/fs-sandbox/src/index.ts:122]` 在执行时重新解析目标并检查可写根 | 采用同一真实目标执行，增加可信运行数据布局检查；不将路径检查说成任意 Go 代码隔离或 TOCTOU 已完全消除 |
 | DSH Auto [来源识别](../../deepseek-harness/packages/experimental/auto-review/src/index.ts#L175) `[VERIFY: deepseek-harness/packages/experimental/auto-review/src/index.ts:175]` 使用接入来源与直接父会话身份；[分类](../../deepseek-harness/packages/experimental/auto-review/src/index.ts#L222) `[VERIFY: deepseek-harness/packages/experimental/auto-review/src/index.ts:222]` 区分指令与事实 | 以产品 SDK/HTTP 受信身份、不可变原始受理输入和委派记录映射；派生 user 文本、导入 source 字段、摘要不能授予许可 |
@@ -296,11 +296,11 @@ M12 是上述安全语义的唯一规格，M05/M06/M07/M10 分别落实执行、
 | 仅延迟 deep.New 即可冻结旧能力 | skill 调用时可能读取新内容；E-06 | 任务绑定能力及内容版本 |
 | 所有 PrepareAgent 都可以热换 | 恢复也经过同一入口；E-03 | 恢复原任务必须验证原扩展版本/拓扑 |
 | steering 只在工具结果后消费 | pi 的消费边界更广；P-06 | M03 讨论初次进入、无工具终答附近和子 Agent 作用域 |
-| `/workflow` 可独立 Invoke 并先 ensureAgentFresh | 可能绕过唯一换版本入口和同 Session 串行约束 | 旧 `/workflow` 退出当前产品入口；独立执行经 SubmitInput 指定目标 Agent，仍由 AgentSession 串行协调 |
-| 同进程插件可加载/卸载 | 不等于 Go 动态源码加载 | 一期明确为已编译注册项启停和资源重载 |
+| `/workflow` 可独立 Invoke 并先 ensureAgentFresh | 可能绕过唯一换版本入口和同 Session 串行约束 | 原入口不是现行契约；Workflow 通过自身批准目标 CreateWorkflowAgent/OpenWorkflowAgent 受理/运行，自己冻结/授权/恢复，不经 SubmitInput/AgentSession/targetAgent；业务可直接调用或用已有受控工具组合 |
+| 同进程插件可加载/卸载 | 不等于 Go 动态源码加载 | 已编译 Go 能力静态装配保留；运行时启停/资源重载仍属原未来阶段，本次不启动 P4/P5，不作为已交付能力 |
 | 原方案以 CLI/REPL 为主要入口 | 用户明确只定义前端接入能力，先用 Web 页面测试 | 提供公开操作和事件接口；页面仅用于验证，CLI 非首期必交付项 |
-| 包列表未明确依赖方向，加载器示例直接调用旧 Host | 用户要求参考 pi 分层，下层不依赖上层 | ResourceLoader 读取候选、ExtensionRegistry 登记、AgentSession 协调激活，职责及依赖明确 |
-| 旧 Host/AgentHost 混合组装、控制、存储和注册 | 用户要求与 pi 名称及职责对齐；P-02、P-08 | 拆为 CreateAgentSession、AgentSession、Agent、SessionManager、ResourceLoader，新增注册契约单独标注 |
+| 包列表未明确依赖方向，加载器示例直接调用旧 Host | 用户要求参考 pi 分层，下层不依赖上层 | Code 的 ResourceLoader 读取候选、ExtensionRegistry 登记、AgentSession 协调激活；同级 Workflow 自己管理定义/编译/生命周期，两类只共用中立 storage，不互相 import |
+| 旧 Host/AgentHost 混合组装、控制、存储和注册 | 用户要求与 pi 名称及职责对齐；P-02、P-08 | Code 拆为 CreateAgentSession/OpenAgentSession、AgentSession、Agent、SessionManager、ResourceLoader；Workflow 使用自身独立目标对象/入口，不由 Code 的 Host/Session 统管；新增契约单独标注 |
 
 ## 完整章节新增的关键核查
 
@@ -314,7 +314,7 @@ M12 是上述安全语义的唯一规格，M05/M06/M07/M10 分别落实执行、
 | pi system prompt 有基础替换/追加/资源顺序，skill 按实际加载能力进入索引；分支摘要只取旧路径独有后缀 | [M08 组装与摘要](08-context-engineering.md#43-系统提示词的组装结构) | 复用明确来源及按需加载；不将 Current date、编码人设、固定 2048 token 当通用强制规则 |
 | Eino 默认摘要不自动保留 pi 式近期原始历史 | [M09](09-compaction.md) | 保留区、摘要来源及投影提交单独定义 |
 | Eino checkpoint 不是任意崩溃的最新任务快照 | [M10](10-session-persistence.md) | paused/recovery_required、工具副作用核对和兼容恢复 |
-| DeepAgent task 的委派输入是描述字符串 | [补充篇](11-extensions-workflows-access.md) | 工作流子 Agent 仍需显式参数转换与校验 |
+| DeepAgent task 的委派输入是描述字符串 | [补充篇](11-extensions-workflows-access.md) | 普通 Code 子委派需按其能力显式转换/校验输入，保留父 Trace 约束；独立 Workflow 由自身入口校验结构化输入，业务工具包装不将其变成内置子 Agent |
 | pi 的模型层还承担统一响应、供应商前缀缓存与缓存用量归一化；eino-ext 已有部分能力但语义不全相同 | [M04 响应与缓存](04-model-access.md#44-对齐-pi-的统一模型响应语义) | L1 补缺失适配，M08 保持稳定前缀；有状态续接与缓存分别选择 |
 | pi 工具为描述/执行/应用三种角色，规范化、校验、控制与结果后处理分开，底层 Operations 可替换 | [M05 方法论](05-tool-system.md#13-从-pi-提炼的方法论) | 不复制 TUI、宽泛强转或“任何错误永不传播”的教学概括；保留执行事实 |
 | DSH 审批失败默认不放行，沙箱按调用解析，文件模式与实际 full/partial 分开 | [安全补充篇](12-security-sandbox.md) | 继承词汇与职责方法，映射 Eino 等待/恢复及产品提交；不把文件写限制称作网络/读取隔离 |
@@ -323,6 +323,8 @@ M12 是上述安全语义的唯一规格，M05/M06/M07/M10 分别落实执行、
 
 ## 本轮核查的限度
 
-已完成全部章节的关键定义、调用路径和部分测试源码静态核对；没有以此代替后续行为测试。模型兼容性、实际恢复语义、资源冻结和持久化一致性仍需实现验证；全套 PRD 的待定项及验证责任见[系统闭合检查](system-review.md)。初稿核对时未编写产品实现或开发方案。
+前序研究已完成全部章节的关键定义、调用路径和部分测试源码静态核对，没有以此代替后续行为测试；此段不表示 2026-10-01 又读取了源码。模型兼容性、实际恢复语义、资源冻结和持久化一致性仍需按本项目实现与验证判断；全套 PRD 的责任见[系统闭合检查](system-review.md)。初稿核对时未编写产品实现或开发方案。
 
-2026-09-24 文档调整：补充 Coze Canvas 格式语义与 Zero 三平台沙箱源码事实，并同步开发方案。本文件仍只记录静态核对，不表示工作流兼容或三平台沙箱已经实现。
+以下历史记录只保留当时结论；最新源码同步不修改上游事实或重新认证这些结果。
+
+2026-09-24 文档调整：补充 Coze Canvas 格式语义与 Zero 三平台沙箱源码事实，并同步开发方案。2026-10-01 仅修订现行产品推导；原版本、上游事实与链接保留，新目录/API 均为批准目标尚未交付，Coze/动态加载/热重载/补参仍属原未来阶段，本轮不启动 P4/P5，不迁移或自动删除旧开发数据。上述历史记录不认证工作流兼容、三平台沙箱、P3 完成或本项目测试通过。

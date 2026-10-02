@@ -6,7 +6,7 @@
 
 一条消息同时服务于 Agent 推理、历史保存和客户端展示，三者需要的信息不同。例如用户直接执行命令后，客户端需要命令、输出和退出码；模型只需要本次执行的有效上下文。不能为了调用模型，提前把原始结构拍平成一段文本。
 
-本章采用两层设计：内部 `AgentMessage` 保留标准消息与应用自定义消息；调用模型时统一转换为 `[]*schema.AgenticMessage`。先在内部消息上选择和调整上下文，再在模型边界转换。SessionManager 保存原始历史，客户端通过接口读取结构化视图。
+本章采用两层设计：内部 `AgentMessage` 保留标准消息与应用自定义消息；调用模型时统一转换为 `[]*schema.AgenticMessage`，先选上下文再转换。Code Agent 的 SessionManager 保存自身历史；Workflow 独立保存自己的运行/节点结果与模型消息。两类共用存储实现不共用写入者或历史，业务仅通过显式获准输入/结果组合，不自动合并上下文。客户端分别读取各自结构化视图。
 
 成功标准：三类标准消息职责清楚；普通扩展无需专用编解码器即可添加消息；转换不修改原历史；工具结果准确配对；隐藏和排除上下文具有独立且可验证的行为。
 
@@ -69,7 +69,7 @@ pi 的 `Message` 包含以下三类。本产品沿用它们的语义，不另造
 
 ### 4.2 第二层：AgentMessage 保留内部结构
 
-`AgentMessage` 是内部消息集合：标准消息 + 应用自定义消息。标准消息复用 Agentic 内容及元信息；自定义消息按需要保留业务字段。L2 只接受装配好的转换能力，不导入 L3 的 ExtensionRegistry、AgentSession 或存储实现。
+`AgentMessage` 是内部消息集合：标准消息 + 应用自定义消息。标准消息复用 Agentic 内容及元信息；自定义消息按需要保留业务字段。L2 只接受装配好的转换能力，不导入任一 L3 的 AgentSession、WorkflowAgent、ExtensionRegistry、状态管理器或存储实现。下表 SessionEntry/会话扩展操作属于 Code；Workflow 模型节点用自身记录与显式获准输入复用转换，不借此获得 Code 历史写入或资源读取权。
 
 | 内部类型 | 为什么需要单独保存 | 默认模型视图 |
 | --- | --- | --- |
@@ -114,7 +114,7 @@ pi 的默认 coding-agent 转换器将命令记录、通用自定义消息和摘
 ### 4.5 最少关联信息与流式消息
 
 - `messageId` 标识一条产品消息；流式开始、增量和最终结果保持同一身份。
-- `sessionId` 标识会话，`traceId` 标识完整运行，`turnId` 标识具体模型/工具轮次；多条已消费输入通过各自 `inputId` 关联同一 Trace。独立 Workflow Agent 的结果进入该对话的产品消息，不伪造父 FunctionToolResult；其无模型工具节点记录产品调用及节点结果，不伪造 Turn/模型工具请求。子委派的外层结果配对原父 `task` 调用。用于授权的原始输入与转换结果保留来源及原文引用，按下节规则区分。排队阶段不伪造 turnId，历史导入可没有执行归属。
+- Code Agent `sessionId` 标识对话，`traceId` 标识完整运行，`turnId` 标识模型/工具轮次，多条已消费输入以 `inputId` 关联。Workflow 结果保存在自己的运行/节点记录中，不自动写入 Code Agent 对话；无模型节点不伪造 Turn/模型工具请求。业务工具包装只返回配对原调用方 FunctionToolCall 的结果，不伪造被调方父 task/invocation；Code Agent 普通子委派仍配对父 `task`。用于授权的原始输入与转换结果保留来源和原文引用；排队不伪造 turnId，历史导入可无执行归属。
 - 日志/性能 span 属于可选诊断，不能与产品 traceId 混名；executionId 等内部尝试信息放在运行记录中，不要求每条消息重复保存。traceId 关联运行状态与恢复范围，但不代替 inputId 去重或工具许可。
 - 工具配对保留 Eino 的 `FunctionToolCall.CallID` / `FunctionToolResult.CallID`。跨作用域的产品唯一身份及 provider ID 映射集中在 M05 调用记录中维护，不默认重写所有供应商 ID。
 - 活动流由一个运行方消费，使用 `ConcatAgenticMessages` 按内容块语义聚合；不能简单拼接字符串或把所有 chunk 都当作新块。
@@ -131,6 +131,8 @@ Turn 与 Trace 的定义以 M03 为准：Trace 是一次完整运行，包含多
 普通模型仍使用实际消费后的投影视图，不因保留原文就重复发送两份输入。安全审核按 M12 从受信记录重建材料，不把派生 user 文本、摘要、FunctionToolResult 或父 Agent 的自述直接当成人类授权。直接父任务身份来自运行时委派关系，并受父任务及人类限制约束；受保护的原文引用无法取得时，不用哈希/摘要猜测授权内容。
 
 ### 4.6 完整数据流与 Eino 接入
+
+下图是 Code Agent 的历史投影路径。Workflow 模型节点可复用 L2/L1 消息转换能力，但其输入只来自显式获准材料与自己的节点状态，不查询 Code Agent SessionManager。跨类授权原文不经消息 role、工具结果或摘要自动传递；被调方使用自身受信来源与策略。
 
 ```text
 SessionManager 选定分支历史 + 已消费输入

@@ -1,6 +1,6 @@
 # 05 工具、Operations 与副作用
 
-对应 PRD M05。工具定义借鉴 pi 的元信息/执行/应用三层；Eino 承接调用机制，产品管道补齐最终校验、授权、一致事实和平台效果。
+对应 PRD M05。工具定义借鉴 pi 的元信息/执行/应用三层；Eino 承接调用机制，L2 `internal/agent`、`internal/agent/eino` 与受控工具实现复用最终校验、授权及效果管道。Code Agent 和 Workflow Agent 各自提供状态、预算、审批和事实提交端口；共用工具实现不表示共用运行日志或跨运行原子事务。独立工作流节点已通过 `RunWorkflowNode` 接入既有受控执行器；当前普通 Code Agent 委派保持。两类路径的默认测试与最终认证见 [P3 验证记录](../p3-verification.md)。
 
 <a id="definitions"></a>
 ## 1. 定义与调用对象
@@ -11,13 +11,15 @@ RegisterTool 重名拒绝；ReplaceTool 要求原来源/版本匹配且可替换
 
 | origin | 调用身份与实现选择 | 结果去向 |
 | --- | --- | --- |
-| model | 使用产生它的 Turn/invocation/generation/selectionRevision；验证模型本轮可见，关联 providerCallId 与产品 toolCallId | 与原模型请求配对的 FunctionToolResult |
-| workflow_node | 使用固定定义的本地工具绑定及 workflow invocation/nodeExecutionId；分配稳定产品 toolCallId；无需模型可见性、turnId、selectionRevision 或 providerCallId，不借用父 task 的 Turn | 观察和结果回填节点状态，随 workflowResult 展示，不伪造模型工具消息 |
+| model | 使用所属 Code Turn/invocation/generation/selectionRevision，或工作流模型调用/节点固定的工具清单与版本；验证原请求可见，关联 providerCallId 与产品 toolCallId，不为工作流伪造 Turn | 与所属原模型请求配对的 FunctionToolResult，只提交到本运行 |
+| workflow_node | 使用独立 Workflow Agent 固定定义的本地工具绑定及 workflowRunId/invocation/nodeExecutionId；分配稳定产品 toolCallId；无需模型可见性、turnId、selectionRevision 或 providerCallId，不借用业务父工具的 Turn | 观察和结果回填所属节点状态/日志，随 workflowResult 展示，不伪造模型工具消息或 Code Agent Snapshot 条目 |
 | direct | 获准 SDK/扩展的受控工具入口建立产品调用身份，关联实际 invocation 或 operation、受信实现/能力及版本；不包含用户直接 shell | 对应操作结果，不伪造模型工具消息 |
 
-三类受控来源的最终设计复用同一个 CallExecution 的最终校验、授权、预算、许可占用、执行与效果去重；用户直接 shell 不在三类工具来源中，见 §2.1。来源差异不是第三种 Workflow 产品入口。
+三类受控来源复用 CallExecution 的最终校验、授权、预算、许可占用、执行与效果去重语义，但提交端口、账本、审批与恢复始终由所属 Code Agent 或 Workflow Agent 提供；不因此共写日志或形成跨运行原子事务。用户直接 shell 不在三类工具来源中，见 §2.1。
 
-**2026-09-27 维护者确认的交付边界：**P2 仅接线和验收 model/direct 来源。workflow_node 的受信绑定登记、节点身份接纳、实际执行接线及验收整体移至 P5，与工作流 invocation、节点状态、审批等待和恢复一起实现。上表 workflow_node 是 P5 目标契约，不代表 P2 已交付。P2 保留明确拒绝：不提供工作流节点执行入口，不放宽冻结来源校验，不以调用自填来源、模型 Turn 或 direct operation 冒充节点授权；预留字段不构成可执行能力。该延期不阻塞 P2 步骤完成，也不削弱 model/direct 的安全验收。
+业务可登记普通受控工具调用另一独立 Agent，显式传入允许的材料与取消信号；它只返回匹配原父调用的一条结果或业务引用，不把内层节点/历史写入调用方，也不复用外层批准授权内层效果。这个组合使用既有工具能力，不新增 SDK 跨 Agent 调用端口、工作流专用工具协议或联动调度框架；普通 Code Agent `task/general-purpose` 的受控委派保留。
+
+**阶段与证据边界：**2026-09-27 曾将 workflow_node 整体移至 P5，2026-09-29 又批准 P3 接入静态工作流；这些历史决定不认证 2026-10-01 的独立 Workflow Agent 迁移。当前已有静态节点、审批及显式恢复已移至独立 Workflow 运行，Code Agent 旧节点状态与执行来源接线已退出；Coze、动态加载、热重载和业务补参仍属未来阶段，本轮不启动 P4/P5。受信绑定、稳定节点身份、实际执行管道及所属预算/许可/日志有相应默认测试；最终认证见验证记录。Workflow 默认 `Operations.Todos=nil` 安装本运行 journal 后端（manifest `workflow-journal-v1`），宿主注入则完整替换（`host-injected`）、不镜像默认日志；重开切换归属拒绝 `incompatible_version`。授权一次消费和 live validator 仍绑定原冻结参数/call/invocation/generation/策略；确认丢失保持 unknown/storage_unavailable，不自动重执行、重开或退款，私有 TODO 不进入 HTTP DTO。
 
 schema 在 generation 构建时编译并缓存，默认 Draft 2020-12；显式声明其他支持版本按声明编译。外部引用只来自受信登记的本地 schema 集，不在调用中自动联网解析 $ref。最终 arguments JSON 使用规范化 bytes 做 hash；大整数按声明精度解析，不经 float64 静默舍入。
 
@@ -43,7 +45,7 @@ write/edit 优先在目标同目录安全创建临时文件、同步并替换，
 
 ### 2.1 用户直接 shell
 
-**2026-09-28 审批恢复保护补充（已批准，修复中）：**模型任务等待工具审批时，SDK 的 ExecuteCommand 拒绝新手动命令，返回 state_conflict，不启动进程、不追加命令历史。审批已答复但任务尚未恢复的间隙继续保护原恢复点；状态/历史查询、审批答复和取消仍可用。不采用待消费命令上下文方案，不放宽 checkpoint 一致性校验。命令已启动后任务进入审批的竞争必须另有确定性测试及安全处理，不能只检查尚未答复的审批数量。此限制是会话状态兼容性检查，不是将用户 shell 纳入模型工具审批或预算。
+**2026-09-28 审批恢复保护补充（历史批准记录，当时修复中）：**模型任务等待工具审批时，SDK 的 ExecuteCommand 拒绝新手动命令，返回 state_conflict，不启动进程、不追加命令历史。审批已答复但任务尚未恢复的间隙继续保护原恢复点；状态/历史查询、审批答复和取消仍可用。不采用待消费命令上下文方案，不放宽 checkpoint 一致性校验。命令已启动后任务进入审批的竞争必须另有确定性测试及安全处理，不能只检查尚未答复的审批数量。此限制是会话状态兼容性检查，不是将用户 shell 纳入模型工具审批或预算。
 
 ExecuteCommand 的用户 shell 场景改为由受信宿主显式调用的独立入口。**2026-09-27 16:05 补充确认：**直接修改现有 ExecuteCommand 的公开契约，删除任意已登记工具调用、Name/Arguments 与持久化幂等/回执等不再适用的能力，不新增 ExecuteShell，也不保留旧通用入口作为兼容别名；允许调用方按新的 shell 请求/结果迁移。它不进入 tools.Executor 的模型工具管道：不进行人工审批、不计 Agent 工具/活动预算、不签发执行票据、不做持久化执行去重，不创建模型 Turn、FunctionToolCall 或 FunctionToolResult。相同命令被用户再次显式提交就是新执行；SDK 不自动重试，Open、Resume、日志重放和日志保存失败都不得启动或重跑它。
 
@@ -51,7 +53,7 @@ Session 仍必须显式绑定工作区；命令 cwd 可显式指定，否则使�
 
 入口由宿主接线区分，模型、工具参数、扩展 hook 或导入记录不能通过自填 origin/user 标记取得该能力；普通扩展受控 Operations 仍需要原权限与票据。此区分不是取消模型工具的审批、预算、工作区边界和效果去重。Zero 的 unsafe 启动开关是参考实现事实，本次未决定新增同名开关；SDK 受信宿主调用不等于向模型或未来 HTTP 客户端开放裸执行。
 
-旧直接命令审批恢复方案被本节替代，已有代码和测试仅作为迁移基线，不代表新语义已实现。旧 command/direct 等待记录不得解释成用户重新提交或自动授权；实施时保留历史可读、禁止自动执行，明确不兼容恢复的处理，不顺带放宽模型 Resume。
+旧直接命令审批恢复方案被本节替代，历史代码和测试仅作为当时迁移基线，不认证后续新语义；现有用户 shell 与日志实现的分项结果见 [P2 验证记录](../p2-verification.md)，不替代此次分层验收。旧 command/direct 等待记录不得解释成用户重新提交或自动授权；实施时保留历史可读、禁止自动执行，明确不兼容恢复的处理，不顺带放宽模型 Resume。
 
 <a id="pipeline"></a>
 ## 3. 固定执行管道
@@ -72,9 +74,9 @@ flowchart TD
     L --> M["按来源提交结果与 tool.finished"]
 ```
 
-D11-工具图对应 prepareArguments → validate → beforeToolCall → execute → afterToolCall 五步。初步 schema 校验可以帮助转换，但不能代替最后一次转换后的最终校验。冻结副本深拷贝可变 map/slice；hook 只拿只读视图，改变参数/环境后原授权失效。
+D11-工具图对应 prepareArguments → validate → beforeToolCall → execute → afterToolCall 五步。审批、执行意图、预算和结果提交均使用所属运行端口，外层工具批准不传入另一独立 Agent 作为授权。初步 schema 校验可以帮助转换，但不能代替最后一次转换后的最终校验。冻结副本深拷贝可变 map/slice；hook 只拿只读视图，改变参数/环境后原授权失效。
 
-FrozenExecution 包含：callScope、origin、tool/schema/generation、来源关联（model 的 Turn/selectionRevision/providerCallId，workflow_node 的定义/绑定/nodeExecutionId，direct 的受信调用入口）、原始/最终 arguments 摘要、规范化资源和预期版本、effect/concurrency、backend ID、argv/cwd、env/stdin 受保护引用、挂载和临时目录、常驻策略及申请许可范围。hash 覆盖全部执行相关字段；显示的授权视图从同一对象脱敏生成。
+FrozenExecution 包含：callScope、所属运行类型/ID、origin、tool/schema/generation、来源关联（model 的 Code Turn/selectionRevision/providerCallId 或工作流模型调用/节点引用，workflow_node 的 workflowRunId/定义/绑定/nodeExecutionId，direct 的受信调用入口）、原始/最终 arguments 摘要、规范化资源和预期版本、effect/concurrency、backend ID、argv/cwd、env/stdin 受保护引用、挂载和临时目录、常驻策略及申请许可范围。hash 覆盖全部执行相关字段；显示的授权视图从同一对象脱敏生成。
 
 本次 P2 仅接入 Invokable、EnhancedInvokable 两类同步 Eino wrapper，共享一套 CallExecution；`Definition.ToolInterface` 对应 `invokable`（空值等价）和 `enhanced-invokable`。原生 Streamable、EnhancedStreamable 不在本次 P2 范围，`streamable`、`enhanced-streamable` 保持装配期 `resource_unavailable` 拒绝；不修改 Eino、不维护 fork，也不以同步执行后返回单块 reader 冒充原生流式能力。
 
@@ -134,7 +136,7 @@ Authorized 类型是内部有效票据引用＋FrozenExecution，不是客户端
 <a id="selection"></a>
 ## 5. 工具选择和搜索
 
-首轮前及完整工具批次后的下一 Turn 可从固定 generation 的获准集合 SetActiveTools。验证全部名称、来源和作用域后一次提交 selectionRevision；失败保留原集合。多请求按受理顺序处理，取代尚未生效请求需记录 superseded 关系。
+首轮前及完整工具批次后的下一 Code Turn 可从固定 generation 的获准集合 SetActiveTools。验证全部名称、来源和作用域后一次提交 selectionRevision；失败保留原集合。多请求按受理顺序处理，取代尚未生效请求需记录 superseded 关系。
 
 Eino BeforeAgent 装配实际执行 inventory；BeforeModelRewriteState 更新 ToolInfos/DeferredToolInfos。模型来源的工具 wrapper 仍按本轮清单防止调用隐藏实现；工作流节点使用第 1 节的固定绑定，不借此开放模型工具全集。选择改变同时更新说明、skill 自动加载索引、预算和缓存诊断。
 
@@ -145,7 +147,7 @@ Eino BeforeAgent 装配实际执行 inventory；BeforeModelRewriteState 更新 T
 <a id="concurrency"></a>
 ## 6. 并发、停止与未知效果
 
-资源键包含执行环境、真实工作区、规范化文件身份；路径按平台大小写/别名规则处理。默认只读最多并行 4；写操作对冲突资源排他。不能可靠声明副作用范围的命令/自定义工具按独占该工作区处理；父子共享锁域。纯控制/委派工具不占整个工作区写锁再等待子工具，避免父持锁导致子调用死锁。
+资源键包含执行环境、真实工作区、规范化文件身份；路径按平台大小写/别名规则处理。默认只读最多并行 4；写操作对冲突资源排他。不能可靠声明副作用范围的命令/自定义工具按独占所属工作区处理；普通 Code Agent 父子共享锁域，Workflow Agent 在自身运行内协调节点效果。两类即使显式绑定同一真实目录，也不因此共享 manager、审批、generation 或日志事务；业务决定跨运行访问次序，实际 Operations 仍复核路径/文件前置条件，不能凭进程内锁宣称跨进程或外部编辑隔离。纯控制/委派及业务组合工具不占整个工作区写锁再等待内层工具，避免持锁等待死锁。
 
 ```mermaid
 sequenceDiagram
@@ -168,7 +170,7 @@ sequenceDiagram
     Q-->>A: 按原调用顺序组装模型结果
 ```
 
-D12-并发图：进度/完成事件按实际发生顺序，模型结果按原 call 顺序归并且 CallID 不变。审批中不长期持有文件锁，真正执行前重新获取并验证前置条件；变化后旧描述/许可不可直接使用。
+D12-并发图展示所属运行的一组调用；进度/完成事件按实际发生顺序，Code 模型结果按原 call 顺序归并且 CallID 不变，工作流结果回填各自原节点，不构成跨运行调度事务。审批中不长期持有文件锁，真正执行前重新获取并验证前置条件；变化后旧描述/许可不可直接使用。
 
 取消通知所有已启动 worker，未启动项停止派发并配对取消结果。子进程依据后端停止证据结算；任意 Go 工具不合作时保留仍在运行/未知，禁止宣布 Session 可进行冲突工作。超时并不证明没写入。
 
@@ -183,15 +185,15 @@ FileFact 为操作种类、规范化资源身份、confirmed/unknown/none、tool
 
 read 给源文件续读位置，不默认复制全文件。命令日志采用 Zero 式简化处理：短输出直接返回，超长输出自动尝试保存脱敏后的完整日志，再返回 UTF-8 安全的头尾预览；保存成功才返回文件/产物引用。保存失败仍返回预览并明确日志未保存，不改变真实退出码、执行成功/失败或已确认文件效果，也不重跑命令。不再要求所有命令从启动起强制流式持久保存全文。
 
-日志保存是内部后处理，不新增人工审批或独立结果授权票据，也不能复用已被进程消费的一次执行票据。实施时沿现有输出/产物接口作最小调整；结果与日志保存错误分别表达，先保留模型工具原始观察和 FileFacts，再处理预览与产物。产物正文先脱敏再保存，仍属于不可信业务材料；保留既有 Session/环境绑定、大小/hash、可用状态与读取校验，不把“不新增审批”解释成任意路径读取或跨 Session 开放。文件丢失/变化明确 unavailable/changed，不返回空日志假装成功。复用现有产物生命周期，不照搬 Zero 的共享临时目录和七天清理常量。
+日志保存是内部后处理，不新增人工审批或独立结果授权票据，也不能复用已被进程消费的一次执行票据。实施时沿现有输出/产物接口作最小调整；结果与日志保存错误分别表达，先保留模型工具原始观察和 FileFacts，再处理预览与产物。产物正文先脱敏再保存，仍属于不可信业务材料；保留既有所属运行/环境绑定、大小/hash、可用状态与读取校验，不把“不新增审批”解释成任意路径读取或跨 Code/Workflow 运行开放。文件丢失/变化明确 unavailable/changed，不返回空日志假装成功。复用现有产物生命周期，不照搬 Zero 的共享临时目录和七天清理常量。
 
-这是对 Zero 日志工具行为与用户 shell 独立入口的组合设计；Zero 用户 `!命令` 本身只有 CombinedOutput，并未接入该保存链。新契约待 Step 16 真实实现和故障测试验收。
+这是对 Zero 日志工具行为与用户 shell 独立入口的组合设计；Zero 用户 `!命令` 本身只有 CombinedOutput，并未接入该保存链。规划时列入 Step 16；后续实现与故障测试的分项证据见 [P2 验证记录](../p2-verification.md)，历史待办不代表当前未实现，也不认证此次分层迁移。
 
 预览限制、UTF-8 边界、行/字节和 grep 单行策略由 07 定义；大型结构化 JSON 使用摘要字段/引用，禁止按字节截成无效 JSON。
 
 <a id="evidence"></a>
 ## 8. 证据与验收
 
-[pi 工具流水线](../../pi/packages/agent/src/agent-loop.ts)、[Eino wrapper 机制（上游四类不等于本次 P2 支持范围）](../../eino/adk/handler.go)、[filesystem 自定义工具](../../eino/adk/middlewares/filesystem/filesystem.go)、[Operations 接口基础](../../eino/adk/filesystem/backend.go)、[DeepAgent](../../eino/adk/prebuilt/deep/deep.go)。安全采用 [PRD M12](../pi-eino-prd/12-security-sandbox.md) 的 DSH 策略边界与 Zero 原生沙箱适配。
+[pi 工具流水线](../../../pi/packages/agent/src/agent-loop.ts)、[Eino wrapper 机制（上游四类不等于本次 P2 支持范围）](../../../eino/adk/handler.go)、[filesystem 自定义工具](../../../eino/adk/middlewares/filesystem/filesystem.go)、[Operations 接口基础](../../../eino/adk/filesystem/backend.go)、[DeepAgent](../../../eino/adk/prebuilt/deep/deep.go)。安全采用 [PRD M12](../pi-eino-prd/12-security-sandbox.md) 的 DSH 策略边界与 Zero 原生沙箱适配。
 
 V-TOOL：全部 T-E 用例；转换后校验、同名/同 ID 调用隔离、Invokable / EnhancedInvokable 两类同步 wrapper、原生 Streamable / EnhancedStreamable 装配拒绝、实际输出入口关闭与晚到输出拒绝、批次等待和取消、结果投影失败不重执行、未知效果锁冲突、read/edit/grep Unicode 边界、原生/容器同一产物。V-DEFAULT：工作区必填，默认能力可真实调用，显式裁剪不留下错误提示词。

@@ -19,8 +19,10 @@ export async function syncSession(client: Client, sid: string, store: A2UIStore,
     let live = false;
     let ended = false;
     let resync = false;
+    let failure: unknown;
     try {
       const { lines, cursor } = await client.render(sid, signal);
+      if (signal.aborted) return;
       for (const line of lines) store.apply(token, line);
       store.setCursor(token, cursor);
       await client.uiEvents(
@@ -56,17 +58,19 @@ export async function syncSession(client: Client, sid: string, store: A2UIStore,
       );
     } catch (err) {
       if (signal.aborted) return;
+      failure = err;
       if (err instanceof APIError && err.status >= 400 && err.status < 500 && err.status !== 410) {
         onStatus("error", err);
         return;
       }
     }
     if (signal.aborted) return;
-    if (ended || (!live && !resync)) {
+    if (ended || (!live && !resync && !failure)) {
       onStatus("ended");
       return;
     }
-    const delay = resync ? 0 : RETRY_MS[Math.min(attempt, RETRY_MS.length - 1)];
+    onStatus("reconnecting", failure);
+    const delay = resync || (failure instanceof APIError && failure.status === 410) ? 0 : RETRY_MS[Math.min(attempt, RETRY_MS.length - 1)];
     attempt++;
     await sleep(delay, signal);
   }
@@ -74,14 +78,9 @@ export async function syncSession(client: Client, sid: string, store: A2UIStore,
 
 function sleep(ms: number, signal: AbortSignal) {
   return new Promise<void>((resolve) => {
-    const t = setTimeout(resolve, ms);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(t);
-        resolve();
-      },
-      { once: true },
-    );
+    if (signal.aborted) { resolve(); return; }
+    const done = () => { clearTimeout(timer); signal.removeEventListener("abort", done); resolve(); };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
   });
 }

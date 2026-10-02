@@ -11,16 +11,17 @@ import (
 
 func importRules() map[string][]string {
 	return map[string][]string{
-		"internal/errors":                {"/internal/agent", "/internal/sessions", "/internal/llm", "/internal/config", "/sdk", "/cmd"},
-		"internal/config":                {"/internal/agent", "/internal/sessions", "/internal/llm", "/internal/errors", "/sdk", "/cmd"},
-		"internal/llm":                   {"/internal/agent", "/internal/sessions", "/sdk", "/cmd"},
-		"internal/agent":                 {"/internal/sessions", "/sdk", "/cmd"},
-		"internal/sessions/state":        {"/internal/sessions/store/jsonl", "/internal/sessions/store/memory", "/internal/agent/eino", "/sdk", "/cmd"},
-		"internal/sessions/store":        {"/internal/sessions/state", "/internal/agent/eino", "/sdk", "/cmd"},
-		"internal/sessions/store/jsonl":  {"/internal/sessions/state", "/sdk", "/cmd"},
-		"internal/sessions/store/memory": {"/internal/sessions/state", "/sdk", "/cmd"},
-		"internal":                       {"/sdk", "/cmd"},
-		"cmd/agentd":                     {"/sdk", "/internal"},
+		"internal/errors":          {"/internal/agent", "/internal/codeagent", "/internal/workflowagent", "/internal/llm", "/internal/config", "/sdk", "/cmd"},
+		"internal/config":          {"/internal/agent", "/internal/codeagent", "/internal/workflowagent", "/internal/llm", "/internal/errors", "/sdk", "/cmd"},
+		"internal/llm":             {"/internal/agent", "/internal/codeagent", "/internal/workflowagent", "/sdk", "/cmd"},
+		"internal/agent":           {"/internal/codeagent", "/internal/workflowagent", "/sdk", "/cmd"},
+		"internal/codeagent":       {"/internal/workflowagent", "/internal/web"},
+		"internal/workflowagent":   {"/internal/codeagent", "/internal/web"},
+		"internal/codeagent/state": {"/internal/storage/jsonl", "/internal/storage/memory", "/internal/agent/eino", "/sdk", "/cmd"},
+		"internal/storage":         {"/internal/codeagent", "/internal/workflowagent", "/internal/agent/eino", "/sdk", "/cmd"},
+		"internal/web":             {"/internal/codeagent/state", "/internal/storage/jsonl", "/internal/storage/memory"},
+		"internal":                 {"/sdk", "/cmd"},
+		"cmd/agentd":               {"/sdk", "/internal"},
 	}
 }
 

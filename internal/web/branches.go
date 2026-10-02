@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/ww1489/seasprak/internal/sessions"
+	"github.com/ww1489/seasprak/internal/codeagent"
 )
 
 type branchDTO struct {
@@ -62,13 +62,13 @@ func (r *routes) compact(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	// Generation outlives the HTTP request; the result is read via operations.
-	receipt, err := s.Compact(context.WithoutCancel(req.Context()), sessions.CompactRequest{IdempotencyKey: key, Reason: "manual"})
+	receipt, err := s.Compact(context.WithoutCancel(req.Context()), codeagent.CompactRequest{IdempotencyKey: key, Reason: "manual"})
 	r.acceptedOrError(w, receipt, err)
 }
 
 // historySession returns the writer if one is open, else a read-only view
 // closed by the returned func, so browsing never opens a writer.
-func (r *routes) historySession(w http.ResponseWriter, req *http.Request) (*sessions.AgentSession, func(), bool) {
+func (r *routes) historySession(w http.ResponseWriter, req *http.Request) (*codeagent.AgentSession, func(), bool) {
 	s, done, err := r.catalog.Browse(req.Context(), req.PathValue("sid"))
 	if err != nil {
 		WriteError(w, err)

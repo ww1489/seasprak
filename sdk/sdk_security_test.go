@@ -27,6 +27,30 @@ func TestStateRootInsideWorkspaceRejected(t *testing.T) {
 	expectCode(t, err, sdk.CodeInvalidArgument)
 }
 
+func TestFilesystemRootWorkspaceOverlapRejectedWithoutWrites(t *testing.T) {
+	state := t.TempDir()
+	opts := memoryOpts(t, filepath.VolumeName(state)+string(os.PathSeparator), state, "sess-root-overlap")
+	model := opts.Model.(*testkit.FakeModel)
+	s, err := sdk.CreateAgentSession(t.Context(), opts)
+	if s != nil {
+		closeSession(t, s)
+		t.Error("overlapping root workspace returned a session")
+	}
+	if pe, ok := sdk.AsError(err); !ok || pe.Code != sdk.CodeInvalidArgument {
+		t.Errorf("error = %v, want code %s", err, sdk.CodeInvalidArgument)
+	}
+	if got := model.Calls(); got != 0 {
+		t.Errorf("model calls = %d, want zero", got)
+	}
+	entries, err := os.ReadDir(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("overlap rejection created %d state-root entries", len(entries))
+	}
+}
+
 func TestSymlinkDoesNotHideStateOverlap(t *testing.T) {
 	realWS := t.TempDir()
 	state := filepath.Join(realWS, "state")
@@ -77,8 +101,17 @@ func TestSessionIDAllowsSingleSegmentAndRejectsEscape(t *testing.T) {
 
 func TestDefaultStateRootIsUserConfig(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	t.Setenv("AppData", home)
 	t.Setenv("XDG_CONFIG_HOME", home)
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, err := filepath.Rel(home, configDir)
+	if err != nil || !filepath.IsLocal(rel) {
+		t.Fatal("test configuration directory is outside its temporary home")
+	}
 	ws := t.TempDir()
 	opts := memoryOpts(t, ws, "", "sess-default-root")
 	opts.StateRoot = ""
@@ -87,7 +120,7 @@ func TestDefaultStateRootIsUserConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	closeSession(t, s)
-	journal := filepath.Join(home, "seasprak", "state", "sessions", "sess-default-root", "journal.jsonl")
+	journal := filepath.Join(configDir, "seasprak", "state", "sessions", "sess-default-root", "journal.jsonl")
 	if _, err := os.Stat(journal); err != nil {
 		t.Fatalf("default state journal: %v", err)
 	}

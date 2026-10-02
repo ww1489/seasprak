@@ -24,15 +24,18 @@ type ScopeSnapshot struct {
 }
 
 type ExecutionScope struct {
-	SessionID          string
-	BranchID           string
-	TraceID            string
-	InvocationID       string
-	ParentInvocationID string
-	Generation         string
-	ExecutionID        string
-	TurnID             string
-	SelectionRevision  uint64
+	WorkflowRunID          string `json:"workflowRunId,omitempty"`
+	WorkflowDefinitionHash string `json:"workflowDefinitionHash,omitempty"`
+	NodeExecutionID        string `json:"nodeExecutionId,omitempty"`
+	SessionID              string
+	BranchID               string
+	TraceID                string
+	InvocationID           string
+	ParentInvocationID     string
+	Generation             string
+	ExecutionID            string
+	TurnID                 string
+	SelectionRevision      uint64
 }
 
 type Fact struct {
@@ -49,6 +52,7 @@ type ModelAttemptIdentity struct {
 	ModelCallID        string `json:"modelCallId"`
 	MessageID          string `json:"messageId"`
 	StreamID           string `json:"streamId"`
+	Purpose            string `json:"purpose,omitempty"`
 	ModelConfigVersion string `json:"modelConfigVersion,omitempty"`
 }
 
@@ -147,6 +151,12 @@ type ToolCallSource interface {
 // compiled definition.
 type WorkflowToolSource interface {
 	LookupWorkflowTool(context.Context, ExecutionScope, string) (ToolRecord, error)
+}
+
+// FrozenExecutionSource returns an owned durable descriptor, not permission.
+// Execution still rechecks the current policy, hooks, backend and ticket.
+type FrozenExecutionSource interface {
+	LookupFrozenExecution(context.Context, ExecutionScope, string) (FrozenExecution, bool, error)
 }
 
 type FrozenCall struct {

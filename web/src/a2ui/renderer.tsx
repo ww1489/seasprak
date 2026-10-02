@@ -42,11 +42,14 @@ function renderNode(s: SurfaceState, id: string, controls: RenderControls, depth
   if ("ChatMessage" in v) {
     const m = v.ChatMessage;
     const text = s.data.get(m.dataKey) ?? "";
-    if (m.role === "user") return <UserBubble>{text}</UserBubble>;
     return (
-      <AgentSection label={ROLE_LABEL[m.role] ?? m.role} sub={m.status === "streaming" ? "生成中" : undefined}>
-        <StreamingText text={text} streaming={m.status === "streaming"} />
-      </AgentSection>
+      <article aria-label={(m.role === "user" ? "用户" : ROLE_LABEL[m.role]) + "消息"} data-message-id={m.messageId}>
+        {m.role === "user" ? <UserBubble>{text}</UserBubble> : (
+          <AgentSection label={ROLE_LABEL[m.role] ?? m.role} sub={m.status === "streaming" ? "生成中" : undefined}>
+            <StreamingText text={text} streaming={m.status === "streaming"} />
+          </AgentSection>
+        )}
+      </article>
     );
   }
   if ("ToolCall" in v) {
@@ -61,10 +64,6 @@ function renderNode(s: SurfaceState, id: string, controls: RenderControls, depth
   if ("Invocation" in v) {
     const i = v.Invocation;
     return <TaskRow label="子 Agent 调用" meta={i.agent || i.invocationId} state={i.state} />;
-  }
-  if ("WorkflowNode" in v) {
-    const n = v.WorkflowNode;
-    return <TaskRow label={n.kind === "tool" ? "工作流工具节点" : "工作流模型节点"} meta={n.nodeId || n.nodeExecutionId} state={n.state} />;
   }
   return (
     <p role="alert" className="text-[12px] text-red">

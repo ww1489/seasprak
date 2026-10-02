@@ -6,17 +6,17 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LiveOpenAIProxy, loadOpenAI } from "./live-openai-proxy";
 
-// Browser acceptance always uses the real OpenAI-compatible model configured
-// in repository-root .test_env. A loopback proxy observes request counts and
-// rechunks/pauses the real provider stream, but never generates or edits model
-// output. Credentials are passed to cmd/web only through an environment
-// variable and never enter the startup JSON, browser, screenshots or logs.
+// Browser acceptance uses the real OpenAI-compatible model supplied in the
+// host process environment. It never reads or probes a local credential file.
+// A loopback proxy observes request counts and rechunks/pauses the provider
+// stream, but never generates or edits output. Credentials reach cmd/web only
+// through environment variables, never JSON, browser, screenshots or logs.
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const repoRoot = resolve(here, "..", "..");
 const shots = resolve(here, "..", "test-results", "visual");
 const XSS = `<img src=x onerror="window.__pwned=1"><script>window.__pwned=2</script>`;
-const live = loadOpenAI(repoRoot);
+const live = loadOpenAI();
 const proxy = new LiveOpenAIProxy(live);
 
 let proc: ChildProcess | undefined;
@@ -37,6 +37,7 @@ function workflows() {
       version: "v1",
       description: "不调用模型，返回结构化输入",
       source: "trusted-live-e2e",
+      resumable: true,
       formatVersion: "seasprak-workflow/v1",
       inputSchema,
       nodes: [
@@ -48,8 +49,9 @@ function workflows() {
     {
       name: "approved-todo-flow",
       version: "v1",
-      description: "经审批写入会话 TODO",
+      description: "经独立运行审批写入工作流 TODO",
       source: "trusted-live-e2e",
+      resumable: true,
       formatVersion: "seasprak-workflow/v1",
       inputSchema,
       nodes: [
@@ -183,8 +185,29 @@ async function newSession(page: Page): Promise<string> {
 }
 
 async function openSession(page: Page, sid: string) {
+  await page.getByRole("button", { name: "代码会话", exact: true }).click();
   await page.getByRole("list", { name: "会话列表" }).getByRole("button", { name: sid }).click();
   await expect(page.getByRole("heading", { name: sid })).toBeVisible();
+}
+
+async function newWorkflowRun(page: Page, name: string, topic: string): Promise<string> {
+  await page.getByRole("button", { name: "工作流", exact: true }).click();
+  const form = page.getByRole("form", { name: "新建工作流运行" });
+  await form.getByLabel("工作流定义").selectOption({ label: name + " · v1" });
+  await form.getByLabel("工作区绝对路径").fill(workspace);
+  await form.getByLabel(/topic/).fill(topic);
+  const list = page.getByRole("list", { name: "工作流运行列表" });
+  const response = page.waitForResponse((r) => r.url() === base + "/v1/workflow-runs" && r.request().method() === "POST");
+  await form.getByRole("button", { name: "启动工作流" }).click();
+  const created = await response;
+  expect(created.status()).toBe(202);
+  const rid = (await created.json()).runId as string;
+  expect(rid).toMatch(/^[A-Za-z0-9_-]+$/);
+  await expect(list.getByRole("button").filter({ hasText: rid })).toHaveCount(1);
+  const run = page.getByRole("region", { name: "工作流运行", exact: true });
+  await expect(run.getByRole("heading", { level: 2 })).toHaveText(rid);
+  await expect(run).toHaveAttribute("data-surface-id", "workflow:" + rid);
+  return rid;
 }
 
 async function prompt(page: Page, text: string) {
@@ -206,6 +229,23 @@ async function idle(request: APIRequestContext, sid: string) {
   await expect.poll(async () => (await snapshot(request, sid)).traces.every((trace) => ["completed", "failed", "cancelled"].includes(trace.state)), { timeout: 180_000 }).toBe(true);
 }
 
+type WorkflowSnap = { runId: string; state: string; executionStopped: boolean; workflowNodes: { nodeExecutionId: string; nodeId: string; kind: string; state: string }[] };
+async function workflowSnapshot(request: APIRequestContext, rid: string): Promise<WorkflowSnap> {
+  const response = await request.get(`${base}/v1/workflow-runs/${encodeURIComponent(rid)}/snapshot`, { headers: auth() });
+  expect(response.status()).toBe(200);
+  const snap = (await response.json()) as WorkflowSnap;
+  expect(snap.runId).toBe(rid);
+  expect(snap).not.toHaveProperty("sessionId");
+  expect(snap).not.toHaveProperty("traceId");
+  return snap;
+}
+async function workflowStopped(request: APIRequestContext, rid: string, state: string) {
+  await expect.poll(async () => {
+    const snap = await workflowSnapshot(request, rid);
+    return snap.executionStopped && snap.state === state;
+  }, { timeout: 60_000 }).toBe(true);
+}
+
 function marker(name: string) {
   return `LIVE_${name}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
@@ -214,8 +254,8 @@ const exactPrompt = (value: string, extra = "") => `只输出下面 ASCII 标记
 const conversation = (page: Page) => page.getByRole("region", { name: "对话" });
 const assistantText = (page: Page) => conversation(page).locator("p.text-\\[13px\\]");
 
-function journalRecordCount(sid: string, recordType: string): number {
-  const lines = readFileSync(join(stateRoot, "sessions", sid, "journal.jsonl"), "utf8").trim().split(/\r?\n/).slice(1);
+function journalRecordCount(rid: string, recordType: string): number {
+  const lines = readFileSync(join(stateRoot, "workflow-runs", rid, "journal.jsonl"), "utf8").trim().split(/\r?\n/).slice(1);
   let count = 0;
   for (const line of lines) {
     const commit = JSON.parse(line) as { controlRecords?: { type?: string }[] };
@@ -242,8 +282,11 @@ test("live page: authentication, session creation and registered capabilities", 
   await newSession(page);
   const caps = page.getByRole("region", { name: "能力" });
   await expect(caps).toContainText("reviewer");
-  await expect(caps).toContainText("echo-flow");
+  await expect(caps).not.toContainText("echo-flow");
   await expect(caps).toContainText("write_todos");
+  const inventory = await page.request.get(`${base}/v1/workflows`, { headers: auth() });
+  expect(inventory.status()).toBe(200);
+  expect((await inventory.json()).workflows.map((entry: { name: string }) => entry.name).sort()).toEqual(["approved-todo-flow", "echo-flow"]);
   expect(g.external).toEqual([]);
   expect(g.errors).toEqual([]);
 });
@@ -283,19 +326,28 @@ test("reload during a real provider stream reconnects without another model requ
   const value = marker("STREAM_RELOAD");
   const hold = proxy.gateNextContentFrame();
   const before = proxy.count();
+  const accepted = page.waitForResponse((response) => response.url() === `${base}/v1/sessions/${sid}/inputs` && response.request().method() === "POST");
   await prompt(page, exactPrompt(value));
+  const receipt = await accepted;
+  expect(receipt.status()).toBe(202);
+  const traceId = (await receipt.json()).traceId as string;
+  expect(traceId).toMatch(/^[A-Za-z0-9_-]+$/);
   await Promise.race([
     hold.reached,
     new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`live stream gate not reached: ${JSON.stringify(proxy.shapes.at(-1) ?? { requests: proxy.count() - before })}`)), 30_000)),
   ]);
-  await expect(conversation(page).getByText("生成中", { exact: true })).toBeVisible({ timeout: 30_000 });
+  const assistantMessages = () => conversation(page).getByRole("article", { name: "助手消息", exact: true });
+  await expect(assistantMessages().getByText("生成中", { exact: true })).toBeVisible({ timeout: 30_000 });
   await page.reload();
   hold.open();
   await login(page);
   await openSession(page, sid);
-  await idle(page.request, sid);
-  await expect(conversation(page).getByText("生成中", { exact: true })).toHaveCount(0);
-  await expect(assistantText(page).getByText(value, { exact: false })).toHaveCount(1);
+  await expect.poll(async () => {
+    const traces = (await snapshot(page.request, sid)).traces.filter((trace) => trace.traceId === traceId);
+    return traces.length === 1 && traces[0].state === "completed" && traces[0].settled;
+  }, { timeout: 180_000 }).toBe(true);
+  await expect(assistantMessages().getByText("生成中", { exact: true })).toHaveCount(0);
+  await expect(assistantMessages().getByText(value, { exact: false })).toHaveCount(1);
   expect(proxy.count() - before).toBe(1);
 });
 
@@ -392,37 +444,42 @@ test("uploaded attachment reaches the real model request without entering browse
   expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
 });
 
-test("trusted workflow form executes without routing through the main model", async ({ page }) => {
-  await guard(page);
+test("trusted workflow form executes independently without creating a Code session or calling its model", async ({ page }) => {
+  const g = await guard(page);
   await login(page);
-  const sid = await newSession(page);
+  const sessionsBefore = await (await page.request.get(`${base}/v1/sessions`, { headers: auth() })).json();
   const value = marker("WORKFLOW");
-  await page.getByLabel("目标 Agent").selectOption("echo-flow");
-  await page.getByLabel(/topic/).fill(value);
   const before = proxy.count();
-  await page.getByRole("button", { name: "启动工作流" }).click();
-  await expect(assistantText(page).getByText(value, { exact: false })).toBeVisible({ timeout: 60_000 });
-  await idle(page.request, sid);
+  const rid = await newWorkflowRun(page, "echo-flow", value);
+  await workflowStopped(page.request, rid, "completed");
+  await expect(page.getByRole("region", { name: "工作流结果" })).toContainText(value);
+  const sessionsAfter = await (await page.request.get(`${base}/v1/sessions`, { headers: auth() })).json();
+  expect(sessionsAfter).toEqual(sessionsBefore);
   expect(proxy.count() - before).toBe(0);
+  expect(g.external).toEqual([]);
+  expect(g.errors).toEqual([]);
 });
 
-test("workflow tool approval requires explicit response and resume, then commits once", async ({ page }) => {
+test("workflow tool approval requires an explicit response and resume in its own run, then commits once", async ({ page }) => {
   await guard(page);
   await login(page);
   const sid = await newSession(page);
-  await page.getByLabel("目标 Agent").selectOption("approved-todo-flow");
-  await page.getByLabel(/topic/).fill(marker("APPROVAL"));
+  const codeBefore = await snapshot(page.request, sid);
   const beforeRequests = proxy.count();
-  await page.getByRole("button", { name: "启动工作流" }).click();
+  const rid = await newWorkflowRun(page, "approved-todo-flow", marker("APPROVAL"));
   const card = page.getByRole("region", { name: "待审批操作" });
+  await workflowStopped(page.request, rid, "paused");
   await expect(card).toBeVisible({ timeout: 60_000 });
-  expect(journalRecordCount(sid, "todo_update")).toBe(0);
+  expect(journalRecordCount(rid, "workflow_todo")).toBe(0);
   await card.getByRole("button", { name: "批准一次" }).click();
-  await expect(page.getByRole("button", { name: "恢复" })).toBeVisible({ timeout: 60_000 });
-  await page.getByRole("button", { name: "恢复" }).click();
-  await idle(page.request, sid);
+  await expect(page.getByRole("button", { name: "恢复工作流", exact: true })).toBeEnabled({ timeout: 60_000 });
+  expect((await workflowSnapshot(page.request, rid)).state).toBe("paused");
+  expect(journalRecordCount(rid, "workflow_todo")).toBe(0);
+  await page.getByRole("button", { name: "恢复工作流", exact: true }).click();
+  await workflowStopped(page.request, rid, "completed");
   await expect(card).toHaveCount(0, { timeout: 60_000 });
-  expect(journalRecordCount(sid, "todo_update")).toBe(1);
+  expect(journalRecordCount(rid, "workflow_todo")).toBe(1);
+  expect(await snapshot(page.request, sid)).toEqual(codeBefore);
   expect(proxy.count() - beforeRequests).toBe(0);
 });
 
@@ -533,6 +590,19 @@ for (const [width, height] of [
       const input = seen.indexOf("输入消息");
       expect(input).toBeGreaterThanOrEqual(0);
       expect(seen.indexOf("发送")).toBeGreaterThan(input);
+      const beforeWorkflow = proxy.count();
+      const rid = await newWorkflowRun(page, "echo-flow", marker("WORKFLOW_VISUAL"));
+      await workflowStopped(page.request, rid, "completed");
+      expect(proxy.count() - beforeWorkflow).toBe(0);
+      await expect(page.getByRole("region", { name: "工作流结果" })).toBeVisible();
+      expect(await page.evaluate(() => document.scrollingElement!.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
+      await page.screenshot({ path: join(shots, `live-workflow-${width}x${height}-${scheme}.png`), fullPage: true });
+      const workflowFocus: string[] = [];
+      for (let i = 0; i < 60 && !workflowFocus.includes("启动工作流"); i++) {
+        await page.keyboard.press("Tab");
+        workflowFocus.push(await page.evaluate(() => document.activeElement?.textContent?.trim() ?? ""));
+      }
+      expect(workflowFocus).toContain("启动工作流");
       expect(g.external).toEqual([]);
       expect(g.errors).toEqual([]);
     });

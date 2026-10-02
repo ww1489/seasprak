@@ -47,7 +47,7 @@ func TestResponsesCacheScopeFromExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scope := range []agent.ExecutionScope{{SessionID: "session-one", TurnID: "turn-one"}, {SessionID: "session-one", TurnID: "turn-two"}, {SessionID: "session-two", TurnID: "turn-three"}} {
+	for _, scope := range []agent.ExecutionScope{{SessionID: "session-one", TurnID: "turn-one"}, {SessionID: "session-one", TurnID: "turn-two"}, {SessionID: "session-two", TurnID: "turn-three"}, {WorkflowRunID: "session-one", NodeExecutionID: "node-one"}} {
 		budget := agent.NewBudget(config.DefaultLimits())
 		validated := NewValidatedModel(bound, &factSink{}, budget, scope)
 		_, err = validated.Generate(llm.WithSessionCacheScope(t.Context(), "untrusted-stale-scope"), []*schema.AgenticMessage{schema.UserAgenticMessage("question")})
@@ -58,7 +58,7 @@ func TestResponsesCacheScopeFromExecution(t *testing.T) {
 			t.Fatalf("budget=%+v", budget.Snapshot())
 		}
 	}
-	if len(keys) != 3 || keys[0] != keys[1] || keys[1] == keys[2] {
+	if len(keys) != 4 || keys[0] != keys[1] || keys[1] == keys[2] || keys[0] == keys[3] {
 		t.Fatalf("cache routing did not preserve session isolation: %v", keys)
 	}
 }

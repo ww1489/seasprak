@@ -6,11 +6,11 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/ww1489/seasprak/internal/agent"
-	"github.com/ww1489/seasprak/internal/sessions"
+	"github.com/ww1489/seasprak/internal/codeagent"
 )
 
 // The DTOs below are the only network projection of session state. They are
-// built field by field from sessions.Snapshot; internal types are never
+// built field by field from codeagent.Snapshot; internal types are never
 // serialized directly, so new private fields cannot leak by default.
 
 type sessionEntryDTO struct {
@@ -71,9 +71,6 @@ type snapshotDTO struct {
 	// InstanceID scopes runtime-only approval receipts and transient display.
 	InstanceID string       `json:"instanceId,omitempty"`
 	Transient  transientDTO `json:"transient"`
-	// WorkflowNodes lists node identities and states only; arguments,
-	// results and errors may carry private data and stay server-side.
-	WorkflowNodes []workflowNodeDTO `json:"workflowNodes"`
 	// Invocations lists delegated child identities and states only; child
 	// results, call lists and counts stay server-side.
 	Invocations []invocationDTO `json:"invocations"`
@@ -97,14 +94,6 @@ type invocationDTO struct {
 	State              string `json:"state"`
 }
 
-type workflowNodeDTO struct {
-	NodeExecutionID string `json:"nodeExecutionId"`
-	TraceID         string `json:"traceId"`
-	NodeID          string `json:"nodeId"`
-	Kind            string `json:"kind"`
-	State           string `json:"state"`
-}
-
 type transientModelDTO struct {
 	TraceID  string     `json:"traceId"`
 	StreamID string     `json:"streamId"`
@@ -125,7 +114,7 @@ type transientDTO struct {
 	Tools  []transientToolDTO  `json:"tools"`
 }
 
-func projectTransient(v sessions.TransientView) transientDTO {
+func projectTransient(v codeagent.TransientView) transientDTO {
 	out := transientDTO{Models: []transientModelDTO{}, Tools: []transientToolDTO{}}
 	for _, k := range sortedKeys(v.Models) {
 		m := v.Models[k]
@@ -145,7 +134,7 @@ func projectTransient(v sessions.TransientView) transientDTO {
 	return out
 }
 
-func projectSnapshot(s sessions.Snapshot) snapshotDTO {
+func projectSnapshot(s codeagent.Snapshot) snapshotDTO {
 	out := snapshotDTO{
 		SessionID: s.SessionID, Revision: s.Revision, Cursor: EncodeCursor(s.SessionID, s.Cursor),
 		DurableSeq: strconv.FormatUint(s.Cursor, 10), ActiveTraceID: s.ActiveTrace, RepairRequired: s.RepairRequired,
@@ -167,11 +156,6 @@ func projectSnapshot(s sessions.Snapshot) snapshotDTO {
 	}
 	for _, m := range s.Messages {
 		out.Messages = append(out.Messages, projectMessage(m))
-	}
-	out.WorkflowNodes = []workflowNodeDTO{}
-	for _, id := range sortedKeys(s.WorkflowNodes) {
-		n := s.WorkflowNodes[id]
-		out.WorkflowNodes = append(out.WorkflowNodes, workflowNodeDTO{NodeExecutionID: n.ID, TraceID: n.TraceID, NodeID: n.NodeID, Kind: n.Kind, State: n.State})
 	}
 	out.Invocations = []invocationDTO{}
 	for _, id := range sortedKeys(s.Invocations) {

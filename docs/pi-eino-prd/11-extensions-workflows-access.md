@@ -4,11 +4,11 @@
 
 ## 1. 执行摘要
 
-底座的价值在于增加业务能力时不修改模型循环。ResourceLoader 负责发现与读取，ExtensionRegistry 负责登记，CreateAgentSession 负责初始装配，AgentSession 负责运行中的激活时机；这些对象的职责按[第 2 章](02-architecture-boundaries.md#23-与-pi-对齐的对象名称与职责)区分。
+底座的价值在于增加业务能力时不修改模型循环。Code Agent 的 ResourceLoader 发现与读取，ExtensionRegistry 登记，CreateAgentSession 初始装配，AgentSession 协调运行激活；独立 Workflow Agent 自己拥有定义、编译、Eino Graph、节点状态及生命周期。职责按[第 2 章](02-architecture-boundaries.md#23-与-pi-对齐的对象名称与职责)区分，独立 Workflow API、定义/编译/图所有者及 Web 三类资源路由已接通，有对应默认测试；具体签名、DTO 和最终认证分别见 [开发方案 06](../pi-eino-dev-plan/06-events-and-api.md#sdk)、[13](../pi-eino-dev-plan/13-p3-web-contract.md) 与 [P3 验证记录](../p3-verification.md)。
 
-能力由 L3 注册和选择，L2 接受已装配的工具、必要的消息转换规则和 handlers；HTTP/SSE、可选 A2UI 映射位于最外侧。一个 Trace 固定一个 generation，覆盖各 Turn、执行尝试、子调用和恢复所需资源。普通 CustomMessage 使用统一 content/details，不要求逐类型 codec。
+两类 L3 分别注册和选择自身能力，L2 接受已装配的工具、必要的消息转换规则和 handlers；HTTP/SSE、可选 A2UI 映射位于最外侧。Code Agent 一个 Trace 固定一个 generation，覆盖普通受控子调用与恢复；Workflow 的定义/绑定在自身运行内冻结，不与 Code Agent 共用 generation。普通 CustomMessage 使用统一 content/details，不要求逐类型 codec。
 
-本篇成功标准：扩展可登记能力、按明确边界请求运行操作并参与会话生命周期；同一 Trace 内可选择已固定版本的工具，新增或替换实现不改半途执行；声明式工作流可动态加载，同一流程在两种 Agent 使用方式下行为一致；Web 客户端通过 AgentSession 操作会话，不直接改变执行状态或历史文件。
+本篇成功标准：Code Agent 扩展通过明确入口登记、受控操作及会话生命周期进入系统；Workflow 静态图独立执行并保留子流程、条件、并行汇合和节点级暂停/显式恢复；业务直接调用或通过已有受控工具组合两类，Web 分别调用公开能力，不直接改状态或历史。动态定义、Coze 导入、热重载、多 generation 和补参仍在原未来阶段，本轮不启动 P4/P5，也不证明 P3 完成。
 
 ### 1.1 参考依据
 
@@ -33,46 +33,48 @@
 | 自定义消息 | 通用 customType、模型可用 content、应用 details 与 display；只有特殊结构才登记转换规则 | M06 |
 | 观察订阅 / 控制 hook | 事件或阶段、作用范围、错误行为 | M07；两类不能混为同一个 API |
 | skill | 名称、描述、可加载位置/资源 ID、加载工具、正文与引用基址、来源版本；自动可见清单与实际加载能力一致 | M08；未装配加载器时不宣称可自动使用 |
-| 子 Agent | 名称、用途、输入边界、工具范围、恢复能力 | 本篇与 M03 |
-| 工作流 | 名称、描述、来源/格式版本、输入/输出 schema、节点与资源绑定、恢复与副作用声明 | 本篇 |
-| 应用命令 | 参数/结果、执行权限与会话影响 | 由 AgentSession 协调调用；不要求前端使用 slash 文本 |
+| 子 Agent | 名称、用途、输入边界、工具范围、恢复能力 | Code Agent 内部普通受控委派；本篇与 M03 |
+| 工作流 | 名称、描述、来源/格式版本、输入/输出 schema、节点与资源绑定、恢复与副作用声明 | 独立 Workflow Agent 拥有，不经 Code Agent 的 ExtensionRegistry/AddSubAgent |
+| 应用命令 | 参数/结果、执行权限与会话影响 | Code Agent 命令由 AgentSession 协调；Workflow 操作由其自身入口校验；不要求 slash 文本 |
 
-- **EXT-01**：一期可执行插件采用已编译 Go 包注册。注册新 Go 代码需要构建；运行中可重载配置、skill 资源及启停已存在能力。
+- **EXT-01**：可执行插件采用已编译 Go 包静态注册，新增 Go 代码需要构建；配置/skill 重载、运行时启停已有能力仍保留在原未来阶段，本次不启动 P4/P5，也不将其描述为已交付。
 - **EXT-02**：注册期检查重复名称、缺依赖、非法 schema 和保留名称冲突。普通注册默认拒绝重名并标明来源；显式工具替换按 2.5 核对目标和权限并形成候选版本，不靠加载顺序覆盖。资源文件覆盖规则仍由 M08 定义。
-- **EXT-03**：ResourceLoader 返回候选资源与诊断，ExtensionRegistry 校验并登记能力；CreateAgentSession 装配初始版本，AgentSession 决定运行期间的激活时机。加载器和注册表不导入 AgentSession，不在加载/登记时提交任务或启动外部副作用。
+- **EXT-03**：Code Agent ResourceLoader 返回候选资源与诊断，ExtensionRegistry 校验并登记工具、skill、handler 和普通子 Agent；CreateAgentSession 初始装配，AgentSession 决定运行激活。Workflow 自身校验/编译定义和绑定，不由这些 Code Agent 对象管理。加载/登记不启动任务或副作用，不反向导入运行控制器。
 - **EXT-04**：可查询 active generation、pending generation、各扩展来源与加载错误；“登记成功”和“已对当前任务生效”必须区分。
 - **EXT-05**：同进程扩展使用宿主信任模型；业务权限控制工具调用，但不宣称能隔离任意 Go 插件代码。进程外插件协议与市场不自动纳入当前范围。
 
 ### 2.2 工作流的两种使用方式
 
-作为用户，我希望主 Agent 能委派已装配的工作流，也能在对话框中选择该工作流作为独立 Agent 直接执行，并获得相同的参数校验和权限约束。
+作为用户，我希望由业务/Web 直接调用独立 Workflow Agent，也能让业务把对另一类 Agent 的调用包装为已有受控工具进行组合。两类是同级产品，互调不要求在 SDK 内登记为父子 Agent。
 
-工作流保存为声明式数据，运行时由本项目节点执行器编译为 Eino 可执行图，再统一适配为 `WorkflowAgent`。不提供第三种 workflow-as-tool 产品入口；`task` 只是子委派的实现机制，不是单独的业务工具使用方式。
+`seasprak-workflow-agent` 现由 `internal/workflowagent` 独立拥有单份定义、校验、编译、Eino Graph、节点状态和生命周期；`WorkflowAgent`、`WorkflowOptions`、`CreateWorkflowAgent`、`OpenWorkflowAgent` 已从唯一 SDK 入口接通，有对应默认测试及消费者，具体签名见开发 06/10，最终认证见验证记录。`seasprak-code-agent` 现由 `internal/codeagent` 承接原 sessions 的普通会话职责，旧内置工作流 target、节点执行/状态/恢复已退出；其运行对象仍是 AgentSession，`CreateAgentSession` / `OpenAgentSession` 保留。两类共用 storage 契约及 jsonl/memory，不共享历史写入者、审批、恢复、generation 或隐式预算。
 
 | 使用方式 | 调用者/身份 | 输入与结果 |
 | --- | --- | --- |
-| 主 Agent 的子 Agent | 主 Agent 通过 task 委派，产生子 invocation | 委派描述转换为工作流参数后再次校验；不能跳过缺参确认；摘要回到原父调用 |
-| 对话框选择的独立 Agent | 用户为下一条新请求指定目标 Agent，创建顶层 Trace | 沿用当前 Session；跳过主模型路由；内部模型节点照常计数；结果直接进入该对话，不伪造父工具消息 |
+| 业务直接调用独立 Agent | Web/业务分别调用所选类型的公开入口；Workflow 使用自己的运行身份 | 跳过 Code Agent 主模型选路，按工作流输入/节点绑定校验；结果与节点状态属于 Workflow 自身，不写入 Code Agent 历史 |
+| 业务经已有受控工具组合 | 业务工具从调用方已有工具接口调用被调方公开能力；可双向组合 | 仅显式参数和获准结果/引用跨边界；被调方独立校验、授权、预算和恢复。外层模型工具结果只配对原调用，不伪造被调方的父 task/invocation |
 
-- **WF-01**：同一工作流共享一个规范化输入/输出契约，不能两种使用方式各有一套字段意义；缺参或非法参数在产生副作用前拒绝或提出结构化补参交互。
-- **WF-02**：独立选择与普通任务服从同 Session 的单写入者约束；在主任务活动时排队，不能旁路 Invoke 同时写历史。更换目标后的新请求不能被隐式映射为旧 Trace 的 follow-up。
-- **WF-03**：工作流失败需提供失败节点、错误类别、已完成步骤和可确认副作用；不把其中一步失败折成“整体成功”。
-- **WF-04**：子 Agent 方式返回的模型摘要和产品详细结果引用同一执行身份。富 `workflowResult` 不再伪造第二条未对应请求的 tool result。独立方式没有父工具请求，不生成虚假 FunctionToolResult。
-- **WF-05**：支持中断的工作流必须向上保留中断点和恢复状态，等待用户后恢复到正确位置；没有经过恢复验证的工作流只声明不可恢复。采用 Eino 不等于任意图可恢复。
-- **WF-06**：工具/节点副作用需显式定义可重试性与幂等键；恢复不能从头再次报销、发送或写账。系统不承诺跨任意第三方 API 的恰好一次语义。
+原 workflow-as-tool 禁令取消；允许业务工具封装，但 SDK 不新增专用跨 Agent 框架。Workflow 不作为 Code Agent 的内置子 Agent，也不沿用 AgentSession/targetAgent 执行。高级跨任务编排、审批/补偿、业务幂等、完整持久子树恢复和跨运行总预算由业务管理。
 
-独立 Workflow Agent 使用 Trace 记录完整执行，但不会自动获得开放式 Agent 的自由文本续轮能力。未声明支持 steering/follow-up 时按 M03 明确拒绝；独立 prompt 可排队等待当前 Trace 完成。作为子调用时，顶层两类输入仍由主 Agent 的循环消费。
+- **WF-01**：两种方式使用同一工作流规范化输入/输出契约；非法/缺失必需参数在副作用前拒绝。业务补参/参数提取仍在原未来阶段，不能借自然语言或工具包装跳过校验。
+- **WF-02**：每类独立保存运行、队列与写入所有权；Code Agent 的单 Session 串行规则不把 Workflow 纳入同一写入者。界面改选类型由业务路由到另一公开入口，不将新请求作为旧 Trace 的 follow-up。
+- **WF-03**：失败提供节点、错误类别、已完成步骤和可确认副作用；不将局部失败写成整体成功。
+- **WF-04**：Workflow 详细结果引用其自身运行身份；业务需要摘要时显式生成调用方结果视图。直接调用不生成虚假 FunctionToolResult，工具封装只返回一个配对原工具请求的结果；被调方日志和历史不自动合并。
+- **WF-05**：保留 Workflow 内部静态子流程、条件分支、并行汇合和已有节点级暂停审批/显式恢复；恢复由 Workflow 独立验证原节点状态、版本、checkpoint 与当前权限，不能凭 Code Agent 的 checkpoint 恢复整树。
+- **WF-06**：各节点/工具仍声明副作用及可重试性，使用原调用身份和已有结果防止盲重放。跨任务业务幂等与补偿由业务实现；未知效果先核对，不承诺任意第三方恰好一次或跨 Agent 事务。
 
-自然语言首次输入通过声明的字段映射或获准的参数提取步骤转换；首次输入适配与运行中的自由文本干预是不同能力。工作流只读取显式输入及允许的上下文，不自动把全部聊天历史注入所有节点。选择变化不影响已经受理、排队或正在恢复的任务。
+Workflow 不自动具有开放式 Agent 的 steering/follow-up 语义，也不读取 Code Agent 队列。未支持的自由文本续输入明确拒绝；已有节点审批/交互按自己的恢复入口处理。暂停、恢复与取消不转移给另一类运行对象；取消须等待实际执行退出，工具包装返回或超时不能证明被调方已停止。
+
+工作流只读取显式输入及获准上下文，不自动注入另一类的聊天历史、审批或授权原文。业务工具不是授权转移通道，被调方使用独立策略；外层 allow、批准或冻结参数不能代替内层调用的校验、参数冻结、票据、预算及授权。
 
 ### 2.2.1 动态定义、来源适配与节点范围
 
-作为扩展作者和接入方，我希望加载声明式工作流后即可运行，不必为每条业务流程重新编译 Go；新增节点执行器代码仍需重新构建。当前不提供可视化编排界面。
+静态定义、编译、静态子流程、条件/并行汇合及已有节点暂停审批/显式恢复归独立 Workflow Agent。下列 Coze 来源、运行时动态加载、补参与多 generation/热重载要求保留在原未来阶段（主要 P5；资源/Skills 仍按 P4），本轮不启动，也不作为已经交付的 API。新增节点执行器代码仍需重新构建；不提供可视化编排界面。
 
 - **WF-07**：工作流定义与可执行实例分离。定义保存标识、版本、输入输出、节点配置、字段引用、控制依赖、分支和资源引用，不包含 Go 函数或运行实例。编辑器布局不参与执行语义。校验通过后，使用宿主已编译的可信节点执行器构造 Eino 图。
 - **WF-08**：首个来源适配器读取指定版本的 Coze Canvas JSON。其他使用 Eino 的平台后续增加适配器，不假定共享数据格式。当前承诺指定 Canvas 子集；原始导出包需用真实文件单独认证，不能把 Canvas JSON 跑通写成任意 Coze 导出包可直接运行。
 - **WF-09**：首批支持开始/结束、字面量与节点输出引用、基础大模型节点、条件分支，以及本地固定版本的子工作流引用。本项目已登记工具可作为受控节点；Coze 插件引用只有显式绑定后才可执行。循环/批处理、代码、HTTP、知识库和平台全局变量列为后续能力。未知节点、未知执行语义或缺资源绑定给出节点级诊断并阻止激活。先检查全部原始节点与边，再做允许的孤立节点修剪；未连线未知节点也不得被静默丢弃。节点 ID 重复、缺少或重复开始/结束、悬空引用、字段类型不相容、非法分支/必需输入缺失、首批图或子流程依赖成环均给出节点/边/字段级诊断并拒绝激活。
-- **WF-10**：模型、工具、子流程和凭据使用本地受信绑定；外部文件中的资源 ID、代码或权限字段不直接取得宿主能力。导入、校验和编译成功后形成候选 generation，供下一次独立输入受理时选定；失败保留旧版。受理时一致保存目标及定义、子流程依赖、节点执行器与资源绑定版本，排队、执行和恢复均不重新取最新版。
+- **WF-10**：未来 Workflow 导入的模型、工具、子流程和凭据使用本地受信绑定，外部 ID/代码/权限字段不直接取得宿主能力。Workflow 自身导入、校验、编译形成候选 generation，在自己的下一独立运行受理时选定，失败保留旧版；保存定义、依赖、节点执行器与绑定版本，排队、执行、恢复不取最新版。Code Agent 注册/受理或业务工具版本不替它选版。
 
 现有 Go 代码登记方式可以保留，但不再是加载工作流的唯一方式。不嵌入整个 Coze 服务平台，也不在运行时编译任意 Go 源码。
 
@@ -80,9 +82,9 @@
 
 作为用户，我希望运行中增加 skill 或启用已编译插件时，当前任务稳定执行，新任务再使用更新。
 
-**EXT-06**：generation 整体验证；在新独立输入受理时选定并保存，整个 Trace 固定原版本，包括排队（含暂停自动启动的队列）、steering、follow-up、子 Agent 和恢复。只有随后受理的独立 Trace 可以采用新 generation；排队转执行、ContinueQueue、重启与内层自然停下消费 follow-up 均不构成升级边界。
+**EXT-06**：Code Agent generation 整体验证，在新独立输入受理时选定并保存；整个 Trace 的排队、steering、follow-up、普通子 Agent 和恢复固定原版本，ContinueQueue/重启不升级。Workflow 自己在独立运行受理时冻结版本；业务工具调用不继承调用方 generation。动态热更新与多 generation 管理仍在原未来阶段。
 
-**EXT-07**：版本冻结覆盖实际工具实现、参数 schema、handlers、skill 正文/引用资源、系统/项目指令快照，以及工作流定义、子流程依赖、节点执行器与资源绑定版本。不能只冻结工具名字、Agent 指针或工作流名称。在固定版本内选择本轮工具子集属于执行状态，按 2.5 与 M05 在 Turn 边界生效，不构成热更新；能力实现整体启停/替换仍走候选 generation。版本固定只针对指令和能力资源，不冻结正在读改的业务工作区文件。
+**EXT-07**：Code Agent 冻结实际工具实现、schema、handlers、普通子 Agent、skill 正文/引用资源及系统/项目指令。Workflow 自己冻结定义、子流程依赖、节点执行器及资源绑定，双方不串用引用。业务封装工具只固定自己的实现与参数，不替被调方选择/冻结版本。当前 generation 内选择本轮工具子集不构成热更新；不冻结正在读改的业务工作区文件。
 
 **EXT-08**：新版本构建失败时保留旧版本，并明确报告未生效；如果初次启动就无可用版本则返回不可执行。被已受理 Trace（包括 queued）或 checkpoint 引用的版本需要保留或能按清单重建；缺失时阻止执行/恢复，不能换成同名新版。
 
@@ -94,7 +96,7 @@ Eino skill backend 的 `Get` 是执行时读取入口，因此单纯延迟构建
 
 ### 2.4 开发者通过代码添加子 Agent
 
-已确认的使用方式是：开发者实现或创建一个符合执行接口的 Agent，再通过类似 `AddSubAgent(agent)` 的方法注册。终端用户使用已装配能力，不需要维护子 Agent 定义或新增能力的配置文件；当前也不提供可视化工作流编排界面。声明式工作流由 ResourceLoader 加载、适配并登记后，同样以 Agent 契约使用。
+本节仅为 Code Agent 普通 general-purpose/专家子 Agent 的代码登记方式：开发者实现或创建符合执行接口的 Agent，通过类似 `AddSubAgent(agent)` 的方法注册。终端用户不维护子 Agent 定义或执行限制配置。独立 Workflow 自己加载/编译定义，不经 Code Agent ResourceLoader、ExtensionRegistry 或 AddSubAgent；业务封装工具也不建立 SDK 内置父子关系。
 
 调用形态示意，名称和签名不视为已经实现的 API：
 
@@ -112,8 +114,8 @@ err = session.Prompt(ctx, "使用已注册能力完成任务")
 子 Agent 复用 `adk.TypedAgent[*schema.AgenticMessage]`；有中断恢复需求时满足对应的 `TypedResumableAgent[*schema.AgenticMessage]` 及产品恢复约束。主/子 Agent 的消息类型必须一致，不将旧 `adk.Agent` 别名直接混入 Agentic DeepAgent。pi 的 ExtensionAPI 提供工具等注册机制，本篇引用其职责划分；`ExtensionRegistry.AddSubAgent` 是本产品拟定接口，不作为 pi 现有 API 引用。Eino 在构造配置中接收同类型的 `SubAgents` 列表。[Agent 接口](../../eino/adk/interface.go#L453) `[VERIFY: eino/adk/interface.go:453]`；[可恢复接口](../../eino/adk/interface.go#L481) `[VERIFY: eino/adk/interface.go:481]`；[SubAgents 配置](../../eino/adk/prebuilt/deep/deep.go#L60) `[VERIFY: eino/adk/prebuilt/deep/deep.go:60]`。
 
 - **EXT-10**：开发者向 ExtensionRegistry 注册子 Agent 的名称、用途与执行实例；创建函数将登记结果装配给 Agent，不要求修改循环或生成终端用户配置。
-- **EXT-11**：声明式工作流经来源适配、校验和编译后，由 `WorkflowAgent` 适配成相同 Agent 契约登记。同一实例可用于主 Agent 委派，也可作为对话框可选的独立 Agent。不另建用户侧工作流配置系统，也不把工作流再作为第三种业务工具入口暴露。
-- **EXT-12**：AddSubAgent 成功不立即改变活动 Trace。创建前登记由 CreateAgentSession 装配；运行中登记形成候选，在下一独立输入受理时选定。已受理 queued 项及旧 Trace 的后续 Turn、follow-up 和恢复继续使用原版本。
+- **EXT-11**：Workflow 在独立 `internal/workflowagent` 目标包校验/编译 Eino Graph，并由自身生命周期运行；不经 AddSubAgent，不复用 AgentSession/targetAgent。业务可直接调用或用已有受控工具接口封装，两类互不导入，SDK 不新增专用跨 Agent 框架。
+- **EXT-12**：AddSubAgent 成功不立即改变活动 Trace。创建前登记由 CreateAgentSession 装配；运行中登记/候选热激活仍属原未来阶段，届时在下一独立输入受理时选定。已受理 queued 项及旧 Trace 的后续 Turn、follow-up 和恢复继续使用原版本；普通静态子 Agent 委派保留。
 
 注册的层级关系是上层提供实现、下层按接口执行。子 Agent 实现不依赖 AgentSession 或 ExtensionRegistry；测试页面调用 AgentSession 使用已装配能力，不负责创建代码实例或编辑执行限制。
 
@@ -138,7 +140,7 @@ err = session.Prompt(ctx, "使用已注册能力完成任务")
 
 ### 2.6 扩展可使用的运行操作
 
-ExtensionRegistry 负责登记；运行中的动作由注入的扩展上下文请求，交给 AgentSession 协调。扩展上下文是窄能力的集合，不是另一套会话控制器，不要求下层依赖 AgentSession 的具体类型。
+本节及 2.5/2.7 的扩展运行操作、会话 hooks 属于 Code Agent；Workflow 独立管理其运行/节点生命周期，不通过这些入口修改定义、状态或恢复。ExtensionRegistry 负责登记，运行动作由注入的扩展上下文请求并交 AgentSession 协调；该窄上下文不成为另一会话控制器，也不要求下层依赖其具体类型。
 
 | 操作组 | 扩展能做什么 | 明确边界 |
 | --- | --- | --- |
@@ -176,27 +178,29 @@ ExtensionRegistry 负责登记；运行中的动作由注入的扩展上下文�
 
 ## 3. AI 系统需求
 
-DeepAgent 的主模型负责选择工具和委派；用户在对话框中明确选择独立 Workflow Agent 时跳过该选路。Workflow 固定其节点依赖。工作流描述应明确适用条件和必填参数，不以“有已注册流程就永远优先”为由强迫不匹配任务进入业务流程。用户选择独立 Agent 后，沿用当前 Session；每次新 Trace 记录目标 Agent，界面改选不影响已受理请求。
+DeepAgent 主模型选择 Code Agent 工具与普通受控委派。业务/Web 明确选择 Workflow 时调用独立目标入口，Code Agent 主模型选路为 0；Workflow 固定节点依赖，并保留静态子流程、条件、并行汇合及节点级暂停/显式恢复。描述应明确适用条件和必填参数，不强迫不匹配任务进入流程。界面选择只决定业务路由，不把 Workflow 放入当前 Session 或 targetAgent，也不改变已受理运行。
 
-保留已确认的 general-purpose 子 Agent。它和专家 Agent 使用父 Trace 的权限、预算、generation 和取消范围，子 Agent 的可用能力不高于父任务许可。父任务的 steering 和历史提交权不能被子执行共享消费。
+保留 general-purpose/专家子 Agent 的父 Trace 权限、预算、generation 与取消约束；子调用不消费父队列或直接写主历史。这些是 Code Agent 内部委派，不用于独立 Workflow 的运行归属。跨两类受控工具包装只传显式输入与获准结果，被调方独立策略、预算与恢复，不自动继承父 Trace。
 
 已确认默认装配工作区内文件读写/搜索、命令执行、write_todos 与 general-purpose 子 Agent；提示词说明实际基础能力并允许应用替换，不将编码设为唯一任务类型。CreateAgentSession 负责装配与校验相应后端，缺失不静默裁剪；开发者可显式定制。能力清单及实际可注册子 Agent 名称来自当前 generation，模型编造的名称返回明确错误。
 
-评估必须分别验证任务路由质量与适配执行正确性：可控模型选定工作流验证参数/事件/恢复；真实模型任务集验证是否选择正确流程。子 Agent 的内部细节默认不全部注入主对话，主任务拿到可验证摘要与产物引用。
+评估分别验证业务路由与被调方执行：可控请求经 Workflow 直接入口或业务受控工具触发，检查自身参数、授权、节点事件/恢复；真实模型只评估其选用已装配业务工具的合理性，不将 Workflow 当成 Code task 子 Agent。普通 Code 子委派的内部细节不默认全部注入主对话，父任务取得可验证摘要/产物引用并保留父 Trace 约束。
 
 ## 4. 技术规格
 
 ### 4.1 扩展生命周期与层级
 
-ResourceLoader 加载/发现 → 原始数据校验/来源适配 → ExtensionRegistry 校验与编译候选 → 新独立输入受理时由 AgentSession 原子选定已验证版本并保存引用 → 串行执行固定版本 → 任务与 checkpoint 释放引用后可回收。初次启动由 CreateAgentSession 完成装配。具体资源释放和版本保留实现后续制定；已受理排队项也持有版本引用，旧任务不能读到已卸载的半套实现。
+Code Agent 生命周期：ResourceLoader 读取 → 原始数据/来源校验 → ExtensionRegistry 验证候选 → AgentSession 在新独立输入受理时原子选版并保存 → 串行执行 → 无旧 Trace/checkpoint 引用后按策略回收。初次由 CreateAgentSession 装配，queued 项也保留引用。动态资源与热重载仍在原未来阶段。
 
-L2 定义执行需要的窄契约，L3 插件实现这些契约。CreateAgentSession 和 AgentSession 分别承担初始化、运行中的协同；ResourceLoader 读取资源，ExtensionRegistry 登记能力，Agent 只消费执行配置。框架 hooks 经 L2 适配到产品阶段；保存由 SessionManager 承担，权限由应用提供策略实现，不形成反向 import。
+Workflow 生命周期独立：自身定义/绑定校验 → 编译 Eino Graph → 自身受理、节点执行与提交 → 自身节点暂停/审批及显式恢复。其定义、记录、写入者、generation、预算、审批和恢复不交给 Code Agent。未来动态候选按 Workflow 自己的边界激活。
+
+L2 定义执行窄契约，两类 L3 分别注入配置、上下文、策略和提交端口，不互相导入或持有对方管理器。Code Agent 由 SessionManager 保存，Workflow 由自身节点状态协调保存；共用 storage 契约/jsonl/memory，不共用业务日志。业务工具组合不新增 SDK 框架，也不拥有被调方授权。
 
 事件扩展采用 M07 的两条管道：观察订阅只读、可注销、返回值不改变执行决定；扩展控制 hook 对应 pi.on 的职责，在固定阶段等待决定或转换结果。每个 Trace 固定处理器快照和顺序；空闲会话维护操作在受理时固定其快照，单次操作不混用版本。handler 使用 2.6 的受控操作入口，不直接写 SessionStore；具体事件、组合和上下文边界以 M07 的 4.2.1～4.2.3 为唯一来源。
 
 ### 4.2 前端接入操作面
 
-下表定义能力，尚不是冻结的 REST 路由或 Go 签名：
+下表的会话/Trace/扩展命令属于 Code Agent；Workflow 操作单独路由自己的目标公开能力。内部 Web 使用受控 L3 接口，不导入 sdk、不直接操作管理器或 Store；外部消费者只导入 `github.com/ww1489/seasprak/sdk`。Web 不共用两类审批、恢复、generation、预算或日志写入者；业务工具不转移授权。路由域已接通为 Code `/v1/sessions`、Workflow 定义 `/v1/workflows` 和 Workflow 运行 `/v1/workflow-runs`；真实子路径、HTTP 白名单 DTO、typed cursor 与 Go 签名见开发方案 06/10/13，均有对应默认测试与消费者，最终认证见验证记录。详见 [M07 HTTP 操作语义](07-events-and-access.md#46-http-操作语义)：
 
 | 能力组 | 操作 | 必须表达的语义 |
 | --- | --- | --- |
@@ -204,16 +208,16 @@ L2 定义执行需要的窄契约，L3 插件实现这些契约。CreateAgentSes
 | Trace 与输入 | 提交、查询、取消、继续独立运行队列 | inputId 去重、traceId 归属；follow-up 不是新 Trace；取消后的旧队列暂停，新 prompt 不顺带启动它 |
 | 当前 Trace 干预 | steer、follow-up、交互回复、恢复 | traceId/interactionId；不能用普通消息代替授权 |
 | 未决效果 | 发起核对、提交材料、查询结论/恢复资格 | operationId 关联原 invocation/toolCall；核对不等于重试，许可和 checkpoint 条件仍独立检查 |
-| 能力 | 列出已装配能力、可独立选择的 Agent、输入 schema、active/pending 与加载结果 | 注册/校验/登记更新通过开发者 SDK 完成；当前不要求前端提供子 Agent 创建或编排界面 |
-| 工作流 | 查询定义、导入诊断、执行结果与节点状态 | 输入经 SubmitInput 指定目标 Agent；校验输入、顶层排队、执行身份与节点结果 |
-| 事件 | 建立订阅、携带游标、恢复快照 | Session 范围，durableSeq、瞬态 chunk 与重放边界 |
+| 能力 | 分别列出 Code Agent 能力/输入 schema 与 Workflow 定义/节点绑定/诊断 | 各自版本与范围分开；注册/导入由开发者 SDK 完成，不要求前端创建子 Agent 或编排界面；动态来源仍为未来 |
+| 工作流 | 业务分别调用独立 Workflow 的创建/打开、执行、节点状态、审批及显式恢复目标能力 | 不经 Code Agent SubmitInput/targetAgent；使用 Workflow 自身身份、schema、策略与写入者，工作流创建/打开及结构化运行已接线，有对应默认测试，最终认证见验证记录 |
+| 事件 | 各自订阅、游标与恢复快照 | 按产品类型及自身运行范围过滤；不把两类 durableSeq、审批或恢复混作 Code Agent Session |
 
 HTTP/SSE 是目前落地建议。SSE 的 `id` / `Last-Event-ID` 只提供游标传输机制，服务端仍需实现 M07 的恢复语义；浏览器重连不会自动提供应用持久化保证。[HTML SSE 标准](https://html.spec.whatwg.org/multipage/server-sent-events.html)
 
 ### 4.3 断连、重复请求与版本
 
-- 已受理任务由 AgentSession 持有并协调 SessionManager 保存；断开请求或订阅不能取消它。未完成受理的客户端重试使用原 inputId 查询/重发，避免重复输入或创建第二个 Trace。
-- 订阅以 M07 的快照与 durableSeq 消除“查状态后再监听”之间的空档；允许重复投递但必须可去重。不承诺永久重放全部 token。
+- 已受理任务由所属产品运行对象持有：Code 由 AgentSession/SessionManager 保存，Workflow 由自身生命周期独立提交。断开请求/订阅不取消它；重试在自身受理作用域去重，不借另一类 inputId/票据启动或恢复。业务跨运行幂等归业务，工具超时不证明被调方已停止。
+- 各自订阅使用 M07 快照与所属日志的 durableSeq 消除“查状态后再监听”空档；允许重复投递但可去重，两类不共享游标，不承诺永久重放全部 token。
 - 无效/过期游标要求客户端重新同步快照；慢客户端不能无限阻塞模型或吞掉关键状态。策略按 M07，页面只展示结果。
 - API/事件 envelope 有版本，未知可选扩展事件可忽略但需可诊断；不识别的关键动作或消息模式必须拒绝，不能猜参数。
 - 本地测试接口仍验证输入和访问范围，拒绝向任意第三方网页开放工具执行；公开远程多用户部署的身份与租户管理留到独立需求，不由本篇暗自扩展。
@@ -222,26 +226,26 @@ HTTP/SSE 是目前落地建议。SSE 的 `id` / `Last-Event-ID` 只提供游标�
 
 保持产品事件为核心通用语义；A2UI adapter 可以把适合富交互的结果映射为 UI 描述，把客户端动作映射为已有应用操作。移除 adapter 后文本与结构化结果仍能使用。
 
-完整 A2UI 支持不是当前用户已要求的必交付实现。若选用，需要在开发方案前确定版本、支持的组件/动作集合和未知组件回退行为；所有动作经 AgentSession 的操作校验和注入的权限策略，不能由 UI 文本定义任意工具执行。测试页面不规定 React、Vue 或其他前端框架。
+完整 A2UI 支持不是当前必交付实现；选用时明确版本、组件/动作集合及未知组件回退。外层按产品类型分别映射，动作经 Code AgentSession 或 Workflow 自身入口验证身份、票据、有效性与独立策略，另一类批准不能放行；UI 文本不能定义任意工具执行。测试页面不规定 React、Vue 或其他框架。
 
 ### 4.5 验收
 
 | 编号 | 场景 | 通过条件 |
 | --- | --- | --- |
 | EXT-A01 | 注册计算工具、自定义消息和观察者 | 无需改核心循环；错误与未知消息按对应契约处理 |
-| EXT-A02 | 注册重名工具/子 Agent 或非法 workflow schema | 候选版本不激活，错误指出名称及来源 |
-| EXT-A03 | 任务执行时编辑 skill 与其引用文件并 reload | 旧任务看到旧内容，新任务看到新内容；原工作区业务文件仍实时可读写 |
-| EXT-A04 | 等待交互时更新并停用插件，随后恢复 | 有旧版本则按原权限约束继续；缺失则明确不兼容，不调用替代实现 |
-| EXT-A05 | 代码创建自定义 Agent 或 Workflow 适配 Agent，再调用 AddSubAgent | 主 Agent 可委派；无需用户填写子 Agent 清单或上限；重名/非法实例拒绝；运行中添加按既有版本边界生效 |
-| WF-A01 | 同一短流程分别由主 Agent 委派和对话框选择独立 Agent 触发 | 同样 schema/结果；独立方式主模型选路次数为 0；独立结果无虚假父工具消息 |
-| WF-A02 | 长流程通过 task 委派但字段缺失 | 在副作用前返回缺参或等待补参；自然语言 description 不绕过 schema |
-| WF-A03 | 工作流第 2 步确认，确认后第 3 步失败 | 第 1 步不重放；等待/恢复/失败可关联同一 Trace 和节点 |
-| WF-A04 | 导入指定版本 Coze Canvas 子集；另有孤立未知节点、悬空边/字段引用、类型错误、缺少开始/结束、成环或缺绑定样本 | 合法子集可供两种使用方式选择；非法样本在修剪/激活前诊断，含字段级原因，不因删孤立节点而放行 |
-| WF-A05 | 活动和排队任务期间导入新定义或编译失败，再重启并继续队列 | 旧任务及已受理 queued 项保持原定义与绑定；引用不被回收；更新失败保留旧版；随后受理的独立 Trace 才可采用新 generation |
-| WF-A06 | 主任务运行中改选独立 Agent 并发送新输入 | 新请求排队为独立 Trace，不误投为旧 Trace 的 follow-up；已受理目标不因界面改选变化 |
-| WF-A07 | 无模型的“开始 → 本地工具节点 → 结束”流程，分别子委派和独立触发，并注入拒绝/恢复 | 节点通过绑定而非模型可见性校验；授权、预算、去重均生效；不伪造节点 Turn/模型工具请求；已有结果不重复执行 |
-| WF-A08 | 向声明支持续输入的非主 Agent Trace 提交定向输入，分别省略、匹配、错配 targetAgent | 省略时继承原目标，匹配时按原 Trace 受理，错配时拒绝且不另建 Trace；未支持续输入的工作流仍拒绝 |
-| API-A01 | 最小 Web 页面选择 Agent、提交、观察工具、取消、继续 | 仅公开接口；同一会话语义与 SDK 一致 |
+| EXT-A02 | Code 注册重名工具/普通子 Agent，或 Workflow 校验非法 schema | Code Registry/Workflow 自己分别拒绝候选，诊断指出名称和来源；不经 Code 统一 generation 激活 Workflow |
+| EXT-A03 | 未来阶段任务执行时编辑 skill 与其引用文件并 reload | 旧任务看到旧内容，新任务看到新内容；原工作区业务文件仍实时可读写；本轮不启动资源热重载阶段 |
+| EXT-A04 | 未来阶段等待交互时更新并停用插件，随后恢复 | 有旧版本则按原权限约束继续；缺失则明确不兼容，不调用替代实现；当前权限撤销仍生效 |
+| EXT-A05 | 代码创建 Code Agent 普通自定义/专家 Agent 后 AddSubAgent | 父模型可委派、父 Trace 权限/预算/generation/取消约束不变；非法/重名拒绝，运行登记按原版本边界生效；不登记独立 Workflow |
+| WF-A01 | 同一短流程业务直接调用或受控工具包装触发 | 同样 Workflow schema/结果与独立授权；直接方式 Code Agent 主模型为 0；包装只配对外层原工具请求，不合并历史或伪造父 task |
+| WF-A02 | 业务直接/工具调用 Workflow 字段缺失或外层已批准 | 副作用前拒绝非法/缺参；补参仍属未来能力，自然语言或外层批准不绕过内层 schema/授权/冻结/票据 |
+| WF-A03 | Workflow 第 2 步节点确认，恢复后第 3 步失败 | 静态子流程/条件/并行与节点审批显式恢复保持；第 1 步已确认效果不重放；等待、恢复、失败关联 Workflow 自身运行/节点，unknown 先核对 |
+| WF-A04 | 未来导入指定 Coze Canvas 子集，混入孤立未知节点、悬空引用、类型错误、成环或缺绑定 | 原未来阶段单独验收：合法子集由 Workflow 自身编译；非法样本修剪/激活前诊断，不把本轮独立架构视为 Coze 交付 |
+| WF-A05 | 未来 Workflow 动态定义更新/编译失败及自身排队/恢复 | 自身已受理运行固定定义/绑定，更新失败保留旧版；不与 Code Agent generation 共用，新独立运行才可选新版本；本轮不启动该阶段 |
+| WF-A06 | Code Agent 活动时界面改选 Workflow 并提交 | 外层调用 Workflow 自身入口，Code Agent 原 Trace/队列/恢复目标不变，不误投 follow-up 或共享写入者 |
+| WF-A07 | 无模型的“开始 → 本地工具节点 → 结束”直接/包装触发并注入拒绝与恢复 | 节点按自身固定绑定校验，独立授权/预算/去重；不伪造 Turn/provider 请求，已有结果不重复执行，外层批准不放行内层 |
+| WF-A08 | Workflow 输入/审批误发 AgentSession 或 targetAgent，或使用另一类恢复票据 | 明确拒绝错类型/错身份，不另建 Code Agent Trace；正确 Workflow 节点恢复仅用自身已保存条件，未支持自由续输入明确拒绝 |
+| API-A01 | 最小 Web 分别选择 Code/Workflow、提交、观察、取消与继续/恢复 | 只调用所选类型公开能力；Code Agent 同会话语义与 SDK 一致，Workflow 自身节点/运行语义独立，targetAgent 不跨类型 |
 | API-A02 | 断连重连、重复提交、慢消费者 | 无重复输入/Trace；durable 状态可恢复；无无限内存增长承诺漏洞 |
 | EVT-A01 | 注册观察订阅后注销、关闭 Session、再次订阅 | 注销幂等；旧句柄不再收到新事件；关闭释放监听器和临时流；新订阅从快照/游标开始 |
 | EVT-A02 | 注册两个 context/tool_result/input handler | 按顺序链式传递；转换失败阻止模型；tool_call block 短路；原始工具事实与历史不被改写 |
@@ -258,7 +262,7 @@ HTTP/SSE 是目前落地建议。SSE 的 `id` / `Last-Event-ID` 只提供游标�
 | EVT-A06 | 扩展返回合法/越界摘要，再在提交时注入失败 | 合法候选经 M09 校验后提交；越界或写入失败不更新摘要、文件 details 或活动游标 |
 | EVT-A07 | before hook 期间 reload；提交后通知失败 | 一次操作使用同一处理器快照；通知失败只报告扩展错误，已提交操作仍成功 |
 | EVT-A08 | 用户取消、权限撤销、断连、正常关闭与进程崩溃 | hook 不否决取消/撤销；断连不关闭 Session；清理有界，持久状态不依赖关闭回调 |
-| API-A03 | 将富结果适配为 A2UI（若启用） | 原产品事件无需改动；动作仍经 AgentSession 校验；禁用 adapter 不影响执行 |
+| API-A03 | 将富结果适配为 A2UI（若启用） | 原产品事件无需改动；动作经所选类型的 Code AgentSession 或 Workflow 自身入口校验身份、票据和独立策略，错类型/跨类批准拒绝；禁用 adapter 不影响执行 |
 
 ## 5. 风险与系统闭合
 

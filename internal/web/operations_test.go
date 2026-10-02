@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ww1489/seasprak/internal/sessions"
+	"github.com/ww1489/seasprak/internal/codeagent"
 	"github.com/ww1489/seasprak/internal/testkit"
 )
 
@@ -13,7 +13,7 @@ import (
 func offlineServer(t *testing.T, steps ...testkit.Step) (*Server, string, Config, *testkit.FakeModel) {
 	t.Helper()
 	model := testkit.NewFake(steps...)
-	testOptions = func(o *sessions.Options) { o.Model = model }
+	testOptions = func(o *codeagent.Options) { o.Model = model }
 	t.Cleanup(func() { testOptions = nil })
 	s, token, c := routeServer(t, "memory")
 	testOptions = nil

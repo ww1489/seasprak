@@ -78,9 +78,10 @@ func (s *CheckpointStore) Ref(key string) (agent.CheckpointBlobRef, bool) {
 	return ref, ok
 }
 
-// ValidatePausedCheckpoint validates the pinned Eino v0.9.21 gob envelope.
+// ValidatePausedCheckpoint validates the TurnLoop envelope and asks the pinned
+// framework to load the opaque runner state without executing the saved agent.
 // Neither blob presence nor a between-turn checkpoint authorizes a paused trace.
-func ValidatePausedCheckpoint(data []byte, expected agent.InputRef) error {
+func ValidatePausedCheckpoint(data []byte, expected agent.InputRef, targetName string) error {
 	var cp struct {
 		RunnerCheckpoint []byte
 		HasRunnerState   bool
@@ -94,6 +95,5 @@ func ValidatePausedCheckpoint(data []byte, expected agent.InputRef) error {
 	if r.Len() != 0 || !cp.HasRunnerState || len(cp.RunnerCheckpoint) == 0 || len(cp.CanceledItems) != 1 || cp.CanceledItems[0] != expected || len(cp.UnhandledItems) != 0 {
 		return product.NewError(product.CodeIncompatibleResume, "checkpoint has no matching interrupted runner state")
 	}
-	// The runner checkpoint itself is framework-private and must not be interpreted by sessions.
-	return nil
+	return validateNativeCheckpoint(cp.RunnerCheckpoint, targetName)
 }

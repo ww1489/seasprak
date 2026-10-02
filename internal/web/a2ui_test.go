@@ -12,8 +12,8 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/ww1489/seasprak/internal/agent"
-	"github.com/ww1489/seasprak/internal/sessions"
-	"github.com/ww1489/seasprak/internal/sessions/state"
+	"github.com/ww1489/seasprak/internal/codeagent"
+	"github.com/ww1489/seasprak/internal/codeagent/state"
 	"github.com/ww1489/seasprak/internal/testkit"
 )
 
@@ -117,8 +117,8 @@ func tempEvent(t *testing.T, typ, trace string, payload any) agent.Event {
 	return ev
 }
 
-func emptySnapshot(cursor uint64) sessions.Snapshot {
-	return sessions.Snapshot{SessionID: "s1", Cursor: cursor, Traces: map[string]*state.TraceState{}, Inputs: map[string]*state.InputState{}}
+func emptySnapshot(cursor uint64) codeagent.Snapshot {
+	return codeagent.Snapshot{SessionID: "s1", Cursor: cursor, Traces: map[string]*state.TraceState{}, Inputs: map[string]*state.InputState{}}
 }
 
 func TestA2UIRenderGoldenStructureForCompletedPrompt(t *testing.T) {
@@ -324,7 +324,7 @@ func TestA2UITerminalTaskIsNotRevivedByLateTemporaryEvents(t *testing.T) {
 	}
 	// A durable fact at or before the seed cursor re-emits the current view
 	// rather than regressing to its older payload.
-	old := projectUIEvent("s1", durableEvent(t, "trace.state_changed", "t1", 2, state.TraceState{ID: "t1", State: "running"}), newUIState("s1", func() sessions.Snapshot {
+	old := projectUIEvent("s1", durableEvent(t, "trace.state_changed", "t1", 2, state.TraceState{ID: "t1", State: "running"}), newUIState("s1", func() codeagent.Snapshot {
 		s := emptySnapshot(4)
 		s.Traces["t1"] = &state.TraceState{ID: "t1", State: "completed", Settled: true}
 		return s
@@ -386,15 +386,14 @@ func TestA2UIApprovalMapsInteractionAndLeaksNothingPrivate(t *testing.T) {
 	}
 }
 
-// Progress components carry identity, name and state only: child results,
-// node results and error text never reach the browser.
+// Progress components carry identity, name and state only: child results
+// and model counts never reach the browser.
 func TestProgressComponentsExposeOnlyIdentityAndState(t *testing.T) {
 	inv := invocationComponent(state.Invocation{ID: "inv-1", ParentInvocationID: "root", ParentCallID: "call-1", TraceID: "tr", Target: agent.TargetAgent{Name: "reviewer"}, State: "running", Result: "SECRET-RESULT", ModelCalls: 3})
-	node := workflowNodeComponent(state.WorkflowNodeRun{ID: "inv-1:t:1", TraceID: "tr", InvocationID: "inv-1", NodeID: "t", Kind: "tool", State: "failed", Result: "SECRET-RESULT", Error: "SECRET-ERROR", ToolCallID: "inv-1:t:1"})
-	if inv.ID != "inv:inv-1" || node.ID != "node:inv-1:t:1" {
-		t.Fatalf("ids %q %q", inv.ID, node.ID)
+	if inv.ID != "inv:inv-1" {
+		t.Fatalf("id %q", inv.ID)
 	}
-	for _, c := range []a2uiComponent{inv, node} {
+	for _, c := range []a2uiComponent{inv} {
 		b, err := json.Marshal(c)
 		if err != nil {
 			t.Fatal(err)
@@ -412,13 +411,9 @@ func TestProgressComponentsExposeOnlyIdentityAndState(t *testing.T) {
 	if b, _ := json.Marshal(inv); string(b) != want {
 		t.Fatalf("invocation %s", b)
 	}
-	want = `{"id":"node:inv-1:t:1","component":{"WorkflowNode":{"nodeExecutionId":"inv-1:t:1","traceId":"tr","nodeId":"t","kind":"tool","state":"failed"}}}`
-	if b, _ := json.Marshal(node); string(b) != want {
-		t.Fatalf("node %s", b)
-	}
 }
 
-// Render places Invocation and WorkflowNode after tasks and before approvals,
+// Render places Invocation after tasks and before approvals,
 // each sorted by product ID; a later snapshot refresh reports changed state.
 func TestA2UIRenderAndRefreshProgressComponents(t *testing.T) {
 	snap := emptySnapshot(4)
@@ -429,14 +424,13 @@ func TestA2UIRenderAndRefreshProgressComponents(t *testing.T) {
 		"b": {ID: "b", TraceID: "t1", Target: agent.TargetAgent{Name: "writer"}, State: "running"},
 		"a": {ID: "a", TraceID: "t1", Target: agent.TargetAgent{Name: "reviewer"}, State: "completed"},
 	}
-	snap.WorkflowNodes = map[string]state.WorkflowNodeRun{"w:n:1": {ID: "w:n:1", TraceID: "t1", NodeID: "n", Kind: "tool", State: "running"}}
 	store := newA2UIStore()
 	for _, line := range strings.Split(strings.TrimSpace(encodeAll(t, renderSnapshot("s1", snap, "inst"))), "\n") {
 		store.apply(t, line)
 	}
 	var root a2uiComponentValue
 	_ = json.Unmarshal([]byte(store.components[a2uiRootID]), &root)
-	want := []string{"task:t1", "inv:a", "inv:b", "node:w:n:1", "approval:i1"}
+	want := []string{"task:t1", "inv:a", "inv:b", "approval:i1"}
 	if root.Column == nil || !slices.Equal(root.Column.Children, want) {
 		t.Fatalf("root children %s", store.components[a2uiRootID])
 	}
@@ -457,7 +451,7 @@ func TestA2UIRenderAndRefreshProgressComponents(t *testing.T) {
 		t.Fatal("changed invocation state not reported")
 	}
 	frames := encodeAll(t, known.progressFrames())
-	if !strings.Contains(frames, `"invocationId":"b","parentCallId":"","agent":"writer","state":"completed"`) || !strings.Contains(frames, `"node:w:n:1"`) {
+	if !strings.Contains(frames, `"invocationId":"b","parentCallId":"","agent":"writer","state":"completed"`) || strings.Contains(frames, `"WorkflowNode"`) || strings.Contains(frames, `"node:`) {
 		t.Fatalf("progress frames %s", frames)
 	}
 }

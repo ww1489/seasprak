@@ -13,17 +13,18 @@ import (
 	"github.com/ww1489/seasprak/internal/agent"
 	einorun "github.com/ww1489/seasprak/internal/agent/eino"
 	"github.com/ww1489/seasprak/internal/agent/tools"
+	"github.com/ww1489/seasprak/internal/codeagent"
+	"github.com/ww1489/seasprak/internal/codeagent/state"
 	"github.com/ww1489/seasprak/internal/config"
 	product "github.com/ww1489/seasprak/internal/errors"
 	"github.com/ww1489/seasprak/internal/llm"
-	"github.com/ww1489/seasprak/internal/sessions"
-	"github.com/ww1489/seasprak/internal/sessions/state"
-	"github.com/ww1489/seasprak/internal/sessions/store"
+	store "github.com/ww1489/seasprak/internal/storage"
+	"github.com/ww1489/seasprak/internal/workflowagent"
 )
 
 const (
-	ProfileDefault = sessions.ProfileDefault
-	ProfileMemory  = sessions.ProfileMemory
+	ProfileDefault = codeagent.ProfileDefault
+	ProfileMemory  = codeagent.ProfileMemory
 
 	CodeInvalidArgument        = product.CodeInvalidArgument
 	CodeUnauthenticated        = product.CodeUnauthenticated
@@ -72,175 +73,193 @@ const (
 var ErrControlledStop = einorun.ErrControlledStop
 
 type (
-	SessionOptions             = sessions.Options
-	AgentSession               = sessions.AgentSession
-	Snapshot                   = sessions.Snapshot
-	ModelAttemptView           = sessions.ModelAttemptView
-	ObservationView            = sessions.ObservationView
-	ResumeCommand              = sessions.ResumeCommand
-	InteractionResponse        = sessions.InteractionResponse
-	Interaction                = state.Interaction
-	Approval                   = state.Approval
-	Reconciliation             = state.Reconciliation
-	Invocation                 = state.Invocation
-	ReconcileCommand           = sessions.ReconcileCommand
-	ReconcileEvidence          = sessions.ReconcileEvidence
-	ReconcileQuery             = sessions.ReconcileQuery
-	ReconcileQueryRequest      = sessions.ReconcileQueryRequest
-	ReconcileQueryFunc         = sessions.ReconcileQueryFunc
-	CommandRequest             = sessions.CommandRequest
-	CommandResult              = sessions.CommandResult
-	FrozenExecution            = agent.FrozenExecution
-	ResumeEligibility          = sessions.ResumeEligibility
-	PendingReconciliation      = sessions.PendingReconciliation
-	OperationReceipt           = state.OperationReceipt
-	OperationStatus            = state.OperationStatus
-	Selection                  = state.Selection
-	ModelChoice                = sessions.ModelChoice
-	SetDefaultModelRequest     = sessions.SetDefaultModelRequest
-	SelectNextTurnModelRequest = sessions.SelectNextTurnModelRequest
-	SetActiveToolsRequest      = sessions.SetActiveToolsRequest
-	SearchToolsRequest         = sessions.SearchToolsRequest
-	CancelTraceRequest         = sessions.CancelTraceRequest
-	ContinueQueueRequest       = sessions.ContinueQueueRequest
-	Capabilities               = sessions.Capabilities
-	AgentDefinition            = agent.AgentDefinition
-	AgentInfo                  = agent.AgentInfo
-	WorkflowDefinition         = agent.WorkflowDefinition
-	WorkflowNode               = agent.WorkflowNode
-	WorkflowValue              = agent.WorkflowValue
-	WorkflowRef                = agent.WorkflowRef
-	WorkflowCondition          = agent.WorkflowCondition
-	WorkflowEdge               = agent.WorkflowEdge
-	CompiledWorkflow           = agent.CompiledWorkflow
-	WorkflowNodeRun            = state.WorkflowNodeRun
-	ToolCandidate              = sessions.ToolCandidate
-	Subscription               = sessions.Subscription
-	TraceState                 = state.TraceState
-	InputState                 = state.InputState
-	AgentMessage               = agent.AgentMessage
-	CustomMessage              = agent.CustomMessage
-	SummaryMessage             = agent.SummaryMessage
-	CommandMessage             = agent.CommandMessage
-	OpaqueMessage              = agent.OpaqueMessage
-	TurnRecord                 = agent.TurnRecord
-	ToolRecord                 = agent.ToolRecord
-	ToolObservation            = agent.ToolObservation
-	ToolOutputChunk            = agent.ToolOutputChunk
-	ToolOutputSink             = agent.ToolOutputSink
-	ToolOutputDelta            = agent.ToolOutputDelta
-	InputCommand               = agent.InputCommand
-	InputReceipt               = agent.InputReceipt
-	TargetAgent                = agent.TargetAgent
-	Event                      = agent.Event
-	EventScope                 = agent.EventScope
-	MessageKind                = agent.MessageKind
-	MessageStatus              = agent.MessageStatus
-	MessageScope               = agent.MessageScope
-	SourceKind                 = agent.SourceKind
-	SourceRef                  = agent.SourceRef
-	Usage                      = agent.Usage
-	ExecutionScope             = agent.ExecutionScope
-	Fact                       = agent.Fact
-	FrozenCall                 = agent.FrozenCall
-	Decision                   = agent.Decision
-	ExecutionSink              = agent.ExecutionSink
-	ToolAuthorizer             = agent.ToolAuthorizer
-	BoundaryController         = agent.BoundaryController
-	TurnPlan                   = agent.TurnPlan
-	TurnFact                   = agent.TurnFact
-	BudgetLedger               = agent.BudgetLedger
-	Error                      = product.Error
-	Limits                     = config.Limits
-	Model                      = llm.Model
-	ModelConfig                = llm.ModelConfig
-	ModelKey                   = llm.ModelKey
-	RequestedOptions           = llm.RequestedOptions
-	EffectiveOptions           = llm.EffectiveOptions
-	Catalog                    = llm.Catalog
-	Capability                 = llm.Capability
-	CapabilityName             = llm.CapabilityName
-	ModelCapabilities          = llm.ModelCapabilities
-	CredentialResolver         = llm.CredentialResolver
-	ResolvedCredential         = llm.ResolvedCredential
-	ToolDefinition             = tools.Definition
-	ExecutionDescription       = tools.ExecutionDescription
-	ExecutorOption             = tools.ExecutorOption
-	ResourceScheduler          = tools.ResourceScheduler
-	Operations                 = tools.Operations
-	BuiltinOptions             = tools.BuiltinOptions
-	OutputLimits               = tools.OutputLimits
-	Preview                    = tools.Preview
-	BackendCapabilities        = agent.BackendCapabilities
-	BackendCapabilityReporter  = agent.BackendCapabilityReporter
-	FileOperations             = agent.FileOperations
-	FileEffect                 = agent.FileEffect
-	ListRequest                = agent.ListRequest
-	ListResult                 = agent.ListResult
-	FileEntry                  = agent.FileEntry
-	ReadRequest                = agent.ReadRequest
-	ReadResult                 = agent.ReadResult
-	SearchRequest              = agent.SearchRequest
-	SearchResult               = agent.SearchResult
-	SearchMatch                = agent.SearchMatch
-	ProcessOperations          = agent.ProcessOperations
-	ProgressSink               = agent.ProgressSink
-	ArtifactStore              = agent.ArtifactStore
-	OutputArtifactStore        = agent.OutputArtifactStore
-	OutputArtifactBinding      = agent.OutputArtifactBinding
-	OutputArtifactInput        = agent.OutputArtifactInput
-	OutputArtifactRead         = agent.OutputArtifactRead
-	OutputRedactor             = agent.OutputRedactor
-	ToolOutputProjection       = agent.ToolOutputProjection
-	TodoOperations             = agent.TodoOperations
-	AuthorizedExecution        = agent.AuthorizedExecution
-	AuthorizedProcess          = agent.AuthorizedProcess
-	AuthorizedFileWrite        = agent.AuthorizedFileWrite
-	AuthorizedFileEdit         = agent.AuthorizedFileEdit
-	ArtifactInput              = agent.ArtifactInput
-	ArtifactRead               = agent.ArtifactRead
-	ArtifactRef                = agent.ArtifactRef
-	ProcessProgress            = agent.ProcessProgress
-	ProcessObservation         = agent.ProcessObservation
-	ExecutionRef               = agent.ExecutionRef
-	StopObservation            = agent.StopObservation
-	TodoEffect                 = agent.TodoEffect
-	AuthorizedTodo             = agent.AuthorizedTodo
-	Executor                   = tools.Executor
-	Outcome                    = tools.Outcome
-	AgentDeps                  = einorun.Deps
-	SessionStore               = store.Store
-	Commit                     = store.Commit
-	ExpectedCommit             = store.ExpectedCommit
-	CommitReceipt              = store.CommitReceipt
-	Header                     = store.Header
-	StoredSession              = store.StoredSession
-	CommitReader               = store.CommitReader
-	Record                     = store.Record
-	BranchUpdate               = store.BranchUpdate
+	WorkflowAgent               = workflowagent.WorkflowAgent
+	WorkflowOptions             = workflowagent.WorkflowOptions
+	WorkflowInputCommand        = workflowagent.WorkflowInputCommand
+	WorkflowInputReceipt        = workflowagent.WorkflowInputReceipt
+	WorkflowControlCommand      = workflowagent.WorkflowControlCommand
+	WorkflowInteractionResponse = workflowagent.WorkflowInteractionResponse
+	WorkflowOperationReceipt    = workflowagent.WorkflowOperationReceipt
+	WorkflowOperation           = workflowagent.WorkflowOperation
+	WorkflowSnapshot            = workflowagent.WorkflowSnapshot
+	WorkflowModelAttemptView    = workflowagent.WorkflowModelAttemptView
+	WorkflowObservationView     = workflowagent.WorkflowObservationView
+	WorkflowSubscribeOptions    = workflowagent.WorkflowSubscribeOptions
+	WorkflowSubscription        = workflowagent.WorkflowSubscription
+	WorkflowInteraction         = workflowagent.WorkflowInteraction
+	WorkflowRunNode             = workflowagent.NodeRun
+	WorkflowTransient           = workflowagent.WorkflowTransient
+	WorkflowToolPreview         = workflowagent.WorkflowToolPreview
+	ResolvedPolicy              = agent.ResolvedPolicy
+	SessionOptions              = codeagent.Options
+	AgentSession                = codeagent.AgentSession
+	Snapshot                    = codeagent.Snapshot
+	ModelAttemptView            = codeagent.ModelAttemptView
+	ObservationView             = codeagent.ObservationView
+	ResumeCommand               = codeagent.ResumeCommand
+	InteractionResponse         = codeagent.InteractionResponse
+	Interaction                 = state.Interaction
+	Approval                    = state.Approval
+	Reconciliation              = state.Reconciliation
+	Invocation                  = state.Invocation
+	ReconcileCommand            = codeagent.ReconcileCommand
+	ReconcileEvidence           = codeagent.ReconcileEvidence
+	ReconcileQuery              = codeagent.ReconcileQuery
+	ReconcileQueryRequest       = codeagent.ReconcileQueryRequest
+	ReconcileQueryFunc          = codeagent.ReconcileQueryFunc
+	CommandRequest              = codeagent.CommandRequest
+	CommandResult               = codeagent.CommandResult
+	FrozenExecution             = agent.FrozenExecution
+	ResumeEligibility           = codeagent.ResumeEligibility
+	PendingReconciliation       = codeagent.PendingReconciliation
+	OperationReceipt            = state.OperationReceipt
+	OperationStatus             = state.OperationStatus
+	Selection                   = state.Selection
+	ModelChoice                 = codeagent.ModelChoice
+	SetDefaultModelRequest      = codeagent.SetDefaultModelRequest
+	SelectNextTurnModelRequest  = codeagent.SelectNextTurnModelRequest
+	SetActiveToolsRequest       = codeagent.SetActiveToolsRequest
+	SearchToolsRequest          = codeagent.SearchToolsRequest
+	CancelTraceRequest          = codeagent.CancelTraceRequest
+	ContinueQueueRequest        = codeagent.ContinueQueueRequest
+	Capabilities                = codeagent.Capabilities
+	AgentDefinition             = agent.AgentDefinition
+	AgentInfo                   = agent.AgentInfo
+	WorkflowDefinition          = workflowagent.WorkflowDefinition
+	WorkflowNode                = workflowagent.WorkflowNode
+	WorkflowValue               = workflowagent.WorkflowValue
+	WorkflowRef                 = workflowagent.WorkflowRef
+	WorkflowCondition           = workflowagent.WorkflowCondition
+	WorkflowEdge                = workflowagent.WorkflowEdge
+	CompiledWorkflow            = workflowagent.CompiledWorkflow
+	ToolCandidate               = codeagent.ToolCandidate
+	Subscription                = codeagent.Subscription
+	TraceState                  = state.TraceState
+	InputState                  = state.InputState
+	AgentMessage                = agent.AgentMessage
+	CustomMessage               = agent.CustomMessage
+	SummaryMessage              = agent.SummaryMessage
+	CommandMessage              = agent.CommandMessage
+	OpaqueMessage               = agent.OpaqueMessage
+	TurnRecord                  = agent.TurnRecord
+	ToolRecord                  = agent.ToolRecord
+	ToolObservation             = agent.ToolObservation
+	ToolOutputChunk             = agent.ToolOutputChunk
+	ToolOutputSink              = agent.ToolOutputSink
+	ToolOutputDelta             = agent.ToolOutputDelta
+	InputCommand                = agent.InputCommand
+	InputReceipt                = agent.InputReceipt
+	TargetAgent                 = agent.TargetAgent
+	Event                       = agent.Event
+	EventScope                  = agent.EventScope
+	MessageKind                 = agent.MessageKind
+	MessageStatus               = agent.MessageStatus
+	MessageScope                = agent.MessageScope
+	SourceKind                  = agent.SourceKind
+	SourceRef                   = agent.SourceRef
+	Usage                       = agent.Usage
+	ExecutionScope              = agent.ExecutionScope
+	Fact                        = agent.Fact
+	FrozenCall                  = agent.FrozenCall
+	Decision                    = agent.Decision
+	ExecutionSink               = agent.ExecutionSink
+	ToolAuthorizer              = agent.ToolAuthorizer
+	BoundaryController          = agent.BoundaryController
+	TurnPlan                    = agent.TurnPlan
+	TurnFact                    = agent.TurnFact
+	BudgetLedger                = agent.BudgetLedger
+	Error                       = product.Error
+	Limits                      = config.Limits
+	Model                       = llm.Model
+	ModelConfig                 = llm.ModelConfig
+	ModelKey                    = llm.ModelKey
+	RequestedOptions            = llm.RequestedOptions
+	EffectiveOptions            = llm.EffectiveOptions
+	Catalog                     = llm.Catalog
+	Capability                  = llm.Capability
+	CapabilityName              = llm.CapabilityName
+	ModelCapabilities           = llm.ModelCapabilities
+	CredentialResolver          = llm.CredentialResolver
+	ResolvedCredential          = llm.ResolvedCredential
+	ToolDefinition              = tools.Definition
+	ExecutionDescription        = tools.ExecutionDescription
+	ExecutorOption              = tools.ExecutorOption
+	ResourceScheduler           = tools.ResourceScheduler
+	Operations                  = tools.Operations
+	BuiltinOptions              = tools.BuiltinOptions
+	OutputLimits                = tools.OutputLimits
+	Preview                     = tools.Preview
+	BackendCapabilities         = agent.BackendCapabilities
+	BackendCapabilityReporter   = agent.BackendCapabilityReporter
+	FileOperations              = agent.FileOperations
+	FileEffect                  = agent.FileEffect
+	ListRequest                 = agent.ListRequest
+	ListResult                  = agent.ListResult
+	FileEntry                   = agent.FileEntry
+	ReadRequest                 = agent.ReadRequest
+	ReadResult                  = agent.ReadResult
+	SearchRequest               = agent.SearchRequest
+	SearchResult                = agent.SearchResult
+	SearchMatch                 = agent.SearchMatch
+	ProcessOperations           = agent.ProcessOperations
+	ProgressSink                = agent.ProgressSink
+	ArtifactStore               = agent.ArtifactStore
+	OutputArtifactStore         = agent.OutputArtifactStore
+	OutputArtifactBinding       = agent.OutputArtifactBinding
+	OutputArtifactInput         = agent.OutputArtifactInput
+	OutputArtifactRead          = agent.OutputArtifactRead
+	OutputRedactor              = agent.OutputRedactor
+	ToolOutputProjection        = agent.ToolOutputProjection
+	TodoOperations              = agent.TodoOperations
+	AuthorizedExecution         = agent.AuthorizedExecution
+	AuthorizedProcess           = agent.AuthorizedProcess
+	AuthorizedFileWrite         = agent.AuthorizedFileWrite
+	AuthorizedFileEdit          = agent.AuthorizedFileEdit
+	ArtifactInput               = agent.ArtifactInput
+	ArtifactRead                = agent.ArtifactRead
+	ArtifactRef                 = agent.ArtifactRef
+	ProcessProgress             = agent.ProcessProgress
+	ProcessObservation          = agent.ProcessObservation
+	ExecutionRef                = agent.ExecutionRef
+	StopObservation             = agent.StopObservation
+	TodoEffect                  = agent.TodoEffect
+	AuthorizedTodo              = agent.AuthorizedTodo
+	Executor                    = tools.Executor
+	Outcome                     = tools.Outcome
+	AgentDeps                   = einorun.Deps
+	SessionStore                = store.Store
+	Commit                      = store.Commit
+	ExpectedCommit              = store.ExpectedCommit
+	CommitReceipt               = store.CommitReceipt
+	Header                      = store.Header
+	StoredSession               = store.StoredSession
+	CommitReader                = store.CommitReader
+	Record                      = store.Record
+	BranchUpdate                = store.BranchUpdate
 )
 
+func CreateWorkflowAgent(ctx context.Context, opts WorkflowOptions) (*WorkflowAgent, error) {
+	return workflowagent.CreateWorkflowAgent(ctx, opts)
+}
+
+func OpenWorkflowAgent(ctx context.Context, opts WorkflowOptions) (*WorkflowAgent, error) {
+	return workflowagent.OpenWorkflowAgent(ctx, opts)
+}
+
 func CreateAgentSession(ctx context.Context, opts SessionOptions) (*AgentSession, error) {
-	return sessions.CreateAgentSession(ctx, opts)
+	return codeagent.CreateAgentSession(ctx, opts)
 }
 
 func OpenAgentSession(ctx context.Context, opts SessionOptions) (*AgentSession, error) {
-	return sessions.OpenAgentSession(ctx, opts)
+	return codeagent.OpenAgentSession(ctx, opts)
 }
 
 // WorkflowFormatV1 is the accepted unified workflow format; WorkflowModelBinding
-// is the only model binding name a workflow target may use.
+// is the trusted default model binding used by startup workflow inventories.
 const (
-	WorkflowFormatV1     = agent.WorkflowFormatV1
-	WorkflowModelBinding = sessions.WorkflowModelBinding
+	WorkflowFormatV1     = workflowagent.WorkflowFormatV1
+	WorkflowModelBinding = workflowagent.WorkflowModelBinding
 )
-
-// CompileWorkflowTarget validates def against the session's registered tools,
-// model binding and already listed workflow targets, and returns a workflow
-// AgentDefinition to append to SessionOptions.Agents.
-func CompileWorkflowTarget(def WorkflowDefinition, opts SessionOptions) (AgentDefinition, error) {
-	return sessions.CompileWorkflowTarget(def, opts)
-}
 
 func NewError(code, message string) *Error { return product.NewError(code, message) }
 

@@ -90,7 +90,7 @@ func TestCheckpointLegacyScalarResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidatePausedCheckpoint(blob, checkpointPrompt); err != nil {
+	if err := ValidatePausedCheckpoint(blob, checkpointPrompt, "main"); err != nil {
 		t.Fatal(err)
 	}
 	h := newCheckpointHarness(true)

@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/ww1489/seasprak/internal/agent"
-	"github.com/ww1489/seasprak/internal/sessions/state"
+	"github.com/ww1489/seasprak/internal/codeagent/state"
 )
 
 // Invocations project identity, parent, target and state only; the child's

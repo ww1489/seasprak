@@ -187,64 +187,87 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	}
 	hookCtx, finishHooks := context.WithTimeout(ctx, e.budg.Limits().HookTimeout)
 	defer finishHooks()
-	final, err := e.prepareArguments(hookCtx, def, arguments)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return e.rejectWithError(ctx, envelope, scope, call, Outcome{Status: "cancelled", Content: err.Error(), SideEffect: "none"}, accepted, err)
-		}
-		return e.reject(ctx, envelope, scope, call, Outcome{Status: "failed", Content: "invalid tool arguments", SideEffect: "none"}, accepted)
-	}
-	description, err := resolveDescription(hookCtx, def, final)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return e.rejectWithError(ctx, envelope, scope, call, Outcome{Status: "cancelled", Content: err.Error(), SideEffect: "none"}, accepted, err)
-		}
-		return e.rejectWithError(ctx, envelope, scope, call, Outcome{Status: "failed", Content: err.Error(), SideEffect: "none"}, accepted, err)
-	}
-	if err := hookCtx.Err(); err != nil {
-		return e.rejectWithError(ctx, envelope, scope, call, Outcome{Status: "cancelled", Content: err.Error(), SideEffect: "none"}, accepted, err)
-	}
-	policyRef := "trusted-injected"
-	if source, ok := e.sink.(agent.ExecutionPolicySource); ok {
-		policyRef, err = source.ExecutionPolicyRef(ctx, envelope)
-		if err != nil {
-			return Outcome{}, err
-		}
-	}
-	actualTimeout := e.budg.Limits().ToolTimeout
-	if description.Timeout > 0 && description.Timeout < actualTimeout {
-		actualTimeout = description.Timeout
-	}
-	frozen := agent.FrozenExecution{
-		ID: "execution:" + call.CallID, CallID: call.CallID, Scope: scope, Origin: origin, Tool: name,
-		ToolVersion: def.Version, SchemaHash: argumentHash(def.Schema), Generation: call.Generation, SelectionRevision: call.SelectionRevision,
-		ProviderCallID: call.ProviderCallID, NodeExecutionID: nodeExecutionID, OperationID: operationID, EntryPoint: origin, OriginalArgumentsHash: argumentHash([]byte(call.Arguments)),
-		FinalArgumentsHash: argumentHash(final), ArgumentsRef: "arguments:" + call.CallID,
-		FinalArguments: append(json.RawMessage(nil), final...), Resources: description.Resources,
-		Effect: description.Effect, Concurrency: description.Concurrency, BackendID: description.BackendID,
-		Argv: description.Argv, Shell: description.Shell, Cwd: description.Cwd, EnvironmentRef: description.EnvironmentRef,
-		StdinRef: description.StdinRef, Mounts: description.Mounts, TempRootRef: description.TempRootRef,
-		OutputLimitBytes: description.OutputLimitBytes, Timeout: actualTimeout, PolicyRef: policyRef, RequestedGrantRef: description.RequestedGrantRef,
-	}
-	if !accepted {
-		frozen.Scope = envelope
-	}
-	if frozen.BackendID == "process-operations" || frozen.BackendID == "file-operations" {
-		frozen.SandboxMode = "workspace-write"
-		if source, ok := e.sink.(agent.ExecutionSandboxModeSource); ok {
-			frozen.SandboxMode, err = source.ExecutionSandboxMode(ctx, envelope)
+	var frozen agent.FrozenExecution
+	var final json.RawMessage
+	reused := false
+	if accepted && origin == "workflow_node" && envelope.WorkflowRunID != "" {
+		if source, ok := e.sink.(agent.FrozenExecutionSource); ok {
+			frozen, reused, err = source.LookupFrozenExecution(ctx, envelope, call.CallID)
 			if err != nil {
 				return Outcome{}, err
 			}
 		}
-		frozen.BackendCapabilitiesHash, err = e.operations.CapabilityHash(ctx, frozen.BackendID, frozen.SandboxMode)
-		if err != nil {
+	}
+	if reused {
+		frozen = frozen.Clone()
+		if err := e.validateRestoredFrozen(hookCtx, envelope, scope, call, def, frozen); err != nil {
 			return e.rejectWithError(ctx, envelope, scope, call, deniedOutcome(err), accepted, err)
 		}
-	}
-	frozen.Hash, err = frozen.Digest()
-	if err != nil {
-		return Outcome{}, err
+		final = frozen.FinalArguments
+	} else {
+		final, err = e.prepareArguments(hookCtx, def, arguments)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return e.rejectWithError(ctx, envelope, scope, call, Outcome{Status: "cancelled", Content: err.Error(), SideEffect: "none"}, accepted, err)
+			}
+			return e.reject(ctx, envelope, scope, call, Outcome{Status: "failed", Content: "invalid tool arguments", SideEffect: "none"}, accepted)
+		}
+		description, err := resolveDescription(hookCtx, def, final)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return e.rejectWithError(ctx, envelope, scope, call, Outcome{Status: "cancelled", Content: err.Error(), SideEffect: "none"}, accepted, err)
+			}
+			return e.rejectWithError(ctx, envelope, scope, call, Outcome{Status: "failed", Content: err.Error(), SideEffect: "none"}, accepted, err)
+		}
+		if err := hookCtx.Err(); err != nil {
+			return e.rejectWithError(ctx, envelope, scope, call, Outcome{Status: "cancelled", Content: err.Error(), SideEffect: "none"}, accepted, err)
+		}
+		policyRef := "trusted-injected"
+		if source, ok := e.sink.(agent.ExecutionPolicySource); ok {
+			policyRef, err = source.ExecutionPolicyRef(ctx, envelope)
+			if err != nil {
+				return Outcome{}, err
+			}
+		}
+		actualTimeout := e.budg.Limits().ToolTimeout
+		if description.Timeout > 0 && description.Timeout < actualTimeout {
+			actualTimeout = description.Timeout
+		}
+		frozen = agent.FrozenExecution{
+			ID: "execution:" + call.CallID, CallID: call.CallID, Scope: scope, Origin: origin, Tool: name,
+			ToolVersion: def.Version, SchemaHash: argumentHash(def.Schema), Generation: call.Generation, SelectionRevision: call.SelectionRevision,
+			ProviderCallID: call.ProviderCallID, NodeExecutionID: nodeExecutionID, OperationID: operationID, EntryPoint: origin, OriginalArgumentsHash: argumentHash([]byte(call.Arguments)),
+			FinalArgumentsHash: argumentHash(final), ArgumentsRef: "arguments:" + call.CallID,
+			FinalArguments: append(json.RawMessage(nil), final...), Resources: description.Resources,
+			Effect: description.Effect, Concurrency: description.Concurrency, BackendID: description.BackendID,
+			Argv: description.Argv, Shell: description.Shell, Cwd: description.Cwd, EnvironmentRef: description.EnvironmentRef,
+			StdinRef: description.StdinRef, Mounts: description.Mounts, TempRootRef: description.TempRootRef,
+			OutputLimitBytes: description.OutputLimitBytes, Timeout: actualTimeout, PolicyRef: policyRef, RequestedGrantRef: description.RequestedGrantRef,
+		}
+		if origin == "workflow_node" && scope.WorkflowRunID != "" {
+			frozen.DefinitionRef = scope.WorkflowDefinitionHash
+			frozen.BindingRef = scope.Generation
+		}
+		if !accepted {
+			frozen.Scope = envelope
+		}
+		if frozen.BackendID == "process-operations" || frozen.BackendID == "file-operations" {
+			frozen.SandboxMode = "workspace-write"
+			if source, ok := e.sink.(agent.ExecutionSandboxModeSource); ok {
+				frozen.SandboxMode, err = source.ExecutionSandboxMode(ctx, envelope)
+				if err != nil {
+					return Outcome{}, err
+				}
+			}
+			frozen.BackendCapabilitiesHash, err = e.operations.CapabilityHash(ctx, frozen.BackendID, frozen.SandboxMode)
+			if err != nil {
+				return e.rejectWithError(ctx, envelope, scope, call, deniedOutcome(err), accepted, err)
+			}
+		}
+		frozen.Hash, err = frozen.Digest()
+		if err != nil {
+			return Outcome{}, err
+		}
 	}
 	// Standalone legacy test sinks have no policy/state port. Their simple
 	// trusted Run path keeps its historical fact sequence; production always
@@ -315,6 +338,9 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	defer func() {
 		if retain {
 			owner := envelope.SessionID
+			if envelope.WorkflowRunID != "" {
+				owner = "workflow:" + envelope.WorkflowRunID
+			}
 			if owner == "" {
 				owner = e.standaloneID
 			}
@@ -407,6 +433,43 @@ func (e *Executor) run(ctx context.Context, scope agent.ExecutionScope, callID, 
 	return out, nil
 }
 
+func (e *Executor) validateRestoredFrozen(ctx context.Context, envelope, scope agent.ExecutionScope, call agent.FrozenCall, def Definition, f agent.FrozenExecution) error {
+	hash, err := f.Digest()
+	if err != nil || hash != f.Hash || f.Hash == "" || f.Scope != scope || f.ID != "execution:"+call.CallID || f.CallID != call.CallID || f.Tool != def.Name || f.ToolVersion != def.Version || f.SchemaHash != argumentHash(def.Schema) || f.Generation != e.gen || f.Generation != call.Generation || f.Origin != "workflow_node" || f.NodeExecutionID != scope.NodeExecutionID || f.DefinitionRef != scope.WorkflowDefinitionHash || f.BindingRef != scope.Generation || f.OriginalArgumentsHash != argumentHash([]byte(call.Arguments)) || f.FinalArgumentsHash != argumentHash(f.FinalArguments) {
+		return product.NewError(product.CodeIncompatibleResume, "frozen workflow binding changed")
+	}
+	_, value, err := normalizeArguments(f.FinalArguments)
+	if err != nil || e.comp[def.Name].Validate(value) != nil {
+		return product.NewError(product.CodeIncompatibleResume, "frozen workflow arguments are incompatible")
+	}
+	if def.Validate != nil {
+		if err := callValidation(ctx, def.Validate, append(json.RawMessage(nil), f.FinalArguments...)); err != nil {
+			return err
+		}
+	}
+	if source, ok := e.sink.(agent.ExecutionPolicySource); ok {
+		ref, err := source.ExecutionPolicyRef(ctx, envelope)
+		if err != nil {
+			return err
+		}
+		if ref != f.PolicyRef {
+			return product.NewError(product.CodePermissionDenied, "frozen workflow policy changed")
+		}
+	}
+	if f.BackendID == "process-operations" || f.BackendID == "file-operations" {
+		if source, ok := e.sink.(agent.ExecutionSandboxModeSource); ok {
+			mode, err := source.ExecutionSandboxMode(ctx, envelope)
+			if err != nil {
+				return err
+			}
+			if mode != f.SandboxMode {
+				return product.NewError(product.CodePermissionDenied, "frozen workflow sandbox changed")
+			}
+		}
+	}
+	return e.backendAvailable(ctx, def, f)
+}
+
 func (e *Executor) backendAvailable(ctx context.Context, def Definition, frozen agent.FrozenExecution) error {
 	if err := e.operations.ValidateFrozenCapabilities(ctx, frozen); err != nil {
 		return err
@@ -443,6 +506,9 @@ func (e *Executor) acquire(ctx context.Context, scope agent.ExecutionScope, froz
 	}
 	if workspace == "" {
 		workspace = scope.SessionID
+		if scope.WorkflowRunID != "" {
+			workspace = "workflow:" + scope.WorkflowRunID
+		}
 		if workspace == "" {
 			// An executor-lifetime identity outlives allocator address reuse and
 			// keeps historical unknown holds separate from unrelated executors.

@@ -4,11 +4,11 @@
 
 ## 1. 执行摘要
 
-底座以 Session → Trace → Turn 组织执行。Session 保存长期对话；Trace 表示从开始处理输入到完整收尾的一次运行，正常时覆盖一次完整回复过程；Turn 是一次模型调用及其触发的全部工具执行。一个 Trace 可以包含多个 Turn、多条输入和多条助手消息，也可能以失败或取消结束。
+本章的 Session → Trace → Turn、队列与历史规则属于 `seasprak-code-agent`：当前目录 `internal/codeagent` 已由 `internal/sessions` 迁移，普通会话语义保留，原会话内工作流定义、节点状态与执行/恢复接线已退出。Session 保存长期对话；Trace 表示从开始处理输入到完整收尾的一次运行，正常时覆盖一次完整回复过程；Turn 是一次模型调用及其触发的全部工具执行。一个 Trace 可以包含多个 Turn、多条输入和多条助手消息，也可能以失败或取消结束。独立 `seasprak-workflow-agent` 在目标 `internal/workflowagent` 自己管理运行/节点生命周期，不沿用 AgentSession/targetAgent 或本章输入队列。
 
 采用 pi 的双层循环：内层处理模型、工具和 steering；内层自然停下后，外层检查 follow-up，有消息就在同一 Trace 中继续。两层都无需继续时才结束 Trace。判断循环是否继续依据真实工具调用和待处理消息，不增加“任务完成度评估器”。
 
-L2 Agent 通过 Eino DeepAgent 实现模型/工具循环及通用控制钩子；L3 AgentSession 管理 Trace 归属、输入队列和收尾，并通过 SessionManager 保存事实。CreateAgentSession 只负责组装。消息统一使用 `*schema.AgenticMessage`，前端通过 SDK/HTTP/SSE 观察和操作同一底座。
+L2 Agent 通过 Eino Agentic DeepAgent/TurnLoop 实现通用执行、模型/工具循环及控制钩子；L3 Code 的 AgentSession 管理 Trace、输入队列和收尾，通过 SessionManager 保存事实，CreateAgentSession 只负责组装。Workflow 在同级产品中独立编译/执行 Eino Graph、管理节点状态，可使用 L2 窄执行端口与 L1 模型，不依赖 AgentSession。消息统一使用 `*schema.AgenticMessage`，前端在外层分别调用两类 SDK/HTTP/SSE 能力；Code Agent 与共享存储目录已机械迁移，独立 Workflow Agent、工厂、Web 三类资源路由及独立视图已接通，有对应默认测试；最终认证见验证记录。
 
 ### 1.1 三个核心概念
 
@@ -47,15 +47,15 @@ Trace 沿用教程中的运行语义，不是日志采样对象。pi 底层使�
 | follow-up | 指定当前未结束 Trace，不创建新 Trace | 内层已无工具续轮且无待消费 steering 时，由外层取出 |
 | cancel | 指定 Trace；停止模型、工具与子调用 | 按取消流程收尾，不回滚已经发生的副作用 |
 | interaction response / resume | 指定待答交互与原 Trace | checkpoint、权限与版本校验通过后继续 |
-| 选择独立 Agent 的新请求 | 创建独立 Trace，沿用当前 Session 串行调度 | 不经过主模型选路；内部模型节点照常计数 |
+| 业务选择独立 Workflow 的新请求 | 外层分别调用 Workflow 自身目标入口，不创建 Code Agent Trace | Code Agent 主模型选路为 0；Workflow 模型节点只在自身运行记账 |
 
-普通聊天入口默认空闲时作为 prompt、忙时作为当前 Trace 的 follow-up，并在受理结果中明确返回实际类别、目标 Agent 与 traceId。显式指定独立 prompt 与 follow-up 是不同意图；指定已结束 Trace 的 steering/follow-up 返回冲突，不能偷偷改成新运行。等待审批时可保留 follow-up，但不会越过待答交互执行；steering 只对 running 状态受理。
+Code Agent 普通聊天空闲映射 prompt、忙时映射当前 Trace follow-up，受理结果明确类别、目标与 traceId。已结束 Trace 的定向输入拒绝；等待审批时 follow-up 不越过交互执行，steering 只对 running 受理。
 
-新 chat/prompt 未选择 Agent 时默认主 Agent；用户改选另一 Agent 后发送的新请求是独立 prompt，不能被隐式映射为旧 Trace 的 follow-up。steering/follow-up 必须指定原 Trace，目标 Agent 省略时继承该 Trace，显式错配返回冲突，不改成新任务；resume 始终使用原保存目标。chat/prompt 不带目标 Trace，非法字段组合拒绝。
+本章 targetAgent 兼容规则只覆盖已装配的 Code Agent 执行目标，不包含独立 Workflow。Code Agent 新 chat/prompt 默认主 Agent，改选自身执行目标后发新请求是独立 prompt；定向 steering/follow-up 省略目标时继承原 Trace，显式错配拒绝、不另建任务，resume 使用保存目标，非法字段组合拒绝。选择另一类由业务路由，不投为当前 Trace 的 follow-up。
 
-独立输入受理时一致保存目标 Agent、generation 及工作流定义/依赖版本；queued（含暂停自动启动项）也保留这些引用。随后 reload、开始执行、继续队列或重启均不重新选择版本；原版本缺失明确失败，当前权限收紧仍生效。相同幂等请求先返回原归属/版本，不重新进行选路或选版。
+Code Agent 受理时一致保存目标、generation、普通子 Agent 与工具/skill/handler 依赖；queued/hold 也固定。reload、执行、ContinueQueue 或重启不重选版本，原版缺失明确失败，当前权限收紧优先；幂等重发返回原归属/版本。
 
-上述自由文本续轮适用于开放式 Agent。独立 Workflow Agent 若未声明支持此类输入，steering/follow-up 返回不支持；调用者仍可提交独立 prompt 排队。不能接受消息后无人消费，也不为处理自由文本擅自增加工作流模型节点。自然语言首次输入可通过声明的字段映射或获准的参数提取步骤转换；首次输入适配与运行中的自由文本干预是不同能力。
+Workflow 自身校验输入、节点绑定与恢复；不读取 Code Agent steering/follow-up 队列。未支持的自由文本续输入明确拒绝，已有节点级交互/审批通过自身显式恢复处理。自然语言补参/参数提取仍在原未来阶段，不能为兼容旧聊天路由擅自增加模型节点或跳过 schema。
 
 ### 2.2 受理、队列与完成竞争
 
@@ -139,7 +139,7 @@ flowchart TD
 | getSteeringMessages | 提供首轮前/轮后可消费的 steering | 来源由 AgentSession 注入；L2 不反向导入会话控制器 |
 | getFollowUpMessages | 内层自然结束后提供后续消息 | 每条输入仍有 inputId，沿用 traceId，不重置 Trace 预算或扩展版本 |
 
-这些是行为契约及可替换接口，最终 Go 命名后定。整个 Trace（从独立输入受理开始，包括 queued/hold）固定工具实现/schema、handlers、skill、工作流定义/节点执行器及必要资源 generation；下一 Turn 可从同一版本选择工具子集，默认沿用当前集合。模型调用、重试、工具批次与审批恢复绑定本轮选择；普通更新不重解释已经接纳的调用。用户主动选择的下一次默认模型仍在新 Trace 生效，代码定义的逐 Turn 模型策略与此分开。
+这些是 Code Agent 行为契约及可替换接口，最终 Go 命名后定。整个 Trace（含 queued/hold）固定工具/schema、handlers、skill、普通子 Agent 与指令资源 generation，不含独立 Workflow 定义；后者由自身冻结。下一 Turn 可在同版本获准集合中选择工具子集，模型 attempt、批次和审批恢复沿用本轮选择。普通更新不重解释已接纳调用，下一默认模型与代码逐 Turn 策略分开。
 
 M11 扩展发送的 prompt/steering/follow-up 同样先受理、再按既有边界消费，并保存扩展来源；不会因来自 hook 就立即重入循环。自定义消息默认不触发执行，活动时在所属 invocation 下一安全输入边界消费；排队期间不进入模型或摘要。工具/模型选择请求本身不强制增加 Turn，循环正常结束时未生效请求保留状态，不自动延长或复活 Trace。
 
@@ -159,7 +159,7 @@ M11 扩展发送的 prompt/steering/follow-up 同样先受理、再按既有边�
 
 pi 的 terminate 聚合为“本批所有结果都要求停止”，不是任一工具停止；其后仍有轮后和队列判断。[批次聚合](../../pi/packages/agent/src/agent-loop.ts#L582) `[VERIFY: pi/packages/agent/src/agent-loop.ts:582]`。pigo 的同名路径会直接收尾，Eino return-direct 也有自己的语义，不能混作一个开关；本产品若开放这类工具能力，遵循 M05 的明确策略。
 
-模型生成、工具次数、重试、压缩和总执行时间使用开发者默认策略。follow-up 与内部恢复不重置 Trace 预算；终端用户无需填写限制数值。主 Agent、子 Agent 和 Workflow Agent 共用归属预算，默认值在后续开发验证中确定。开发者仍通过 ExtensionRegistry.AddSubAgent 添加能力，不需要修改循环或建立用户侧编排配置。
+模型生成、工具次数、重试、压缩和执行时间沿用开发方案 [M12 defaults](../pi-eino-dev-plan/12-delivery-and-validation.md#defaults) 的工程默认值，不新增预算数字。Code Agent follow-up/恢复与普通子 Agent 不重置父 Trace 预算。Workflow 自己记账并限制节点消耗，跨两类不共享隐式预算；业务负责跨运行总额。ExtensionRegistry.AddSubAgent 继续登记普通 Code Agent 能力，不能用它内置 Workflow。
 
 ## 4. Eino 适配、状态与验收
 
@@ -197,7 +197,7 @@ pi 的 terminate 聚合为“本批所有结果都要求停止”，不是任一
 
 ### 4.3 恢复与执行记录
 
-恢复依赖 traceId、目标 Agent、分支、checkpoint、未完成轮次/工具调用、generation 以及当时有效的模型和上下文版本。Eino checkpoint 与产品记录均确认可恢复后才发布 waiting_input/canResume；任意进程崩溃不保证有最新 checkpoint。新选择不能替换旧 checkpoint 对应的 Agent 或工作流定义。
+恢复依赖 traceId、原 Code Agent 目标、分支、checkpoint、未完成轮次/工具调用、generation 及当时模型/上下文版本。Eino checkpoint 与产品记录均确认可恢复才发布 waiting_input/canResume；任意崩溃不保证有最新 checkpoint，新选择不能替换旧 Code 执行目标。独立 Workflow 由自身验证原定义/节点绑定和 checkpoint，Code 的恢复入口、generation 或票据不能替代它。
 
 内部 executionId 仅标识一次框架执行尝试，恢复时可变化，不能取代 Trace。Resume 保留原 traceId，未完成 Turn 继续原 turnId；只有下一次逻辑生成才产生新 Turn。旧工具结果和 inputId 不重复提交。更详细的提交、幂等与副作用核对规则归 M07/M10。
 
@@ -213,7 +213,7 @@ TurnLoop 的 Stop 关闭实例，Run 只启动一次；恢复或取消后的新 
 | LOOP-A04 | 无工具终答与 steering/follow-up 同时到达 | 先受理则同 Trace 继续，终态先提交则拒绝定向输入；无丢失、无重复终结 |
 | LOOP-A05 | 错误或 Abort 时队列非空 | 不自动消费 follow-up；未消费输入可查询；已取消 Trace 不复活 |
 | LOOP-A06 | 两工具分别审批，只回答一个 | 只恢复指定交互；Trace 未终结，其余问题仍等待 |
-| LOOP-A07 | waiting_input 时 reload，随后恢复和 follow-up | 均使用原 Trace generation；下一独立 Trace 才采用新资源 |
+| LOOP-A07 | waiting_input 时未来阶段 reload，随后恢复和 follow-up | 均使用原 Trace generation；下一独立 Trace 才采用新资源；动态重载场景属于原未来阶段，本轮不启动 |
 | LOOP-A08 | SSE 断连后重连 | 同一 Trace 继续，状态、历史、轮次与事件可恢复观察 |
 | LOOP-A09 | 截断、预算耗尽、落盘失败 | 无不完整参数执行、无虚假 completed；真实中间结果可定位 |
 | LOOP-A10 | 代码注册自定义子 Agent | 无需改循环或用户配置，使用 Agentic 泛型接口并受父 Trace 预算约束 |
@@ -223,10 +223,10 @@ TurnLoop 的 Stop 关闭实例，Run 只启动一次；恢复或取消后的新 
 | LOOP-A14 | 一批工具全部 terminate，队列仍有 follow-up | 不由工具结果自动续轮；按 pi 规则检查队列，同 Trace 处理后续输入；不当作硬取消 |
 | LOOP-A15 | A 取消时 B/C 已排队，随后提交 D，再显式继续旧队列 | 无冲突时 D 可启动，B/C 仍保留且不自动执行；显式继续后按约定顺序串行运行，不复活 A |
 | LOOP-A16 | unknown 核对完成，分别存在/不存在兼容 checkpoint | 有条件时仅更新 canResume，显式恢复承接已有结果；无条件时不调用原执行栈，终态不复活 |
-| LOOP-A17 | 主任务运行中改选独立 Workflow Agent 并发送新输入 | 新请求排队为独立 Trace，不误投为旧 Trace 的 follow-up；恢复仍绑定原目标 |
+| LOOP-A17 | Code Agent 运行中外层改选并提交独立 Workflow | 分别调用 Workflow 自身公开目标入口，原 Code Agent Trace/队列/恢复不变；不作为 AgentSession/targetAgent 请求或旧 Trace follow-up，不共享预算 |
 
 ## 5. 风险与系统闭合
 
-本章明确对外行为，尚未实现或验证 Eino 扩展点的组合。重点验证无工具路径的轮后处理、终答与输入竞争、内部重建不重复结束 Trace，以及 checkpoint 与轮次关联。不能以框架具有某个 hook 就宣称完整契约已经实现。
+本章保留完整对外行为要求；Code 当前普通输入/轮后处理/收尾/取消有对应默认运行回归，通用扩展 hooks 的完整组合与原生 checkpoint 恢复仍须按各自阶段及阻塞认证，不据框架扩展点存在声明全部交付。重点验证无工具路径的轮后处理、终答与输入竞争、内部重建不重复结束 Trace，以及 checkpoint 与轮次关联。不能以框架具有某个 hook 就宣称完整契约已经实现。
 
 M04 负责每轮模型选择与重试，M05 负责工具与副作用，M06/M08 负责消息及上下文，M07/M10 负责事件和恢复。取消/失败后的默认队列行为已确认；预算具体值和适配实现进入后续开发方案，不再把已确定的队列语义列为待选择。

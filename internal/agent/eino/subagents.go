@@ -20,8 +20,8 @@ func ChildContext(ctx context.Context, scope agent.ExecutionScope) context.Conte
 // RunDelegated runs a child agent once with the explicit task as its only user
 // message and returns the text of its last assistant message. It does not
 // share parent history, checkpoints or the parent TurnLoop.
-func RunDelegated(ctx context.Context, ag adk.TypedAgent[*schema.AgenticMessage], task string) (string, error) {
-	runner := adk.NewTypedRunner(adk.TypedRunnerConfig[*schema.AgenticMessage]{Agent: ag})
+func RunDelegated(ctx context.Context, ag adk.TypedAgent[*schema.AgenticMessage], task string, enableStreaming bool) (string, error) {
+	runner := adk.NewTypedRunner(adk.TypedRunnerConfig[*schema.AgenticMessage]{Agent: ag, EnableStreaming: enableStreaming})
 	iter := runner.Run(ctx, []*schema.AgenticMessage{schema.UserAgenticMessage(task)})
 	var final string
 	var runErr error

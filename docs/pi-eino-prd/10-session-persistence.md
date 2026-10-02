@@ -2,7 +2,9 @@
 
 状态：已按系统评审及用户确认完成本轮规格收口，持久化与恢复实现仍待验证。对应 [M10 会话管理](https://dg-ai-notes.pages.dev/modules/ch10-session/)。本章负责持久化承诺、分支和恢复；模型投影见 M06/M08，模型选择见 M04，运行状态见 M03，事件游标见 M07。
 
-命名遵循[第 2 章的职责划分](02-architecture-boundaries.md#23-与-pi-对齐的对象名称与职责)：AgentSession 控制当前会话的执行，SessionManager 管理历史、分支与持久提交，SessionStore 是本产品提供给 SessionManager 的存储适配接口。后两者不是两个同义的会话管理对象。
+命名遵循[第 2 章](02-architecture-boundaries.md#23-与-pi-对齐的对象名称与职责)。本章的 Session/Trace、历史树、输入队列、targetAgent 和普通子 invocation 恢复属于 Code Agent：AgentSession 控制执行，SessionManager 管理历史与提交，SessionStore 描述其存储端口。批准目录迁移已将 `internal/sessions` 机械移至 `internal/codeagent`，存储契约及 jsonl/memory 后端移至中立 `internal/storage`；原会话内工作流及节点状态已退出，独立 Workflow Agent、工厂和 Web 三类资源路由已接通，并有对应默认测试；最终认证见 [P3 验证记录](../p3-verification.md)。CreateAgentSession/OpenAgentSession 与 AgentSession 保留。
+
+独立 Workflow Agent 在 `internal/workflowagent` 拥有定义、编译、Eino Graph、节点与生命周期；WorkflowAgent/WorkflowOptions/CreateWorkflowAgent/OpenWorkflowAgent 已从唯一 SDK 入口接通，有对应默认测试与消费者；最终认证见验证记录。两类共用存储实现，不共用日志写入者、历史、审批、恢复、generation 或隐式预算；Workflow 不作为本章 targetAgent/内置子 Agent，业务工具不形成 SDK 恢复整树。旧开发数据本次不迁移，也不自动删除。
 
 ## 1. 执行摘要
 
@@ -44,7 +46,7 @@ pi 的 coding-agent SessionManager 与 agent-core 的 session 存储实现并行
 - **SESSION-01**：Session 有稳定 sessionId、创建时必需且经验证的 cwd/工作区与执行环境绑定、格式版本、创建信息和活动分支；缺失工作区拒绝创建，不隐式使用进程 cwd。打开已有会话读取其绑定，执行前重新验证可用性，不自动运行工具或恢复任务。
 - **SESSION-02**：列表/详情能区分空闲、排队、活动、等待用户、暂停及历史终态。Session 状态由 Trace 和队列派生，不把 TurnLoop 实例是否存在当作唯一真相。
 - **SESSION-03**：同一会话只有一个 AgentSession 协调写入，所有持久提交经其 SessionManager；第二个进程争用同一个本地会话时，拒绝写入或只读打开，不能让两个活动 AgentSession 同时追加而假装串行。
-- **SESSION-04**：inputId、输入类别、目标 Agent、generation/定义与依赖引用、目标分支、内容摘要与 traceId 映射在受理时一致保存，可恢复重建；queued/hold 项也保留原版本，重启或继续队列不重新选版。follow-up/steering 从原 Trace 继承目标，省略 targetAgent 不默认主 Agent，显式错配拒绝且不另建任务。同幂等请求返回原受理结果和版本，不因 reload 再选版；异内容或显式不同目标拒绝。
+- **SESSION-04**：Code Agent inputId、类别、目标、generation/工具/skill/普通子 Agent 依赖、分支、内容摘要与 traceId 在受理时一致保存；queued/hold、重启与继续队列不重选。follow-up/steering 继承原 Trace 目标，省略不默认主 Agent，显式错配拒绝且不另建任务；幂等重发返回原归属/版本，异内容/目标拒绝。独立 Workflow 定义/节点版本不由此记录或 targetAgent 管理，使用自己的受理与恢复记录。
 
 ### 2.2 历史树、活动分支与分叉
 
@@ -95,7 +97,7 @@ pi 的 createBranchedSession 将选定路径复制成另一个 sessionId/文件�
 | --- | --- | --- |
 | 打开会话 | 历史、分支、队列与任务记录 | 只读取，不自动恢复工具 |
 | 继续对话 | 无活动 Trace 时从合法历史创建新 Trace；活动中的追加输入按 M03 分类 | 新 Trace 按 4.4.1 选择并验证配置；follow-up 延续原 Trace |
-| 恢复中断执行 | checkpoint 中的原执行状态、未完成 Turn 与指定交互 | 保留 traceId/未完成 turnId 与原 targetAgent，创建内部 executionId；验证原 generation、工作流定义/绑定、当时有效模型和投影 |
+| 恢复中断执行 | Code Agent checkpoint 原状态、未完成 Turn 与指定交互 | 保留 traceId/turnId、原 Code Agent targetAgent 与 generation，验证工具/普通子 Agent、模型/投影；Workflow 独立恢复自己的节点/定义/绑定，不用此入口 |
 
 - **SESSION-10**：只有存在完整、兼容且状态允许的 checkpoint 才标记 `canResume=true`；AgentSession 必须同时检查 Eino checkpoint Store 的成功结果和 SessionManager 保存的产品关联记录。
 - **SESSION-11**：进程崩溃时处于 running 的任务，重启后进入 paused/recovery_required，列出最后提交位置及未决工具。不能默认重放请求，也不能因流断了标成完成。
@@ -112,16 +114,18 @@ SessionManager 和 SessionStore 本身都不调用模型。SessionManager 管理
 
 ## 4. 技术规格
 
-### 4.1 四类数据的所有权
+<a id="41-四类数据的所有权"></a>
+### 4.1 数据的所有权
 
 | 数据 | 语义所有者 | 实际保存者 | 内容与边界 |
 | --- | --- | --- | --- |
 | 历史树 | L3 SessionManager 管理历史、分支和上下文来源；AgentSession 协调运行中的提交时机 | SessionManager 经 SessionStore 提交 | 最终化产品消息、摘要、配置变更、分支关系；不逐 token 追加一条对话消息 |
 | 受理与执行记录 | L3 AgentSession 决定输入受理、Trace 状态及执行尝试记录和交互；SessionManager 管理其与历史、活动分支的关联 | SessionManager 经 SessionStore 提交 | inputId、Trace 状态及执行尝试记录、交互、工具结果状态、活动分支；SessionStore 不作调度或状态迁移决策 |
 | 可重放产品事件 | AgentSession 定义并发布产品事实；SessionManager 管理持久事实与状态提交的关联顺序 | SessionManager 经 SessionStore 提交记录与游标，保存成功后 AgentSession 发布 | M07 定义的 durableSeq 与产品状态变化；可由同一提交记录派生，不强制另一数据库 |
-| 执行 checkpoint | Eino 定义不透明执行状态；Agent 适配框架结果；AgentSession 判断当前请求是否可恢复 | Eino checkpoint Store 保存执行数据；SessionManager 经 SessionStore 保存产品关联元数据 | opaque runner bytes、格式/框架版本、关联 Trace、targetAgent、generation、工作流定义/绑定、分支/投影版本；不作为 UI 历史 |
+| 执行 checkpoint | Eino 定义不透明状态，Agent 适配；Code Agent AgentSession 判定其请求是否可恢复 | Eino checkpoint Store 保存状态，SessionManager 经存储契约保存产品关联 | runner bytes、框架/格式、Code Agent Trace/targetAgent/generation、普通子 invocation、分支/投影；不含独立 Workflow 节点树，不作为 UI 历史 |
+| Workflow 运行/节点记录（独立目标） | Workflow 自己管理定义、编译、节点状态/审批与恢复 | 经共用 storage 契约及 jsonl/memory 独立提交 | 自身运行/节点身份、定义/绑定/版本、执行意图、票据、预算、结果与 checkpoint 关联；不写 Code Agent 日志或共享其恢复 |
 
-这里定义的是数据承诺，不要求四套独立服务。SessionManager 保有历史树与提交语义，SessionStore 只适配底层存储；它们不接管 AgentSession 的任务队列、模型调用和状态迁移决策。JSONL 首先作为 SessionStore 的本地实现；checkpoint 可另存不透明数据，二者通过明确 ID 关联。最终文件布局、原子提交方式、索引与接口签名在整套 PRD 评审后制定。
+这里定义的是各自数据承诺，不要求为每类数据建立独立服务。Code 的 SessionManager 保有历史树与提交语义，SessionStore 适配底层存储，不接管 AgentSession 的队列、模型调用和状态迁移。当前 `internal/storage` 契约/后端同时承载两类独立日志，Workflow 由自己的写入者保存节点/调用/控制及初始 manifest，不复用 Code 历史树。Code 原生 checkpoint 可另存不透明 blob；Workflow 当前使用已提交节点/结果与冻结调用恢复，不声称有原生整图 checkpoint。两类工厂和 Web 三类资源路由已接线，有对应默认测试，真实布局/签名见开发 06/09/10/13，最终认证见验证记录。
 
 #### 4.1.1 Entry 的三类职责
 
@@ -160,7 +164,9 @@ SessionManager 和 SessionStore 本身都不调用模型。SessionManager 管理
 
 ### 4.3 checkpoint 关联与兼容
 
-每个可恢复执行的产品记录至少关联 sessionId、branchId、traceId、内部 executionId、targetAgent、未完成 turnId（如有）、checkpointId、generation、工作流定义/子流程/节点执行器与资源绑定版本（如适用）、当时生效的模型配置、本 invocation/Turn 的工具选择、扩展状态提交引用、projectionRevision、框架/序列化版本和待答交互。traceId 是必需的运行归属，不能因日志未采样而缺失；观测 span 是独立可选数据。仅凭 traceId 不足以授权恢复，仍须验证状态、checkpoint 和当前权限。
+Code Agent 可恢复记录关联 sessionId/branchId/traceId、executionId、原 Code Agent targetAgent、未完成 turnId（如有）、checkpointId、generation、工具/skill/普通子 Agent 依赖、模型、工具选择、扩展提交引用、projectionRevision、框架/序列化版本与待答交互。traceId 必需，观测 span 可选；恢复仍验证状态、checkpoint、当前权限、票据/预算与未知效果。
+
+Workflow 的定义/子流程/节点执行器、绑定版本、节点执行尝试、结果及 checkpoint 关联由它自己保存与验证，不放入 Code Agent targetAgent 记录。两类不共用恢复/审批/generation；业务工具只持显式请求/结果引用，不能凭调用方 checkpoint 恢复被调方或承诺完整持久子树恢复。Workflow 已有节点级暂停审批/显式恢复、静态子流程/条件/并行汇合不因此删除。
 
 历史的标准内容使用 Agentic 消息表示，保留块顺序、CallID、响应及协议 metadata；文件版本集中由本章管理。普通 CustomMessage 保留通用 content/details，扩展停用后仍可读取与转换；真正未知的特殊结构保留原始数据，是否可用于模型按 M06 判定。不要求每种 customType 自建编解码与版本平台。
 
@@ -231,12 +237,14 @@ CompactionEntry 保存 M09 的摘要正文/程序附录、firstKeptEntryId（包
 | 文件格式 | 读取与写入行为 |
 | --- | --- |
 | 当前支持版本 | 校验 header、记录结构和树关系后正常打开；写入仍受单写者与提交规则限制 |
-| 明确支持的旧版本 | 使用已定义的兼容读取规则；写入前转换为当前格式或明确只读，不直接混写新旧格式 |
+| 明确支持的旧版本 | 使用已定义的兼容读取规则或明确只读，不直接混写新旧格式；本次旧开发数据不转换、不迁移、不自动删除 |
 | 未支持的旧版/未知未来版本 | 返回 incompatible_format；能安全辨认的元信息与原始文件可供查看/导出，不猜测字段含义或按当前版本追加 |
+
+打开入口必须先识别产品类型及受支持格式：OpenAgentSession 只能打开 Code Agent 记录，目标 OpenWorkflowAgent 只能打开 Workflow 记录；跨类型或不兼容格式明确拒绝，沿用现有错误码，不自动改投另一入口。拒绝后保持原目录和数据原样，不清理、覆盖或重新初始化。两类共用 storage 实现不构成格式兼容或自动迁移。
 
 版本在文件层集中管理，内容类型可带必要版本；新增可选字段应原样保留。未知记录按 M06 与下节处理，不能仅因 header 可读就宣称模型上下文完整。
 
-转换/修复先生成候选并验证 ID、parent 链、活动游标、firstKeptEntryId、摘要 details 和运行关联；如确需更换身份必须同步映射全部引用。成功后才切换使用，失败保留原文件与可诊断原因。首个版本只需声明实际支持的格式和拒绝规则，不虚构尚不存在的旧版迁移器，也不新建迁移平台。[pi 历史迁移](../../pi/packages/coding-agent/src/core/session-manager.ts#L230) `[VERIFY: pi/packages/coding-agent/src/core/session-manager.ts:230]` 与 [_rewriteFile](../../pi/packages/coding-agent/src/core/session-manager.ts#L979) `[VERIFY: pi/packages/coding-agent/src/core/session-manager.ts:979]` 仅作为格式演进参考，不照搬其覆盖写入策略。
+以下转换/修复规则仅保留为通用未来格式演进要求，不是本次架构迁移的执行指令：先生成候选并验证 ID、parent 链、活动游标、firstKeptEntryId、摘要 details 和运行关联；如确需更换身份必须映射全部引用。成功后才切换，失败保留原件与诊断；本次旧开发数据不迁移、不转换、不自动删除。首个版本只声明实际支持格式和拒绝规则，不虚构旧版迁移器或新建迁移平台。[pi 历史迁移](../../pi/packages/coding-agent/src/core/session-manager.ts#L230) `[VERIFY: pi/packages/coding-agent/src/core/session-manager.ts:230]` 与 [_rewriteFile](../../pi/packages/coding-agent/src/core/session-manager.ts#L979) `[VERIFY: pi/packages/coding-agent/src/core/session-manager.ts:979]` 仅为演进参考，不照搬覆盖写入策略。
 
 #### 4.5.2 损坏与外部数据
 
@@ -265,8 +273,8 @@ CompactionEntry 保存 M09 的摘要正文/程序附录、firstKeptEntryId（包
 | SESSION-A13 | 带摘要分叉后继续，再模拟摘要生成失败 | 成功时新消息位于摘要之后且能读到摘要；失败不提交半个切换，普通回退不强制调用模型 |
 | SESSION-A14 | 分支 A/B 分别切模型与思考级别，再压缩/重建 | 只取所选路径最后生效状态；压缩之前的配置仍有效，响应模型别名不覆盖生效配置 |
 | SESSION-A15 | 历史模型 A、待生效默认 B、原 checkpoint C | 浏览呈现 A，新独立 Trace 验证后使用 B；恢复使用 C，缺配置/权限时明确失败，不静默替换 |
-| SESSION-A16 | 支持旧格式、未来格式、转换中失败 | 旧格式按声明读取/转换；未来格式不追加，转换失败保留原件，成功后历史身份和摘要/活动游标引用一致 |
-| SESSION-A17 | 相同逻辑记录分别使用内存与持久后端 | 进程内树/投影/去重一致；仅持久后端承诺受理成功后重启可读，能力标识无误导 |
+| SESSION-A16 | 声明支持旧格式、未来格式、跨类型 Open 及未来演进转换失败 | 旧格式按实际声明读取/只读/拒绝，未来格式不追加；两类 Open 拒绝跨类型及不兼容格式，原目录和数据不清理、覆盖或重新初始化。本次旧开发数据不迁移且不自动删除。未来明确纳入的转换失败亦保留原件，成功须保持身份/摘要/活动游标引用一致 |
+| SESSION-A17 | 两类分别使用共用契约的内存与 jsonl 后端 | 各自进程内记录/去重语义一致；Code 树/投影不变，Workflow 自身节点记录独立；不共享写入者、日志、审批或恢复游标，仅持久后端在声明范围承诺重启可读 |
 | SESSION-A18 | 同 Trace 多次内部执行、暂停恢复与事件重放 | 各 executionId 的真实边界可区分；未完成时无 settled，最终 trace.settled 仅一条持久事实，重复送达不重复生效 |
 | SESSION-A19 | 单次许可占用提交后、目标操作启动前后分别中断 | 新 executionId 不重复占用/执行；无法确认启动则待核对，受信未执行证据解除占用也先提交 |
 | SESSION-A20 | 授权原文引用失效、运行数据目录暴露、artifact 私有临时路径丢失 | 不从摘要补许可、不在有保护缺陷的受限配置继续执行、不从宿主同名文件恢复产物 |
@@ -276,6 +284,6 @@ CompactionEntry 保存 M09 的摘要正文/程序附录、firstKeptEntryId（包
 
 ## 5. 风险与系统闭合
 
-会话树本身不解决副作用幂等、跨文件事务或事件发布一致性。本章要求这些接口之间能共同恢复，不假定 JSONL 自动提供事务，也不自动引入分布式“恰好一次”执行承诺。
+本章要求各自记录、checkpoint 与事件共同恢复，不把 JSONL 当作事务或副作用幂等保证。Code Agent 普通受控子调用与 Workflow 静态子流程、已有节点暂停/显式恢复的原约束保留；高级跨任务编排/审批/补偿、业务幂等、完整持久子树恢复和跨运行总预算归业务。业务工具调用对方不自动恢复整树或转移授权。
 
 必须和 M03/M04/M05/M06/M07/M09 联合评审输入提交点、历史配置与新 Trace 的选择、工具 unknown、摘要与 checkpoint 版本、事件游标。对会话树与工具副作用的恢复演练属于后续开发方案的验证前提；本轮仅完成规格。总体评审见 [系统闭合检查](system-review.md)。

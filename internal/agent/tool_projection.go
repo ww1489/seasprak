@@ -88,6 +88,16 @@ func (p ToolOutputProjection) modelContent() string {
 	return string(body)
 }
 
+func (r ToolRecord) ModelContent() string {
+	if r.Projection != nil {
+		return r.Projection.ModelContent()
+	}
+	if r.Observation != nil {
+		return r.Observation.ModelContent()
+	}
+	return ""
+}
+
 func (o ToolObservation) ModelContent() string {
 	return (ToolOutputProjection{Observation: o, Content: o.Content, Truncated: o.Truncated, LogError: o.LogError}).ModelContent()
 }

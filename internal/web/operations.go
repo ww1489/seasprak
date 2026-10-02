@@ -8,9 +8,8 @@ import (
 	"strings"
 
 	"github.com/ww1489/seasprak/internal/agent"
+	"github.com/ww1489/seasprak/internal/codeagent"
 	product "github.com/ww1489/seasprak/internal/errors"
-	"github.com/ww1489/seasprak/internal/sessions"
-	"github.com/ww1489/seasprak/internal/sessions/state"
 )
 
 // Mutating routes. Each handler decodes a strict DTO, resolves the single
@@ -86,6 +85,7 @@ type reconcileRequest struct {
 }
 
 func (r *routes) mount(mux *http.ServeMux) {
+	mux.HandleFunc("POST /v1/sessions/{sid}/open", r.openControl)
 	mux.HandleFunc("POST /v1/sessions/{sid}/inputs", r.submitInput)
 	mux.HandleFunc("GET /v1/sessions/{sid}/traces/{tid}", r.getTrace)
 	mux.HandleFunc("POST /v1/sessions/{sid}/traces/{tid}/cancel", r.cancelTrace)
@@ -112,7 +112,7 @@ func idempotencyKey(w http.ResponseWriter, req *http.Request) (string, bool) {
 	return key[0], true
 }
 
-func (r *routes) writer(w http.ResponseWriter, req *http.Request) (*sessions.AgentSession, bool) {
+func (r *routes) writer(w http.ResponseWriter, req *http.Request) (*codeagent.AgentSession, bool) {
 	s, err := r.catalog.Writer(req.Context(), req.PathValue("sid"))
 	if err != nil {
 		WriteError(w, err)
@@ -121,13 +121,13 @@ func (r *routes) writer(w http.ResponseWriter, req *http.Request) (*sessions.Age
 	return s, true
 }
 
-func (r *routes) durable(receipt state.OperationReceipt) operationReceiptDTO {
+func (r *routes) durable(receipt codeagent.OperationReceipt) operationReceiptDTO {
 	return operationReceiptDTO{OperationID: receipt.OperationID, State: receipt.State, Target: receipt.Target, AcceptedCommit: strconv.FormatUint(receipt.AcceptedCommit, 10), Scope: "durable"}
 }
 
 // acceptedOrError reports an accepted receipt even when post-acceptance work
 // failed; that failure is visible through GET operation, not a lost receipt.
-func (r *routes) acceptedOrError(w http.ResponseWriter, receipt state.OperationReceipt, err error) {
+func (r *routes) acceptedOrError(w http.ResponseWriter, receipt codeagent.OperationReceipt, err error) {
 	if receipt.OperationID != "" {
 		writeJSON(w, http.StatusAccepted, r.durable(receipt))
 		return
@@ -214,7 +214,7 @@ func (r *routes) cancelTrace(w http.ResponseWriter, req *http.Request) {
 	}
 	// The worker is cancelled only after acceptance commits; a closed HTTP
 	// connection never cancels the accepted operation.
-	receipt, err := s.CancelTrace(context.WithoutCancel(req.Context()), sessions.CancelTraceRequest{TraceID: req.PathValue("tid"), IdempotencyKey: key, ExpectedRevision: body.ExpectedRevision})
+	receipt, err := s.CancelTrace(context.WithoutCancel(req.Context()), codeagent.CancelTraceRequest{TraceID: req.PathValue("tid"), IdempotencyKey: key, ExpectedRevision: body.ExpectedRevision})
 	r.acceptedOrError(w, receipt, err)
 }
 
@@ -232,7 +232,7 @@ func (r *routes) resumeTrace(w http.ResponseWriter, req *http.Request) {
 	if !ok {
 		return
 	}
-	receipt, err := s.Resume(context.WithoutCancel(req.Context()), sessions.ResumeCommand{TraceID: req.PathValue("tid"), ExpectedRevision: body.ExpectedRevision, IdempotencyKey: key})
+	receipt, err := s.Resume(context.WithoutCancel(req.Context()), codeagent.ResumeCommand{TraceID: req.PathValue("tid"), ExpectedRevision: body.ExpectedRevision, IdempotencyKey: key})
 	r.acceptedOrError(w, receipt, err)
 }
 
@@ -250,7 +250,7 @@ func (r *routes) continueQueue(w http.ResponseWriter, req *http.Request) {
 	if !ok {
 		return
 	}
-	receipt, err := s.ContinueQueued(context.WithoutCancel(req.Context()), sessions.ContinueQueueRequest{TraceIDs: body.TraceIDs, IdempotencyKey: key, ExpectedRevision: body.ExpectedRevision})
+	receipt, err := s.ContinueQueued(context.WithoutCancel(req.Context()), codeagent.ContinueQueueRequest{TraceIDs: body.TraceIDs, IdempotencyKey: key, ExpectedRevision: body.ExpectedRevision})
 	r.acceptedOrError(w, receipt, err)
 }
 
@@ -270,7 +270,7 @@ func (r *routes) reconcile(w http.ResponseWriter, req *http.Request) {
 	}
 	// The grant reference is resolved from the original frozen call by the
 	// session layer; clients cannot supply it.
-	receipt, err := s.Reconcile(context.WithoutCancel(req.Context()), sessions.ReconcileCommand{TraceID: req.PathValue("tid"), InvocationID: body.InvocationID, CallID: body.ToolCallID, ObservationID: body.ObservationID, ObservationVersion: body.ObservationVersion, ExpectedRevision: body.ExpectedRevision, QueryID: body.QueryID, EvidenceRef: body.EvidenceRef, GrantRef: sessions.OriginalGrantRef, IdempotencyKey: key})
+	receipt, err := s.Reconcile(context.WithoutCancel(req.Context()), codeagent.ReconcileCommand{TraceID: req.PathValue("tid"), InvocationID: body.InvocationID, CallID: body.ToolCallID, ObservationID: body.ObservationID, ObservationVersion: body.ObservationVersion, ExpectedRevision: body.ExpectedRevision, QueryID: body.QueryID, EvidenceRef: body.EvidenceRef, GrantRef: codeagent.OriginalGrantRef, IdempotencyKey: key})
 	r.acceptedOrError(w, receipt, err)
 }
 
@@ -300,7 +300,7 @@ func (r *routes) respond(w http.ResponseWriter, req *http.Request) {
 	if !ok {
 		return
 	}
-	receipt, err := s.RespondInteraction(context.WithoutCancel(req.Context()), sessions.InteractionResponse{InteractionID: req.PathValue("iid"), Decision: body.Decision, ExpectedRevision: body.ExpectedRevision, IdempotencyKey: key})
+	receipt, err := s.RespondInteraction(context.WithoutCancel(req.Context()), codeagent.InteractionResponse{InteractionID: req.PathValue("iid"), Decision: body.Decision, ExpectedRevision: body.ExpectedRevision, IdempotencyKey: key})
 	if receipt.OperationID == "" {
 		WriteError(w, err)
 		return
@@ -333,11 +333,35 @@ func (r *routes) capabilities(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, capabilitiesDTO{Agents: caps.Agents, Tools: caps.Tools, Unavailable: []string{"host_shell", "resources_reload", "extension_commands", "workflow_import", "session_switch"}})
 }
 
-func (r *routes) getOperation(w http.ResponseWriter, req *http.Request) {
+// openControl acquires the catalog's existing single writer without resuming
+// work or answering approvals. Only this explicit POST changes control mode.
+func (r *routes) openControl(w http.ResponseWriter, req *http.Request) {
+	var body struct{}
+	if err := DecodeJSON(w, req, &body); err != nil {
+		WriteError(w, err)
+		return
+	}
 	s, ok := r.writer(w, req)
 	if !ok {
 		return
 	}
+	snap, err := s.Snapshot(req.Context())
+	if err != nil {
+		WriteError(w, err)
+		return
+	}
+	out := projectSnapshot(snap)
+	out.InstanceID = r.catalog.InstanceID()
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (r *routes) getOperation(w http.ResponseWriter, req *http.Request) {
+	s, release, err := r.catalog.Browse(req.Context(), req.PathValue("sid"))
+	if err != nil {
+		WriteError(w, err)
+		return
+	}
+	defer release()
 	status, err := s.GetOperation(req.Context(), req.PathValue("oid"))
 	if err != nil {
 		WriteError(w, err)

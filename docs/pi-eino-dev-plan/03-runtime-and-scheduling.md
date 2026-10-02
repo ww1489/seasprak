@@ -1,8 +1,8 @@
 # 03 执行循环与调度
 
-**2026-09-27 来源边界修订，待实现：**本章 Agent Turn、工具预算、审批等待、资源效果去重与恢复调度不承载用户直接 shell。用户 shell 由受信宿主显式启动，不调用 BeginTurn/ClaimTool，不纳入 Agent 活动预算或自动重放队列；再次显式提交是新执行。保留超时、主动取消和真实退出状态，不把 context 取消当成已停止。工作区只是初始目录，不能宣称该入口与 Agent 受控工具之间具备文件隔离或共享排他保护；外部修改仍由模型工具的版本/前置条件检查发现。模型工具的调度与取消保护保持不变，详见 [05 §2.1](05-tools-and-operations.md)。
+**2026-09-27 历史来源边界修订（当时标为待实现）：**本章 Agent Turn、工具预算、审批等待、资源效果去重与恢复调度不承载用户直接 shell。用户 shell 由受信宿主显式启动，不调用 BeginTurn/ClaimTool，不纳入 Agent 活动预算或自动重放队列；再次显式提交是新执行。保留超时、主动取消和真实退出状态，不把 context 取消当成已停止。工作区只是初始目录，不能宣称该入口与 Agent 受控工具之间具备文件隔离或共享排他保护；外部修改仍由模型工具的版本/前置条件检查发现。模型工具的调度与取消保护保持不变，详见 [05 §2.1](05-tools-and-operations.md)。
 
-对应 PRD M03、SYS-01/02/03/05/09/10/17。AgentSession 决定产品状态，Agent 的 Eino 适配承接执行，不实现第二个 Runner.Run 轮询版 ReAct。
+对应 PRD M03、SYS-01/02/03/05/09/10/17。本章只规定 Code Agent 的普通输入队列、Trace 和 Turn：`AgentSession` 保留运行对象名称，所属目录已由 `internal/sessions` 机械迁移至 `internal/codeagent`，旧内置工作流目标、节点状态与执行/恢复接线已退出；通用 `Agent` 与 Eino 适配承接执行，不实现第二个 Runner.Run 轮询版 ReAct。Workflow Agent 在同级 `internal/workflowagent` 中独立控制图运行、节点暂停/审批/显式恢复，不进入本章队列或由 `AgentSession.targetAgent` 选路，见 [10 §workflows](10-extensions-and-workflows.md#workflows)。
 
 <a id="inputs"></a>
 ## 1. 输入受理与队列
@@ -15,7 +15,7 @@ SubmitInput 的 InputCommand 包含 kind、targetTraceId、targetAgent、content
 | prompt | 不带 targetTraceId；明确新任务，受理时创建 traceId 并固定目标/版本，忙时 queued | 取得顶层写入权后 |
 | steering | targetTraceId 必需；目标为 running 且声明支持的 Agent；targetAgent 缺省继承，显式错配拒绝 | 首轮前或完整 Turn 后 |
 | follow_up | targetTraceId 必需；目标为未终态且声明支持的 Agent；targetAgent 缺省继承，显式错配拒绝；waiting_input/paused 可保留但不能解除等待 | 原执行合法恢复且内层自然结束后 |
-| 选择独立 Agent | 经 chat 的目标变化或显式 prompt 创建独立 Trace；同一工作流忙时提交新任务用 prompt，不冒充续输入 | 串行启动，不经主模型选路 |
+| 选择普通 Code Agent 执行者 | 经 chat 的目标变化或显式 prompt 创建独立 Trace；工作流不在 targetAgent 候选中 | 仅在本 AgentSession 内串行启动 |
 | interaction / cancel / resume | 独立控制命令，不当作普通 user 队列项；resume 不切换原目标 | 各自控制时机 |
 
 受理独立输入时，协调者将 inputId、traceId、目标 Agent、已验证 generation 与依赖引用一致保存后返回 accepted。queued/hold 也保留原版本；开始执行、ContinueQueue 和重启不重新选最新版，缺原版本明确失败。后续更紧权限仍在执行前复核。定向输入先校验 kind/targetTraceId/目标一致性，不能因 targetAgent 不同改成 prompt；resume 不接受新目标。
@@ -24,7 +24,7 @@ SubmitInput 的 InputCommand 包含 kind、targetTraceId、targetAgent、content
 
 创建后输入是 pending；只有消费 commit 成功才形成模型可见 user。inputId 重放不重复消费。steering/follow_up/独立 Trace 分别维护有序索引，日志中的 accepted/consumed/undelivered/withdrawn 是真相，TurnLoop buffer 只存引用。
 
-默认每类一次消费一条。不支持自由输入的独立 Workflow 明确拒绝，不受理无人消费的消息；调用方可另提 prompt 排队。扩展输入必须指定类别，不能依普通聊天映射猜测意图。界面改选不影响已受理请求；相同幂等键但目标不同视为不同请求并报冲突。
+默认每类一次消费一条。扩展输入必须指定类别，不能依普通聊天映射猜测意图。界面选择独立工作流时，业务改用 `/v1/workflow-runs` 创建独立运行，不向 Code Agent SubmitInput 投递结构化参数，也不把工作流运行排入同 Session 的 prompt 队列。工作流节点审批/暂停/显式恢复按自身控制入口处理，保留静态子流程、条件及汇合，不额外加入聊天、steering 或 follow-up。界面改选不影响任何已受理请求；同一运行入口下相同幂等键但内容/目标不同报冲突。
 
 <a id="trace-state"></a>
 ## 2. Trace 状态
@@ -60,7 +60,7 @@ D05-状态图：waiting_input/paused 仍占有顶层执行范围，不发布 set
 | deep.NewTyped[*schema.AgenticMessage] | 主模型/工具循环；默认工具与子 Agent 显式受控装配 |
 | adk.NewTurnLoop[InputRef, *schema.AgenticMessage] | 顶层执行调度，InputRef 可 gob 编码且仅含稳定 ID |
 | GenInput | 把已分配本执行段的引用分为 Consumed/Remaining；每项必须有去向 |
-| PrepareAgent | 按当前 Trace 固定的 targetAgent 与 generation 返回已构建执行实例；独立 Workflow 不装配主 DeepAgent 选路。构建失败不会落入新版本半成品 |
+| PrepareAgent | 按 Code Agent 当前 Trace 固定的普通 targetAgent 与 generation 返回已构建执行实例；不持有/编译/返回 Workflow Agent。构建失败不会落入新版本半成品 |
 | GenResume | 恢复原作用域/选项，使用服务器保存的定向 ResumeParams |
 | BeforeModelRewriteState | 安全输入边界、完整上下文和本轮工具清单写回 state |
 | WrapModel | 04 的 attempt 聚合与完整响应接纳门；不能在此无记录地改历史 |
@@ -166,22 +166,24 @@ D08-取消时序：Stop 非阻塞且结束实例，旧实例不能再次 Run。�
 <a id="resume"></a>
 ## 6. 暂停与恢复
 
-审批等待的 Turn 不提前 turn_end。Eino checkpoint 保存并经 Wait 确认后，SessionManager 才提交 canResume 和交互关联。先到的交互回答只能受理保存，未完成关联前不执行恢复。
+审批等待的 Turn 不提前 turn_end。Eino checkpoint 保存并经 Wait 确认、再按 [09 §checkpoint](09-persistence-and-recovery.md#checkpoint) 通过原生预检后，SessionManager 才提交 canResume 和交互关联。先到的交互回答只能受理保存，未完成关联前不执行恢复。
 
 Resume 保留 traceId、targetAgent、invocationId、未完成 turnId、工具调用身份、generation 和旧选择；新 executionId 区分内部段。GenResume 只能使用 09 校验通过的 checkpoint 及服务器映射的目标地址；拒绝客户端注入任意 Targets 或更换执行 Agent。
 
 错误路径由 Wait/事件收敛，不能依赖只在成功运行的 AfterAgent。预算耗尽 failed；用户取消 cancelled；可恢复交互 waiting_input；未决效果 paused。模型 transient retry/受控压缩在原 Turn 内完成，不能重新执行上一批工具。
 
+当前 Code 原生预检已按批准 Step9 修正生命周期回调隔离，并获真实 Pause/审批发布、活跃可写 Snapshot、负向 Resume 和磁盘重开恢复的有界接受；唯一方法及限制见 [09 §checkpoint](09-persistence-and-recovery.md#checkpoint)。固定 Eino v0.9.21，每次新建、单次使用探针，只认证原目标根状态；宿主 codec 仍可先执行，不保证任意宿主零执行或整树认证。保留拒绝条件、修前失败和真实执行回调，不清空全局 callbacks，不反射/访问私有回调管理器、不 fork/patch/升级 Eino 或另写执行循环。Workflow Agent 当前没有原生整图 checkpoint，节点复用不证明完整子树或跨两类运行恢复；父最终冻结源两平台全仓证据见 [12 当前证据与限制](12-delivery-and-validation.md#当前证据与限制)，P3 仍未完成。
+
 <a id="budget"></a>
 ## 7. 预算记账
 
-顶层共享 BudgetLedger，子调用、摘要、Auto（启用时）、Workflow 模型节点计入同一 Trace。逻辑模型调用在创建生成意图时占额，网络请求由实际传输占额，工具在获准进入执行器前占额；重复恢复读取已有结果不再占执行次数。拒绝/校验失败仍记录调用，不占实际执行额度。
+Code Agent 顶层 Trace 共享 BudgetLedger，普通受控子调用、摘要、Auto（启用时）计入其总账。Workflow Agent 则为自身独立运行维护节点/模型/工具及辅助调用总账；两类复用限额和计量机制，不合并账本，也不承诺业务工具组合时跨运行原子占额。逻辑模型调用在创建生成意图时占额，网络请求由实际传输占额，工具在获准进入执行器前占额；重复恢复读取已有结果不再占执行次数。拒绝/校验失败仍记录调用，不占实际执行额度。
 
-follow-up、resume、实例重建不清零；进程重启从 durable 累计恢复。活动时长累计正在运行/内部重试/摘要等时间，人工等待和安全暂停不计；不能只依一个进程内计时器。具体限额唯一来源为 12。空闲维护有独立 operation 预算，不伪造业务 Trace。
+Code Agent follow-up、resume、实例重建不清零；Workflow Agent 节点继续/显式恢复也读取自己的 durable 累计。活动时长累计所属运行/内部重试/摘要等时间，人工等待和安全暂停不计；不能只依一个进程内计时器。具体限额唯一来源为 12。空闲维护有独立 operation 预算，不伪造业务 Trace；完整子树恢复和跨运行总资源政策由业务负责。
 
 <a id="evidence"></a>
 ## 8. 证据与验收
 
-[Eino TurnLoop](../../eino/adk/turn_loop.go)、[轮后 hook](../../eino/adk/chatmodel.go)、[middleware](../../eino/adk/handler.go)、[Agentic ReAct](../../eino/adk/react.go)、[retry 输入持久化](../../eino/adk/retry_chatmodel.go)、[pi 循环](../../pi/packages/agent/src/agent-loop.ts)支撑上述接线。内部边界、去重、队列和预算是本产品适配职责。
+[Eino TurnLoop](../../../eino/adk/turn_loop.go)、[轮后 hook](../../../eino/adk/chatmodel.go)、[middleware](../../../eino/adk/handler.go)、[Agentic ReAct](../../../eino/adk/react.go)、[retry 输入持久化](../../../eino/adk/retry_chatmodel.go)、[pi 循环](../../../pi/packages/agent/src/agent-loop.ts)支撑上述接线。内部边界、去重、队列和预算是本产品适配职责。
 
-V-LOOP：PRD LOOP-A01～17；无工具/有工具/全部 terminate；多次 retry 仍一 Turn；暂停无 settled；输入与终答两种竞争顺序；Stop/迟到 Push 不丢引用；错误和取消后旧队列 hold 可重启重建；子 hook 不消费父输入；忙时改选独立 Agent 不误投。全部断言使用确定性模型和计数工具验证。
+V-LOOP：PRD LOOP-A01～17；无工具/有工具/全部 terminate；多次 retry 仍一 Turn；暂停无 settled；输入与终答两种竞争顺序；Stop/迟到 Push 不丢引用；错误和取消后旧队列 hold 可重启重建；子 hook 不消费父输入；忙时改选普通 Code 执行者不误投，独立工作流始终走自身资源/控制入口而不进入 Code 队列。全部断言使用确定性模型和计数工具验证；当前接线及 Step9 回调修正的有界接受见 [09 §checkpoint](09-persistence-and-recovery.md#checkpoint) 和 [12 当前证据与限制](12-delivery-and-validation.md#当前证据与限制)，修前失败保留，父最终冻结源全仓结果见同一12索引，不据 Step9 的有限范围或全仓绿色宣称整个 P3 通过。

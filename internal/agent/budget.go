@@ -166,22 +166,41 @@ func (b *BudgetLedger) OccupyTool() error {
 func (b *BudgetLedger) ChargeDelegated(logical, transport int) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.chargeDelegated(logical, transport, b.persist)
+}
+
+// ChargeDelegatedWith commits a child reservation and this trace's exact
+// aggregate in one transaction. The callback replaces the ordinary persister
+// for this charge and must not reenter either participating ledger.
+func (b *BudgetLedger) ChargeDelegatedWith(logical, transport int, persist func(Usage) error) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if persist == nil {
+		return product.NewError(product.CodeInvalidArgument, "delegated occupancy requires a joint persistence callback")
+	}
+	return b.chargeDelegated(logical, transport, persist)
+}
+
+func (b *BudgetLedger) chargeDelegated(logical, transport int, persist func(Usage) error) error {
 	if logical < 0 || transport < 0 {
 		return product.NewError(product.CodeInvalidArgument, "delegated usage cannot be refunded")
 	}
 	if logical == 0 && transport == 0 {
 		return nil
 	}
-	if b.used.LogicalModelCalls+logical > b.limits.TraceLogicalModelCalls || b.used.TransportRequests+transport > b.limits.TraceTransportRequests {
+	if logical > b.limits.TraceLogicalModelCalls-b.used.LogicalModelCalls || transport > b.limits.TraceTransportRequests-b.used.TransportRequests {
 		return product.NewError(product.CodeBudgetExhausted, "model budget exhausted")
 	}
 	next := b.used
 	next.LogicalModelCalls += logical
 	next.TransportRequests += transport
-	if transport > 0 {
-		next.LastTransport = llm.TransportRequest{}
+	if persist != nil {
+		if err := persist(next); err != nil {
+			return err
+		}
 	}
-	return b.commit(next, b.turnUsed)
+	b.used = next
+	return nil
 }
 
 // ClaimTool commits the only tool-start fact and its budget candidate together.

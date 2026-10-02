@@ -1,6 +1,6 @@
 # 08 上下文压缩与摘要
 
-对应 PRD M09；输入构造归 07，模型调用归 04，持久化归 09。产品只有一个压缩服务，不在 DeepAgent、middleware 和 Session 各自开启独立压缩器。
+对应 PRD M09；输入构造归 07，模型调用归 04，持久化归 09。Code Agent 复用一个压缩实现，不在 DeepAgent、middleware 和 Session 各自开启独立压缩器。它只修改所属 `AgentSession` 或普通受控子 Agent 的投影；Workflow Agent 的节点状态、日志与恢复不转成聊天历史，也不因分层获得自动压缩能力。Code Agent 与共享存储已迁移，独立 Workflow 的定义、图运行和 Web 接线已实现；完整 P4 资源/上下文能力不在本轮启动。
 
 <a id="trigger"></a>
 ## 1. 入口、范围与预算
@@ -9,7 +9,7 @@ CompactRequest 包含 operationId、reason=manual/soft_threshold/overflow/extens
 
 自动软压缩在完整请求预算触发；overflow 由 04 的已认证证据触发；扩展请求不强制增加 Turn。没有新增可压缩范围返回 no_op，不调用模型或追加重复摘要。
 
-Scope 固定 session/branch/leaf、trace/turn/invocation、generation、selection/model/effectiveOptions、projectionRevision、来源 Entry 与排除规则。先冻结范围再调用 before_compact；该操作不能悄悄扩大来源。新受理但未消费的 follow-up 不改变范围，不因无关 commitSeq 增长就误判投影过期。
+Scope 固定所属 Code Agent 的 session/branch/leaf、trace/turn/invocation、generation、selection/model/effectiveOptions、projectionRevision、来源 Entry 与排除规则；不包含独立工作流节点状态或另一 Agent 的 generation。先冻结范围再调用 before_compact；该操作不能悄悄扩大来源。新受理但未消费的 follow-up 不改变范围，不因无关 commitSeq 增长就误判投影过期。
 
 主/子摘要、分支摘要均使用当前获准模型和 04 调用能力，禁用业务工具及服务端副作用工具；独立大窗口模型只在开发者策略显式选择时使用。摘要计入原 Trace 或空闲维护 operation 的预算。
 
@@ -113,13 +113,13 @@ CompactionEntry 的 parent 是提交时原 leaf，提交后 active leaf 指向�
 
 before 取消/异常、模型失败/截断、候选不合格、预算失败、提交失败分别记录 compaction.failed；不激活半份内容。旧投影满足硬预算时可继续，超过硬限制停止原请求。模板修复重试有界且使用同模型预算；不得默默截摘要后发布。
 
-等待审批期间只登记压缩意图；恢复原 checkpoint、完成交互及关联批次后才能在下一边界压缩。压缩不改变 generation、一次许可和原授权原文。子 Agent 压缩只更新自身 invocation 的投影，父任务只接收正常委派输出。
+等待审批期间只登记压缩意图；恢复原 checkpoint、完成交互及关联批次后才能在下一边界压缩。压缩不改变所属 generation、一次许可和原授权原文。普通受控子 Agent 压缩只更新自身 invocation 的投影，父任务只接收正常委派输出；不读取/修改独立 Workflow Agent 节点日志，不重建跨两类运行冻结或全树 checkpoint。原生 checkpoint_validation 触发宿主全局 callbacks 的基础恢复缺陷仍未解决，不能以压缩或本次分层宣布恢复已修复。
 
 before hook 可追加重点或返回一个替代候选；候选仍过同一验证和文件事实生成，不能换范围或伪造修改。after 通知失败只记录 extension.error。空闲手动取消只结束维护 operation，不取消无关 Trace。
 
 <a id="evidence"></a>
 ## 7. 证据与验收
 
-[Eino summarization](../../eino/adk/middlewares/summarization/summarization.go)、[pi 压缩实现](../../pi/packages/coding-agent/src/core/compaction/compaction.ts)、[PRD M09](../pi-eino-prd/09-compaction.md)。
+[Eino summarization](../../../eino/adk/middlewares/summarization/summarization.go)、[pi 压缩实现](../../../pi/packages/coding-agent/src/core/compaction/compaction.ts)、[PRD M09](../pi-eino-prd/09-compaction.md)。
 
 V-COMPACT：CMP-A01～23，首次/增量/无新增、合法切点/工具对、H/P/K、旧摘要保留、confirmed/denied/unknown 文件、跨分支/父子隔离、取消/落盘前后崩溃、替代摘要和超大附录。模型质量集验证目标、限制、关键错误和引用是否保留；与确定性结构测试分别报告。

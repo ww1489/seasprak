@@ -1,6 +1,6 @@
 # 07 上下文、项目规范与 Skills
 
-对应 PRD M08，并实现 M06 的转换阶段。L2 负责唯一上下文处理管道，L3 提供固定范围、资源与授权，L1 提供有效选项和协议开销。
+对应 PRD M08，并实现 M06 的转换阶段。L2 负责唯一上下文处理管道，Code Agent 的 `AgentSession` 提供自身固定范围、资源与授权，L1 `internal/llm` 提供有效选项和协议开销。Workflow Agent 的模型节点复用预算/转换能力，但使用独立运行的显式材料，不取得 Code Agent 历史、队列或可变投影。`internal/codeagent` / `internal/workflowagent` 的独立目录和接线已实现；完整资源/Skills、动态加载与热重载仍属于原未来阶段，本轮不启动 P4/P5。
 
 <a id="pipeline"></a>
 ## 1. 单一管道
@@ -18,9 +18,9 @@ flowchart TD
     V --> M["L1 最终协议请求"]
 ```
 
-D15-上下文图：工具输出在生产时已保存有界预览，不能等模型超窗才处理巨大结果。新建 Turn 时固定 ScopeSnapshot：branch/leaf、trace/turn/invocation、targetAgent、generation、selectionRevision、modelConfig/effectiveOptions、projectionRevision、已消费 inputIds、资源清单和约束版本。独立 Workflow 只组装显式输入及允许的上下文，不自动注入全部聊天历史。
+D15-上下文图是 Code Agent 的历史/自动压缩路径；Workflow 模型节点只复用自身材料转换、完整预算与请求检查，不继承该压缩分支。工具输出在生产时已保存有界预览，不能等模型超窗才处理巨大结果。Code Agent 新建 Turn 时固定 ScopeSnapshot：session/branch/leaf、trace/turn/invocation、普通 targetAgent、generation、selectionRevision、modelConfig/effectiveOptions、projectionRevision、已消费 inputIds、资源清单和约束版本。独立 Workflow Agent 的模型节点只组装本 workflowRunId 的结构化输入、固定定义和已产生且允许的节点结果；不自动注入 Code Agent 聊天历史，不借用父工具的 Turn、技能加载状态或缓存作用域。两类快照各自提交；这种范围固定不是跨运行冻结。
 
-ContextSource 返回所选路径及子 invocation 自身历史；pending 输入不在其中。从持久历史或本次消费集合合并时按 messageId/inputId 去重，不能各追加一份。transformContext 在 AgentMessage 副本工作，不能删未闭合工具组或改变原授权来源。convertToLlm 不再追加业务贡献。
+ContextSource 返回所属 Code Agent 选定路径及普通子 invocation 自身历史；pending 输入不在其中。Workflow Agent 的模型材料来源是本运行定义/输入/节点结果，不从此端口读取另一类历史。从持久历史或本次消费集合合并时按 messageId/inputId 去重，不能各追加一份。transformContext 在 AgentMessage 副本工作，不能删未闭合工具组或改变原授权来源。convertToLlm 不再追加业务贡献。
 
 请求诊断保存范围/内容摘要、各预算分项、被排除项及原因；默认只公开元信息，不广播全部提示词/原始用户授权。
 
@@ -75,14 +75,14 @@ D16-skill 时序：复用 Eino skill Backend.List/Get，Backend 是不可变 gen
 
 工程值见 12。字符数按 Unicode code point，字节上限单独计算；源文件编码错误和截断造成的边界错误分开报告。
 
-PreviewMetadata 至少有原始/显示范围、触发限额、partialLine、可用的 nextRead 参数或 artifactRef。提示使用实际装配工具名，不输出不存在的 bash/sed 命令。文件续读复核资源版本，不能保证多次读取拼成静态快照；稳定证据由工具另存产物。
+PreviewMetadata 至少有原始/显示范围、触发限额、partialLine、可用的 nextRead 参数或 artifactRef。提示使用实际装配工具名，不输出不存在的 bash/sed 命令。文件续读沿用同一不可变快照版本；未携带或不匹配版本的多次独立读取不能保证组成静态快照，稳定证据由工具另存产物。
 
 只有保存成功的日志才给可读 artifactId。容器私有 /tmp 等路径必须先导出，不能让宿主 read_file 读同名路径。产物丢失明确标识，禁止重跑副作用以补输出。
 
 <a id="budget"></a>
 ## 5. 完整请求预算
 
-BudgetBreakdown 包括 system、普通历史、摘要、工具 schema/说明、媒体、协议包装、输出预留和安全余量。L1 先解析 thinking/output，预算判定：
+BudgetBreakdown 包括 system、Code 普通历史/摘要或 Workflow 节点允许的输入/结果材料、工具 schema/说明、媒体、协议包装、输出预留和安全余量，所有分项归所属请求。L1 先解析 thinking/output，预算判定：
 
 `estimatedInput + reservedOutput + safetyMargin <= effectiveContextWindow`
 
@@ -90,7 +90,7 @@ BudgetBreakdown 包括 system、普通历史、摘要、工具 schema/说明、�
 
 TokenEstimate 带 method/version/confidence：优先模型专用估算，再使用同模型/投影/工具版本的可信 usage 基线加增量；缺少专用算法时使用明确标记的保守通用近似。中文、emoji、代码和图片不可一概按四字符一个 token。未知窗口要求开发者能力配置中的保守上限；未知媒体成本且属于必需输入时拒绝，不假装零成本。
 
-压缩、模型/工具切换后原 usage 基线失效。软阈值触发 08；硬限制禁止发送；固定 system/schema/必需 skill 本身超限时直接说明分项，不无限压缩无关历史。请求溢出后的恢复由 04 转回同一管道。
+压缩、模型/工具切换后原 usage 基线失效。Code Agent 软阈值触发 08；两类请求的硬限制均禁止发送。固定 system/schema/必需 skill 或工作流必需材料本身超限时直接说明分项，不无限压缩无关历史；Workflow 不自动进入聊天压缩路径。Code 请求溢出后的恢复由 04 转回同一管道。
 
 <a id="prefix"></a>
 ## 6. 缓存协作与摘要来源
@@ -99,7 +99,7 @@ TokenEstimate 带 method/version/confidence：优先模型专用估算，再使�
 
 压缩/分支切换取真实所选历史；共同祖先的合法前缀可复用，显式句柄/responseId 由 L1 验证。缓存失败不从外部取另一分支的上下文。
 
-Compaction 与 BranchSummary 共用消息序列化和模型能力但来源不同：前者为当前路径已消费旧历史，后者仅为旧叶子到最近公共祖先之外的独有后缀。分支摘要需显式请求，不能每次 fork 都自动调用模型。范围、文件事实和提交规则分别归 08/09。
+Compaction 与 BranchSummary 在 Code Agent 内共用消息序列化和模型能力但来源不同：前者为当前路径已消费旧历史，后者仅为旧叶子到最近公共祖先之外的独有后缀。分支摘要需显式请求，不能每次 fork 都自动调用模型。范围、文件事实和提交规则分别归 08/09；工作流独立定义/节点状态不作为摘要来源，业务组合返回材料不能自动提升为父历史事实或许可。
 
 <a id="failure"></a>
 ## 7. 失败与观测
@@ -111,6 +111,6 @@ Compaction 与 BranchSummary 共用消息序列化和模型能力但来源不同
 <a id="evidence"></a>
 ## 8. 证据与验收
 
-[pi 消息转换](../../pi/packages/coding-agent/src/core/messages.ts)、[Eino skill backend](../../eino/adk/middlewares/skill/skill.go)、[Eino 上下文 hook](../../eino/adk/handler.go)、[PRD M08](../pi-eino-prd/08-context-engineering.md)。
+[pi 消息转换](../../../pi/packages/coding-agent/src/core/messages.ts)、[Eino skill backend](../../../eino/adk/middlewares/skill/skill.go)、[Eino 上下文 hook](../../../eino/adk/handler.go)、[PRD M08](../pi-eino-prd/08-context-engineering.md)。
 
-V-CONTEXT：全部 CTX-A；fake model 捕获最终 payload 断言顺序/内容/版本/预算。覆盖 pending follow-up 排除、父子隔离、未知媒体、模型变小、超长单行/Unicode、缺加载器、相对路径、重载后旧 skill、稳定前缀，以及被排除消息不经摘要或附录泄露。
+V-CONTEXT：全部 CTX-A；fake model 捕获最终 payload 断言顺序/内容/版本/预算。覆盖 pending follow-up 排除、父子隔离、未知媒体、模型变小、超长单行/Unicode、缺加载器、相对路径、重载后旧 skill、稳定前缀，以及被排除消息不经摘要或附录泄露。独立 Workflow 模型节点仅使用本运行允许的输入/定义/结果，完整预算包含所有实际请求材料，Code 历史/skill 加载状态/缓存句柄不得串用；迁移接线和未来资源能力分项保持待验。

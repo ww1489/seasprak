@@ -2,23 +2,35 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/cloudwego/eino/components/model"
 	"github.com/ww1489/seasprak/internal/agent"
 	"github.com/ww1489/seasprak/internal/agent/tools"
+	"github.com/ww1489/seasprak/internal/codeagent"
 	"github.com/ww1489/seasprak/internal/llm"
-	"github.com/ww1489/seasprak/internal/sessions"
-	"github.com/ww1489/seasprak/internal/sessions/store"
+	store "github.com/ww1489/seasprak/internal/storage"
+	"github.com/ww1489/seasprak/internal/workflowagent"
 )
 
 // Config contains only trusted process-start inputs, never HTTP request fields.
 // StateRoot's parent must exist. A missing StateRoot is created privately;
 // existing StateRoot permissions are validated, never silently changed.
 type Config struct{ Workspace, StateRoot, ConfigPath, Listen string }
+
+// runtimeOptions keeps the ordinary session inventory separate from the
+// fixed-version workflow inventory consumed by the later run routes.
+type runtimeOptions struct {
+	Code      codeagent.Options
+	Workflows map[string]workflowagent.WorkflowOptions
+}
 
 // The startup file wraps the existing Catalog configuration. NoCredentials is
 // explicit; otherwise CredentialRef must be env:NAME. No file credential source,
@@ -36,9 +48,8 @@ type startupConfig struct {
 	// ApprovalTools is a subset of Tools that requires one-operation approval.
 	// It cannot enable a tool or backend by itself.
 	ApprovalTools []string `json:"approvalTools,omitempty"`
-	// Agents and Workflows are immutable trusted startup declarations. They
-	// share the bound model and configured tool generation; HTTP cannot add or
-	// replace them while the process is running.
+	// Both inventories are immutable trusted startup declarations. Workflows
+	// are independent runs, never ordinary or builtin delegation targets.
 	Agents    []startupAgent    `json:"agents,omitempty"`
 	Workflows []startupWorkflow `json:"workflows,omitempty"`
 }
@@ -52,11 +63,9 @@ type startupAgent struct {
 	Tools       []string `json:"tools,omitempty"`
 }
 
-// startupWorkflow embeds the one accepted declarative definition. Delegable
-// controls only whether another registered agent may invoke it.
+// startupWorkflow accepts only the independent declarative definition.
 type startupWorkflow struct {
-	agent.WorkflowDefinition
-	Delegable bool `json:"delegable,omitempty"`
+	workflowagent.WorkflowDefinition
 }
 
 // sessionOwnedTools are the built-ins that run without any host backend:
@@ -103,67 +112,14 @@ func builtinTools(names, approvalNames []string) ([]tools.Definition, error) {
 	return out, nil
 }
 
-// startupTargets validates and compiles the immutable target inventory before
-// the state directory or listener is created. Workflow dependencies are
-// resolved by exact name@version; cycles and missing bindings fail closed.
+// startupTargets validates only ordinary Code targets before creating state.
 func startupTargets(conf startupConfig, defs []tools.Definition) ([]agent.AgentDefinition, error) {
-	targets := make([]agent.AgentDefinition, 0, len(conf.Agents)+len(conf.Workflows))
+	targets := make([]agent.AgentDefinition, 0, len(conf.Agents))
 	for _, a := range conf.Agents {
 		if strings.TrimSpace(a.Instruction) == "" {
 			return nil, invalid("agent instruction is required")
 		}
 		targets = append(targets, agent.AgentDefinition{Name: a.Name, Version: a.Version, Description: a.Description, Instruction: a.Instruction, Delegable: a.Delegable, Kind: agent.AgentKindAgent, Tools: append([]string(nil), a.Tools...)})
-	}
-
-	byID := make(map[string]startupWorkflow, len(conf.Workflows))
-	for _, w := range conf.Workflows {
-		id := w.Name + "@" + w.Version
-		if _, duplicate := byID[id]; duplicate {
-			return nil, invalid("workflow name and version must be unique")
-		}
-		byID[id] = w
-	}
-	compiled := make(map[string]agent.AgentDefinition, len(conf.Workflows))
-	visiting := map[string]bool{}
-	var compile func(string) error
-	compile = func(id string) error {
-		if _, ok := compiled[id]; ok {
-			return nil
-		}
-		w, ok := byID[id]
-		if !ok {
-			return invalid("workflow subflow is not registered")
-		}
-		if visiting[id] {
-			return invalid("workflow subflow dependency is recursive")
-		}
-		visiting[id] = true
-		defer delete(visiting, id)
-		for _, node := range w.Nodes {
-			if node.Type == agent.WorkflowNodeSubflow {
-				if err := compile(node.Subflow); err != nil {
-					return err
-				}
-			}
-		}
-		opts := sessions.Options{Tools: defs, Agents: append([]agent.AgentDefinition(nil), targets...)}
-		for _, target := range compiled {
-			opts.Agents = append(opts.Agents, target)
-		}
-		target, err := sessions.CompileWorkflowTarget(w.WorkflowDefinition, opts)
-		if err != nil {
-			return err
-		}
-		target.Delegable = w.Delegable
-		compiled[id] = target
-		return nil
-	}
-	for _, w := range conf.Workflows {
-		id := w.Name + "@" + w.Version
-		if err := compile(id); err != nil {
-			return nil, err
-		}
-		targets = append(targets, compiled[id])
 	}
 	if _, err := agent.NewAgentRegistry("", targets); err != nil {
 		return nil, err
@@ -185,6 +141,85 @@ func startupTargets(conf startupConfig, defs []tools.Definition) ([]agent.AgentD
 		}
 	}
 	return targets, nil
+}
+
+// startupWorkflows statically compiles the separate inventory. Exact versions,
+// missing references and cycles are checked before state-root creation.
+func startupWorkflows(conf startupConfig, defs []tools.Definition) (map[string]*workflowagent.CompiledWorkflow, error) {
+	byID := make(map[string]workflowagent.WorkflowDefinition, len(conf.Workflows))
+	for _, w := range conf.Workflows {
+		id := w.Name + "@" + w.Version
+		if _, duplicate := byID[id]; duplicate {
+			return nil, invalid("workflow name and version must be unique")
+		}
+		byID[id] = w.WorkflowDefinition
+	}
+	bindings := workflowagent.WorkflowBindings{Models: map[string]bool{workflowagent.WorkflowModelBinding: true}, Tools: map[string]json.RawMessage{}, Subflows: map[string]*workflowagent.CompiledWorkflow{}}
+	for _, d := range defs {
+		bindings.Tools[d.Name] = append(json.RawMessage(nil), d.Schema...)
+	}
+	visiting := map[string]bool{}
+	var compile func(string) error
+	compile = func(id string) error {
+		if bindings.Subflows[id] != nil {
+			return nil
+		}
+		w, ok := byID[id]
+		if !ok {
+			return invalid("workflow subflow is not registered")
+		}
+		if visiting[id] {
+			return invalid("workflow subflow dependency is recursive")
+		}
+		visiting[id] = true
+		defer delete(visiting, id)
+		for _, node := range w.Nodes {
+			if node.Type == workflowagent.WorkflowNodeSubflow {
+				if err := compile(node.Subflow); err != nil {
+					return err
+				}
+			}
+		}
+		c, err := workflowagent.CompileWorkflow(w, bindings)
+		if err != nil {
+			return err
+		}
+		bindings.Subflows[id] = c
+		return nil
+	}
+	for _, w := range conf.Workflows {
+		if err := compile(w.Name + "@" + w.Version); err != nil {
+			return nil, err
+		}
+	}
+	return bindings.Subflows, nil
+}
+
+// startupWorkflowFingerprint freezes the complete trusted model configuration,
+// tool versions/declarations and separate definition inventory. It never
+// contributes to Code generation and is never emitted through HTTP DTOs.
+func startupWorkflowFingerprint(conf startupConfig, defs []tools.Definition, compiled map[string]*workflowagent.CompiledWorkflow) string {
+	type binding struct {
+		Name, Version, Interface string
+		Schema                   json.RawMessage
+		Execution                tools.ExecutionDescription
+	}
+	bindings := make([]binding, 0, len(defs))
+	for _, d := range defs {
+		bindings = append(bindings, binding{d.Name, d.Version, d.ToolInterface, d.Schema, d.Execution})
+	}
+	hashes := map[string]string{}
+	for id, c := range compiled {
+		hashes[id] = c.Hash
+	}
+	raw, _ := json.Marshal(struct {
+		Application string
+		Model       llm.ModelConfig
+		Tools       []binding
+		Definitions map[string]string
+	}{conf.GenerationFingerprint, conf.Model, bindings, hashes})
+	sum := sha256.Sum256(raw)
+	return "startup-workflow-v1:" + hex.EncodeToString(sum[:])
 }
 
 type environmentCredential struct{ model llm.ModelConfig }
@@ -209,70 +244,70 @@ func (e environmentCredential) Resolve(ctx context.Context, ref string) (llm.Res
 	return llm.ResolvedCredential{Secret: secret, AccountScope: e.model.AccountScope, Provider: e.model.Provider, Endpoint: e.model.Endpoint}, nil
 }
 
-func loadOptions(ctx context.Context, c Config) (sessions.Options, error) {
+func loadOptions(ctx context.Context, c Config) (runtimeOptions, error) {
 	if !filepath.IsAbs(c.Workspace) || !filepath.IsAbs(c.StateRoot) || !filepath.IsAbs(c.ConfigPath) {
-		return sessions.Options{}, invalid("absolute workspace, state-root and config paths are required")
+		return runtimeOptions{}, invalid("absolute workspace, state-root and config paths are required")
 	}
 	workspace, err := store.ResolveDir(c.Workspace)
 	if err != nil {
-		return sessions.Options{}, invalid("workspace is unavailable")
+		return runtimeOptions{}, invalid("workspace is unavailable")
 	}
 	// Resolve the existing parent before making any directory. This also prevents
 	// a symlinked parent from placing the credential under the workspace.
 	parent, err := store.ResolveDir(filepath.Dir(c.StateRoot))
 	if err != nil {
-		return sessions.Options{}, invalid("state-root parent is unavailable")
+		return runtimeOptions{}, invalid("state-root parent is unavailable")
 	}
 	root := filepath.Join(parent, filepath.Base(filepath.Clean(c.StateRoot)))
 	if store.PathsOverlap(workspace, root) {
-		return sessions.Options{}, invalid("workspace and state-root must not overlap")
+		return runtimeOptions{}, invalid("workspace and state-root must not overlap")
 	}
 	if info, err := os.Lstat(root); err == nil {
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return sessions.Options{}, invalid("state-root must be a real directory")
+			return runtimeOptions{}, invalid("state-root must be a real directory")
 		}
 	} else if !os.IsNotExist(err) {
-		return sessions.Options{}, invalid("state-root unavailable")
+		return runtimeOptions{}, invalid("state-root unavailable")
 	}
 	if strings.EqualFold(filepath.Base(c.ConfigPath), ".test_env") {
-		return sessions.Options{}, invalid("live-test credential files are not startup configuration")
+		return runtimeOptions{}, invalid("live-test credential files are not startup configuration")
 	}
 	configPath, err := filepath.EvalSymlinks(c.ConfigPath)
 	if err != nil || strings.EqualFold(filepath.Base(configPath), ".test_env") {
-		return sessions.Options{}, invalid("startup configuration is unavailable or forbidden")
+		return runtimeOptions{}, invalid("startup configuration is unavailable or forbidden")
 	}
 	f, err := os.Open(configPath)
 	if err != nil {
-		return sessions.Options{}, invalid("startup configuration is unavailable")
+		return runtimeOptions{}, invalid("startup configuration is unavailable")
 	}
 	var conf startupConfig
 	err = decodeObject(f, &conf)
 	closeErr := f.Close()
 	if err != nil || closeErr != nil {
-		return sessions.Options{}, invalid("invalid startup configuration")
+		return runtimeOptions{}, invalid("invalid startup configuration")
 	}
 	if strings.TrimSpace(conf.GenerationFingerprint) == "" {
-		return sessions.Options{}, invalid("generationFingerprint is required")
+		return runtimeOptions{}, invalid("generationFingerprint is required")
 	}
-	if conf.Profile != sessions.ProfileDefault && conf.Profile != sessions.ProfileMemory {
-		return sessions.Options{}, invalid("profile is unavailable")
+	if conf.Profile != codeagent.ProfileDefault && conf.Profile != codeagent.ProfileMemory {
+		return runtimeOptions{}, invalid("profile is unavailable")
 	}
 	defs, err := builtinTools(conf.Tools, conf.ApprovalTools)
 	if err != nil {
-		return sessions.Options{}, err
+		return runtimeOptions{}, err
 	}
 	targets, err := startupTargets(conf, defs)
 	if err != nil {
-		return sessions.Options{}, err
+		return runtimeOptions{}, err
+	}
+	compiled, err := startupWorkflows(conf, defs)
+	if err != nil {
+		return runtimeOptions{}, err
 	}
 	fingerprint := conf.GenerationFingerprint
 	if registry, registryErr := agent.NewAgentRegistry("", targets); registryErr != nil {
-		return sessions.Options{}, registryErr
+		return runtimeOptions{}, registryErr
 	} else if registry.Hash() != "" {
-		// Target declarations are part of the generation identity. A restart
-		// with changed agents/workflows cannot silently accept new work under
-		// an old session generation even when the operator forgot to bump the
-		// application fingerprint.
 		fingerprint += ":targets:" + registry.Hash()
 	}
 	resolver := environmentCredential{model: conf.Model}
@@ -290,30 +325,47 @@ func loadOptions(ctx context.Context, c Config) (sessions.Options, error) {
 	case "deepseek-chat":
 		err = catalog.RegisterDeepSeekChat(nil, MaxJSONBytes)
 	default:
-		return sessions.Options{}, invalid("model protocol is unavailable")
+		return runtimeOptions{}, invalid("model protocol is unavailable")
 	}
 	if err != nil {
-		return sessions.Options{}, invalid("model factory configuration rejected")
+		return runtimeOptions{}, invalid("model factory configuration rejected")
 	}
 	if err = catalog.Register(conf.Model); err != nil {
-		return sessions.Options{}, invalid("model configuration rejected")
+		return runtimeOptions{}, invalid("model configuration rejected")
 	}
-	model, err := catalog.Bind(conf.Model.Key(), llm.RequestedOptions{})
+	bound, err := catalog.Bind(conf.Model.Key(), llm.RequestedOptions{})
 	if err != nil {
-		return sessions.Options{}, invalid("model binding rejected")
+		return runtimeOptions{}, invalid("model binding rejected")
 	}
 	if !conf.Model.NoCredentials {
 		if _, err = resolver.Resolve(ctx, conf.Model.CredentialRef); err != nil {
-			return sessions.Options{}, err
+			return runtimeOptions{}, err
 		}
 	}
 	if err = ctx.Err(); err != nil {
-		return sessions.Options{}, err
+		return runtimeOptions{}, err
+	}
+	code := codeagent.Options{Workspace: workspace, StateRoot: root, Model: bound, Principal: localPrincipal, GenerationFingerprint: fingerprint, Profile: conf.Profile, Tools: defs, Agents: targets}
+	out := runtimeOptions{Code: code, Workflows: map[string]workflowagent.WorkflowOptions{}}
+	workflowFingerprint := startupWorkflowFingerprint(conf, defs, compiled)
+	for id, c := range compiled {
+		workflowTools := make([]tools.Definition, len(defs))
+		for i, d := range defs {
+			workflowTools[i] = d.Clone()
+		}
+		subflows := map[string]workflowagent.WorkflowDefinition{}
+		for key, sub := range compiled {
+			copy, _ := json.Marshal(sub.Definition)
+			var detached workflowagent.WorkflowDefinition
+			_ = json.Unmarshal(copy, &detached)
+			subflows[key] = detached
+		}
+		out.Workflows[id] = workflowagent.WorkflowOptions{Definition: c.Definition, Subflows: subflows, Models: map[string]model.AgenticModel{workflowagent.WorkflowModelBinding: bound}, Tools: workflowTools, Principal: localPrincipal, Workspace: workspace, StateRoot: root, Limits: code.Limits, Policy: code.Policy, GenerationFingerprint: workflowFingerprint}
 	}
 	if err = privateDir(root); err != nil {
-		return sessions.Options{}, unavailable("state-root protection could not be established")
+		return runtimeOptions{}, unavailable("state-root protection could not be established")
 	}
-	return sessions.Options{Workspace: workspace, StateRoot: root, Model: model, Principal: localPrincipal, GenerationFingerprint: fingerprint, Profile: conf.Profile, Tools: defs, Agents: targets}, nil
+	return out, nil
 }
 
 func listenAddress(address string) (string, error) {

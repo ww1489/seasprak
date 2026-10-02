@@ -6,25 +6,31 @@ import (
 	"strconv"
 
 	product "github.com/ww1489/seasprak/internal/errors"
-	"github.com/ww1489/seasprak/internal/sessions"
 )
 
 // routes adapts HTTP to the session catalog. Handlers only decode DTOs, check
 // the authenticated principal and call the session layer; they never touch a
 // store or state manager directly.
 type routes struct {
-	catalog   *sessions.Catalog
+	catalog   *Catalog
 	principal string
+	workflows *workflowCatalog
 }
 
-func newRoutes(catalog *sessions.Catalog, principal string) http.Handler {
+func newRoutes(catalog *Catalog, principal string, workflows ...*workflowCatalog) http.Handler {
 	r := &routes{catalog: catalog, principal: principal}
+	if len(workflows) != 0 {
+		r.workflows = workflows[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/sessions", r.createSession)
 	mux.HandleFunc("GET /v1/sessions", r.listSessions)
 	mux.HandleFunc("GET /v1/sessions/{sid}", r.getSession)
 	mux.HandleFunc("GET /v1/sessions/{sid}/snapshot", r.getSnapshot)
 	r.mount(mux)
+	if r.workflows != nil {
+		r.mountWorkflowRoutes(mux)
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
 		WriteError(w, product.NewError(product.CodeNotFound, "route not implemented"))
 	})
@@ -60,9 +66,9 @@ func (r *routes) createSession(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if body.Model == "" {
-		body.Model = sessions.DefaultModelRef
+		body.Model = DefaultModelRef
 	}
-	result, err := r.catalog.Create(req.Context(), sessions.CatalogCreateRequest{IdempotencyKey: key[0], Workspace: body.Workspace, ModelRef: body.Model})
+	result, err := r.catalog.Create(req.Context(), CatalogCreateRequest{IdempotencyKey: key[0], Workspace: body.Workspace, ModelRef: body.Model})
 	if err != nil {
 		WriteError(w, err)
 		return
@@ -85,7 +91,7 @@ func (r *routes) listSessions(w http.ResponseWriter, req *http.Request) {
 		}
 		limit = n
 	}
-	list, err := r.catalog.List(req.Context(), sessions.CatalogListRequest{After: q.Get("after"), Limit: limit})
+	list, err := r.catalog.List(req.Context(), CatalogListRequest{After: q.Get("after"), Limit: limit})
 	if err != nil {
 		WriteError(w, err)
 		return
